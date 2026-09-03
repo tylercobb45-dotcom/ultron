@@ -16,6 +16,7 @@ import matplotlib.patches as mpatches
 from live_code_viewer import LiveCodeViewer  # Import our live code viewer
 from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
+from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 
 
 def user_settings_path():
@@ -1329,6 +1330,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # --- Flight Report: failure-mode analysis of the last simulation ---
         self.flight_report = FlightReportWidget()
         self.tabs.addTab(self.flight_report, "Flight Report")
+
+        # --- Rockets: the saved-rocket library. First tab, because picking a
+        # rocket is where a session starts. ---
+        self.rocket_library = RocketLibraryWidget(
+            capture_config=self.get_current_configuration,
+            apply_config=self.apply_configuration,
+            writable_dir=self.get_profiles_dir,
+            search_dirs=self.get_profile_search_dirs,
+            on_changed=self.refresh_profile_dropdown,
+            on_loaded=self.on_rocket_loaded)
+        self.tabs.insertTab(0, self.rocket_library, "Rockets")
 
         # Settings tab for units and theme
         settings_widget = QtWidgets.QWidget()
@@ -4553,16 +4565,68 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     # Profile Management Methods
     def get_profiles_dir(self):
-        """Get the directory where profiles are stored"""
+        """The writable directory new rocket profiles are saved to."""
         profiles_dir = os.path.join(os.path.dirname(self.user_settings_file), 'profiles')
         if not os.path.exists(profiles_dir):
-            os.makedirs(profiles_dir)
+            os.makedirs(profiles_dir, exist_ok=True)
         return profiles_dir
+
+    def get_profile_search_dirs(self):
+        """Every directory to read rockets from.
+
+        The writable one first, then any examples shipped alongside the code -
+        in a packaged build those live in the bundle, which is not writable.
+        """
+        dirs = [self.get_profiles_dir()]
+        bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profiles')
+        if os.path.isdir(bundled) and bundled not in dirs:
+            dirs.append(bundled)
+        return dirs
+
+    def refresh_profile_dropdown(self):
+        """Keep the Settings tab's profile dropdown in step with the library.
+
+        Signals are blocked so repopulating the list does not fire a profile
+        load and overwrite what the user just saved.
+        """
+        if not hasattr(self, 'profile_select'):
+            return
+        current = self.profile_select.currentText()
+        self.profile_select.blockSignals(True)
+        try:
+            self.load_available_profiles()
+            idx = self.profile_select.findText(current)
+            if idx >= 0:
+                self.profile_select.setCurrentIndex(idx)
+        finally:
+            self.profile_select.blockSignals(False)
+
+    def on_rocket_loaded(self, name, config):
+        """A rocket was loaded from the library: show the result on Simulation."""
+        self.refresh_profile_dropdown()
+        summary = []
+        if config.get('engine'):
+            summary.append("engine")
+        if config.get('vehicle'):
+            summary.append("materials")
+        extra = (" (including " + " and ".join(summary) + ")") if summary else ""
+        self.result_label.setText(
+            f"Now running <b>{name}</b>{extra}. Inputs below are populated from "
+            f"this rocket - press Start Simulation to fly it.")
+        self.tabs.setCurrentWidget(self.main_panel)
+
+    def find_profile_path(self, filename):
+        """Locate a profile file across every search directory."""
+        for directory in self.get_profile_search_dirs():
+            candidate = os.path.join(directory, filename)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
 
     def get_current_configuration(self):
         """Get current rocket configuration as a dictionary"""
         config = {
-            'version': '1.0',
+            'version': '2.0',   # 2.0 adds the engine and vehicle sections
             'name': 'Unnamed Profile',
             'description': '',
             'created': QtCore.QDateTime.currentDateTime().toString(),
@@ -4608,6 +4672,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
             },
             'thrust_curve_path': getattr(self, 'thrust_curve_path', None)
         }
+        # The engine design and the materials/structure the failure analysis
+        # grades against are part of the rocket too, not just the flight inputs.
+        if hasattr(self, 'engine_lab'):
+            config['engine'] = self.engine_lab.get_config()
+        if hasattr(self, 'flight_report'):
+            config['vehicle'] = self.flight_report.get_config()
         return config
 
     def apply_configuration(self, config):
@@ -4657,6 +4727,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.wind_speed_input.setValue(ws.get('wind_speed', 0.0))
             self.wind_direction_input.setValue(ws.get('wind_direction', 0))
 
+            # Engine design and materials/structure. Older profiles predate these
+            # sections; leaving those tabs alone is the right behaviour there.
+            if hasattr(self, 'engine_lab') and config.get('engine'):
+                self.engine_lab.apply_config(config['engine'])
+            if hasattr(self, 'flight_report') and config.get('vehicle'):
+                self.flight_report.apply_config(config['vehicle'])
+
             # Thrust curve
             thrust_path = config.get('thrust_curve_path')
             if thrust_path and os.path.exists(thrust_path):
@@ -4672,15 +4749,18 @@ class RocketSimulationUI(QtWidgets.QWidget):
         """Load available profiles into the dropdown"""
         self.profile_select.clear()
         self.profile_select.addItem("Default", None)
-        
-        profiles_dir = self.get_profiles_dir()
-        try:
-            for filename in sorted(os.listdir(profiles_dir)):
-                if filename.endswith('.json'):
+
+        seen = set()
+        for profiles_dir in self.get_profile_search_dirs():
+            try:
+                filenames = sorted(os.listdir(profiles_dir))
+            except OSError:
+                continue
+            for filename in filenames:
+                if filename.endswith('.json') and filename not in seen:
+                    seen.add(filename)
                     profile_name = filename[:-5]  # Remove .json extension
                     self.profile_select.addItem(profile_name, filename)
-        except OSError:
-            pass
 
     def save_current_profile(self):
         """Save current configuration as a new profile"""
@@ -4743,13 +4823,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if not filename:
             return
             
-        profiles_dir = self.get_profiles_dir()
-        filepath = os.path.join(profiles_dir, filename)
-        
+        filepath = self.find_profile_path(filename)
+        if not filepath:
+            return
+
         try:
             with open(filepath, 'r') as f:
                 config = json.load(f)
-            
+
             if self.apply_configuration(config):
                 self.result_label.setText(f"Loaded profile: {profile_name}")
                 

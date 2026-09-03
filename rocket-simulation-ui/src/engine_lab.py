@@ -240,6 +240,24 @@ class EngineLabWidget(QtWidgets.QWidget):
         right_layout.addWidget(self.canvas)
         layout.addWidget(right, stretch=1)
 
+    def get_config(self) -> dict:
+        """The engine design as plain values, for saving into a rocket profile."""
+        cfg = {key: edit.text() for key, edit in self._fields.items()}
+        cfg["fuel"] = self.fuel_combo.currentText()
+        return cfg
+
+    def apply_config(self, cfg: dict):
+        """Restore an engine design saved by get_config()."""
+        if not cfg:
+            return
+        for key, value in cfg.items():
+            if key == "fuel":
+                idx = self.fuel_combo.findText(str(value))
+                if idx >= 0:
+                    self.fuel_combo.setCurrentIndex(idx)
+            elif key in self._fields:
+                self._fields[key].setText(str(value))
+
     def get_last_run(self):
         """(engine, result, metrics) from the last successful engine run, or None.
 

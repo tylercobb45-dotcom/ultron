@@ -17,6 +17,7 @@ rocket-simulation-ui
 │   ├── failure_analysis.py # Failure-mode checks run against a completed flight (Qt-free)
 │   ├── materials.py        # Material library: melting points, service temps, strength
 │   ├── report_tab.py       # Flight Report tab: verdict, colour-coded checks, graphs, export
+│   ├── rocket_library.py   # Rockets tab: saved rockets, switch between complete setups
 │   ├── utils.py            # Small helpers (flight-phase classification)
 │   ├── live_code_viewer.py # In-app viewer for the simulation source
 │   ├── JARVIS.ico          # Window/app icon
@@ -44,8 +45,10 @@ rocket-simulation-ui
 
 ## Usage
 
-1. Enter the rocket's mass, drag coefficient, cross-sectional area, and air
-   density, or load a saved profile from `src/profiles/`.
+1. Pick a rocket on the **Rockets** tab and load it — the Simulation, Engine
+   Lab, and Flight Report tabs all repopulate from it. Or start from scratch
+   and enter the rocket's mass, drag coefficient, cross-sectional area, and
+   air density by hand.
 2. Optionally load a motor thrust curve from `thrust_curves/` (or your own
    CSV / RASP `.eng` file).
 3. Configure parachute deployment (height, size or target descent rate, drag
@@ -66,6 +69,14 @@ rocket-simulation-ui
   bump near transonic speeds, and a smoothed/capped parachute deployment
   model.
 - **Live code viewer** — inspect the simulation source from within the app.
+- **Rocket library** — the "Rockets" tab stores every rocket you have built
+  and switches between them: loading one repopulates the flight inputs, the
+  engine design, and the materials/structure in a single step, so you can keep
+  several vehicles side by side and compare them. Rockets are plain JSON files
+  in the profiles directory (shared with the Settings tab's profile dropdown),
+  so they can be exported, imported, and checked into version control. Profiles
+  saved before the engine and materials sections existed still load; the tabs
+  they do not cover are left untouched and the library says so.
 - **Flight Report** — every simulation run is automatically graded against a
   numbered list of physical failure modes and a target altitude (50,000 ft by
   default). Each check reports green (inside limits), yellow (thin margin or a

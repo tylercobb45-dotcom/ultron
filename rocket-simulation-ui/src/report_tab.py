@@ -240,6 +240,29 @@ class FlightReportWidget(QtWidgets.QWidget):
             setattr(cfg, attr, self._material_combos[attr].currentText())
         return cfg
 
+    def get_config(self) -> dict:
+        """Vehicle geometry, materials and limits as plain values, for saving
+        into a rocket profile."""
+        cfg = {attr: edit.text() for attr, (edit, _f, _d) in self._fields.items()}
+        for _label, attr, _lib in _MATERIAL_FIELDS:
+            cfg[attr] = self._material_combos[attr].currentText()
+        return cfg
+
+    def apply_config(self, cfg: dict):
+        """Restore a vehicle configuration saved by get_config()."""
+        if not cfg:
+            return
+        for attr, value in cfg.items():
+            if attr in self._material_combos:
+                idx = self._material_combos[attr].findText(str(value))
+                if idx >= 0:
+                    self._material_combos[attr].setCurrentIndex(idx)
+            elif attr in self._fields:
+                self._fields[attr][0].setText(str(value))
+        self._update_material_note()
+        if self._flight:
+            self._reanalyze()
+
     def apply_geometry_hints(self, hints: dict):
         """Fill geometry the Simulation tab already knows, without clobbering
         anything the user has since typed here."""

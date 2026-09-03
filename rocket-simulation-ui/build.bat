@@ -46,6 +46,7 @@ REM Build the executable
     --add-data "src\jarvis.gif;." ^
     --add-data "src\Rocket.png;." ^
     --add-data "src\crash.jpg;." ^
+    --add-data "src\profiles;profiles" ^
     --add-data "thrust_curves;thrust_curves" ^
     --add-data "hybrid_sim;hybrid_sim" ^
     --paths "hybrid_sim" ^
