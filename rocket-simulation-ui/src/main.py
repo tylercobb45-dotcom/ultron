@@ -1057,7 +1057,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Left panel: Inputs
         left_widget = QtWidgets.QWidget()
         left_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding)
-        left_widget.setMaximumWidth(400)  # Increased width to accommodate larger inputs
+        left_widget.setMinimumWidth(330)  # Splitter governs the width from here
         left_layout = QtWidgets.QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)  # More comfortable margins
         left_layout.setSpacing(8)  # Better spacing between elements
@@ -4934,8 +4934,28 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
 
 if __name__ == "__main__":
+    # High-DPI support. Without this a Qt app renders at 100% and Windows
+    # bitmap-stretches it to the display scaling (125%/150% on most laptops and
+    # any 4K monitor), which is what makes the text look small and blurry.
+    # These must be set before the QApplication is constructed.
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        # Fractional scaling (125%, 150%) needs pass-through rounding, or Qt
+        # snaps to whole integers and everything is off by 25%.
+        QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
+            QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except AttributeError:
+        pass  # Qt < 5.14
+
     app = QtWidgets.QApplication(sys.argv)
     # Global stylesheet removed; theming is applied per-widget via apply_theme
+
+    # Base UI font in points, so it follows the system DPI instead of being
+    # locked to a pixel height.
+    base_font = app.font()
+    base_font.setPointSizeF(max(base_font.pointSizeF(), 10.0))
+    app.setFont(base_font)
 
     # Splash screen with GIF animation
     gif_path = os.path.join(os.path.dirname(__file__), 'jarvis.gif')

@@ -36,7 +36,7 @@ _COLORS = {
 
 _INPUT_STYLE = """
     QLineEdit, QComboBox {
-        padding: 5px 8px; font-size: 12px;
+        padding: 5px 8px; font-size: 10pt;
         border: 2px solid #BCA16A; border-radius: 6px;
         background-color: #FDF6E3; color: #3C2F1E; min-height: 22px;
     }
@@ -95,18 +95,26 @@ class FlightReportWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        layout.addWidget(self._build_config_panel())
-        layout.addWidget(self._build_report_panel(), stretch=1)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_config_panel())
+        splitter.addWidget(self._build_report_panel())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([400, 1100])
+        layout.addWidget(splitter)
 
     def _build_config_panel(self):
         panel = QtWidgets.QWidget()
-        panel.setMaximumWidth(390)
+        panel.setMinimumWidth(380)
         outer = QtWidgets.QVBoxLayout(panel)
         outer.setSpacing(6)
-        outer.addWidget(QtWidgets.QLabel(
+        intro = QtWidgets.QLabel(
             "<b>Vehicle &amp; Materials</b><br>"
-            "<span style='font-size:11px'>What the failure checks are graded "
-            "against.</span>"))
+            "<span style='font-size:9pt'>What the failure checks are graded "
+            "against.</span>")
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -131,7 +139,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.material_note = QtWidgets.QLabel()
         self.material_note.setWordWrap(True)
         self.material_note.setStyleSheet(
-            "font-size: 11px; color: #4A3A24; background: #FDF6E3; "
+            "font-size: 9pt; color: #4A3A24; background: #FDF6E3; "
             "border: 1px solid #BCA16A; border-radius: 6px; padding: 6px;")
         mat_form.addRow(self.material_note)
         vbox.addWidget(mat_group)
@@ -174,7 +182,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.banner = QtWidgets.QLabel("Run a simulation to generate a failure report.")
         self.banner.setWordWrap(True)
         self.banner.setStyleSheet(
-            "background:#ECECEC; color:#3C2F1E; border-radius:8px; padding:12px; font-size:13px;")
+            "background:#ECECEC; color:#3C2F1E; border-radius:8px; padding:12px; font-size:11pt;")
         vbox.addWidget(self.banner)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -193,24 +201,24 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.table.itemSelectionChanged.connect(self._show_detail)
         table_layout.addWidget(self.table, stretch=1)
 
-        self.detail = QtWidgets.QLabel("Select a row for the full explanation.")
-        self.detail.setWordWrap(True)
-        self.detail.setMinimumHeight(80)
-        self.detail.setMaximumHeight(150)
-        self.detail.setAlignment(QtCore.Qt.AlignTop)
+        self.detail = QtWidgets.QTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setHtml("Select a row for the full explanation.")
+        self.detail.setMinimumHeight(90)
+        self.detail.setMaximumHeight(170)
         self.detail.setStyleSheet(
             "background:#FDF6E3; border:2px solid #BCA16A; border-radius:8px; "
-            "padding:10px; color:#3C2F1E; font-size:12px;")
+            "padding:10px; color:#3C2F1E; font-size:10pt;")
         table_layout.addWidget(self.detail)
         splitter.addWidget(table_host)
 
         self.figure = plt.Figure(figsize=(9, 6))
         self.canvas = FigureCanvas(self.figure)
-        self.canvas.setMinimumHeight(280)
+        self.canvas.setMinimumHeight(340)
         splitter.addWidget(self.canvas)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([520, 380])
+        splitter.setSizes([440, 460])
         vbox.addWidget(splitter, stretch=1)
         return panel
 
@@ -301,12 +309,12 @@ class FlightReportWidget(QtWidgets.QWidget):
         goal_text = ("GOAL MET" if rep.goal_met else "GOAL NOT MET")
         delta = rep.apogee_ft - rep.target_ft
         self.banner.setStyleSheet(
-            f"background:{goal_bg}; color:#FFFFFF; border-radius:8px; padding:12px; font-size:13px;")
+            f"background:{goal_bg}; color:#FFFFFF; border-radius:8px; padding:12px; font-size:11pt;")
         engine_note = ("" if rep.has_engine_data else
                        " &nbsp;|&nbsp; <i>no engine data - send an Engine Lab motor to the "
                        "simulation to enable the 11 propulsion checks</i>")
         self.banner.setText(
-            f"<b style='font-size:16px'>{goal_text}</b> &nbsp;&mdash;&nbsp; apogee "
+            f"<b style='font-size:13pt'>{goal_text}</b> &nbsp;&mdash;&nbsp; apogee "
             f"<b>{rep.apogee_ft:,.0f} ft</b> vs {rep.target_ft:,.0f} ft target "
             f"({delta:+,.0f} ft)<br>"
             f"<b>{counts[fa.CRITICAL]}</b> critical &nbsp; "
@@ -347,7 +355,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         _bg, fg, _banner = _COLORS[chk.status]
         rec = (f"<br><br><b>What to do:</b> {html.escape(chk.recommendation)}"
                if chk.recommendation else "")
-        self.detail.setText(
+        self.detail.setHtml(
             f"<b>#{chk.number} &nbsp; {html.escape(chk.code)} &nbsp; "
             f"{html.escape(chk.name)}</b> &nbsp; "
             f"<span style='color:{fg}'><b>{chk.status}</b></span><br>"
@@ -357,6 +365,12 @@ class FlightReportWidget(QtWidgets.QWidget):
 
     def _plot(self, rep: fa.Report):
         self.figure.clear()
+        # Constrained layout keeps titles off the axis labels of the row above
+        # when the canvas is short; tight_layout lets them collide.
+        try:
+            self.figure.set_layout_engine('constrained')
+        except AttributeError:
+            pass
         flight = self._flight
         t = [r["time"] for r in flight]
         alt_ft = [r["altitude"] * fa.FT_PER_M for r in flight]
@@ -382,13 +396,13 @@ class FlightReportWidget(QtWidgets.QWidget):
                         color="#5A5A5A", va="bottom", ha="right")
         self._annotate_checks(a0, rep, t, alt_ft)
         a0.set(xlabel="Time (s)", ylabel="Altitude (ft)")
-        a0.set_title("Altitude - numbered markers match the table", fontsize=9)
+        a0.set_title("Altitude - numbered markers match the table", fontsize=10)
 
         a1 = ax[0, 1]
         a1.plot(t, vel, color="#27ae60", lw=1.6, label="velocity (m/s)")
         a1.axhline(0, color="k", lw=0.6)
         a1.set(xlabel="Time (s)", ylabel="Velocity (m/s)")
-        a1.set_title("Velocity & Mach", fontsize=9)
+        a1.set_title("Velocity & Mach", fontsize=10)
         a1b = a1.twinx()
         a1b.plot(t, mach, color="#d35400", lw=1.2, ls="--", label="Mach")
         a1b.axhline(0.8, color="#d35400", lw=0.8, ls=":")
@@ -398,7 +412,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         a2 = ax[1, 0]
         a2.plot(t, q_kpa, color="#2980b9", lw=1.6)
         a2.set(xlabel="Time (s)", ylabel="q (kPa)")
-        a2.set_title("Dynamic pressure & acceleration", fontsize=9)
+        a2.set_title("Dynamic pressure & acceleration", fontsize=10)
         a2b = a2.twinx()
         a2b.plot(t, g, color="#c0392b", lw=1.2, ls="--")
         a2b.set_ylabel("Acceleration (g)")
@@ -417,15 +431,16 @@ class FlightReportWidget(QtWidgets.QWidget):
         a3.axhline(skin.melt_k, color=_COLORS[fa.CRITICAL][2], ls="--", lw=1.2,
                    label=f"{skin.name} failure")
         a3.set(xlabel="Time (s)", ylabel="Temperature (K)")
-        a3.set_title("Skin heating vs material", fontsize=9)
-        a3.legend(fontsize=7)
+        a3.set_title("Skin heating vs material", fontsize=10)
+        a3.legend(fontsize=8)
 
         for a in ax.flat:
             a.grid(alpha=0.3)
-            a.tick_params(labelsize=7)
-            a.xaxis.label.set_size(8)
-            a.yaxis.label.set_size(8)
-        self.figure.tight_layout()
+            a.tick_params(labelsize=8)
+            a.xaxis.label.set_size(9)
+            a.yaxis.label.set_size(9)
+        if self.figure.get_layout_engine() is None:
+            self.figure.tight_layout()
         self.canvas.draw()
 
     @staticmethod
@@ -504,15 +519,15 @@ class FlightReportWidget(QtWidgets.QWidget):
         color: #23201B; background: #FBF8F0; }}
  h1 {{ margin-bottom: 4px; }} h2 {{ margin-top: 28px; }}
  .banner {{ background: {banner_color}; color: #fff; padding: 16px 18px;
-            border-radius: 10px; font-size: 16px; }}
- table {{ border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }}
+            border-radius: 10px; font-size: 13pt; }}
+ table {{ border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 11pt; }}
  th, td {{ border: 1px solid #D8CFBA; padding: 6px 8px; text-align: left;
            vertical-align: top; }}
  th {{ background: #EFE7D4; }}
  td.num {{ font-weight: bold; text-align: center; }}
- td.detail {{ font-size: 12px; max-width: 460px; }}
+ td.detail {{ font-size: 10pt; max-width: 460px; }}
  img {{ max-width: 100%; margin-top: 12px; border: 1px solid #D8CFBA; border-radius: 8px; }}
- .foot {{ margin-top: 30px; font-size: 12px; color: #6A6154; }}
+ .foot {{ margin-top: 30px; font-size: 10pt; color: #6A6154; }}
 </style></head><body>
 <h1>JARVIS Flight Report</h1>
 <div class="banner">

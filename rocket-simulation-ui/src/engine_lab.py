@@ -118,7 +118,7 @@ _PRESETS = {
 _INPUT_STYLE = """
     QLineEdit, QComboBox {
         padding: 6px 10px;
-        font-size: 13px;
+        font-size: 11pt;
         border: 2px solid #BCA16A;
         border-radius: 6px;
         background-color: #FDF6E3;
@@ -148,15 +148,19 @@ class EngineLabWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
         left = QtWidgets.QWidget()
-        left.setMaximumWidth(420)
+        left.setMinimumWidth(330)
         left_layout = QtWidgets.QVBoxLayout(left)
         left_layout.setSpacing(6)
 
-        left_layout.addWidget(QtWidgets.QLabel(
+        intro = QtWidgets.QLabel(
             "<b>Engine Lab</b> — design a hybrid (N2O/fuel-grain) engine and "
-            "generate a physically simulated thrust curve."))
+            "generate a physically simulated thrust curve.")
+        intro.setWordWrap(True)
+        left_layout.addWidget(intro)
 
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItems(list(_PRESETS.keys()))
@@ -222,7 +226,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.results_label.setWordWrap(True)
         self.results_label.setStyleSheet('''
             QLabel { background-color: #FDF6E3; border: 2px solid #E94F37;
-                     border-radius: 8px; padding: 10px; color: #3C2F1E; font-size: 12px; }
+                     border-radius: 8px; padding: 10px; color: #3C2F1E; font-size: 10pt; }
         ''')
         left_layout.addWidget(self.results_label)
 
@@ -231,14 +235,20 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.error_label.setStyleSheet("color: red; font-weight: bold;")
         left_layout.addWidget(self.error_label)
 
-        layout.addWidget(left)
+        splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
+        right.setMinimumWidth(420)
         right_layout = QtWidgets.QVBoxLayout(right)
         self.figure = plt.Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
         right_layout.addWidget(self.canvas)
-        layout.addWidget(right, stretch=1)
+        splitter.addWidget(right)
+
+        # Roughly a third for the form, two thirds for the plots, and draggable.
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
 
     def get_config(self) -> dict:
         """The engine design as plain values, for saving into a rocket profile."""
@@ -358,6 +368,10 @@ class EngineLabWidget(QtWidgets.QWidget):
 
     def _plot(self, res):
         self.figure.clear()
+        try:
+            self.figure.set_layout_engine('constrained')
+        except AttributeError:
+            pass
         t = res["t"]
         ax = self.figure.subplots(2, 2)
         ax[0, 0].plot(t, res["thrust"], color="#c0392b", lw=1.8)
@@ -365,16 +379,17 @@ class EngineLabWidget(QtWidgets.QWidget):
         ax[0, 1].plot(t, res["Pc"] / 1e6, color="#2c3e50", lw=1.8, label="chamber")
         ax[0, 1].plot(t, res["P_tank"] / 1e6, "--", color="#7f8c8d", lw=1.2, label="tank")
         ax[0, 1].set(xlabel="Time (s)", ylabel="Pressure (MPa)", title="Pressure")
-        ax[0, 1].legend(fontsize=8)
+        ax[0, 1].legend(fontsize=9)
         ax[1, 0].plot(t, res["OF"], color="#2980b9", lw=1.8)
         ax[1, 0].set(xlabel="Time (s)", ylabel="O/F", title="Mixture ratio")
         ax[1, 1].plot(t, res["mdot_ox"], color="#16a085", lw=1.5, label="oxidizer")
         ax[1, 1].plot(t, res["mdot_fuel"], color="#e67e22", lw=1.5, label="fuel")
         ax[1, 1].set(xlabel="Time (s)", ylabel="mdot (kg/s)", title="Mass flow")
-        ax[1, 1].legend(fontsize=8)
+        ax[1, 1].legend(fontsize=9)
         for a in ax.flat:
             a.grid(alpha=0.3)
-        self.figure.tight_layout()
+        if self.figure.get_layout_engine() is None:
+            self.figure.tight_layout()
         self.canvas.draw()
 
     def _send_to_simulation(self):

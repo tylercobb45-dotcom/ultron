@@ -34,6 +34,14 @@ rocket-simulation-ui
 
 ## Setup
 
+**Windows:** double-click **`Run JARVIS.bat`**. It finds Python, installs the
+dependencies the first time, and launches the app. If Python is missing it
+tells you where to get it — install it from
+[python.org](https://www.python.org/downloads/) and tick *"Add python.exe to
+PATH"* in the installer.
+
+**Any platform, by hand:**
+
 1. Install the dependencies:
    ```
    pip install -r requirements.txt
@@ -42,6 +50,8 @@ rocket-simulation-ui
    ```
    python src/main.py
    ```
+
+Needs Python 3.12 or newer.
 
 ## Usage
 

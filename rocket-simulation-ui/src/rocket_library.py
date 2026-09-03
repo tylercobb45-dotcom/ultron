@@ -18,7 +18,7 @@ from PyQt5 import QtWidgets, QtCore
 
 _INPUT_STYLE = """
     QLineEdit, QComboBox {
-        padding: 5px 8px; font-size: 12px;
+        padding: 5px 8px; font-size: 10pt;
         border: 2px solid #BCA16A; border-radius: 6px;
         background-color: #FDF6E3; color: #3C2F1E; min-height: 22px;
     }
@@ -76,19 +76,23 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
         # --- left: the list of rockets ---
         left = QtWidgets.QWidget()
-        left.setMaximumWidth(380)
+        left.setMinimumWidth(300)
         lv = QtWidgets.QVBoxLayout(left)
-        lv.addWidget(QtWidgets.QLabel(
-            "<b>Saved Rockets</b><br><span style='font-size:11px'>Pick one and load "
-            "it to repopulate the whole app.</span>"))
+        intro = QtWidgets.QLabel(
+            "<b>Saved Rockets</b><br><span style='font-size:9pt'>Pick one and load "
+            "it to repopulate the whole app.</span>")
+        intro.setWordWrap(True)
+        lv.addWidget(intro)
 
         self.list = QtWidgets.QListWidget()
         self.list.setStyleSheet(
             "QListWidget { background:#FDF6E3; border:2px solid #BCA16A; "
-            "border-radius:6px; font-size:13px; } "
+            "border-radius:6px; font-size:11pt; } "
             "QListWidget::item { padding:7px; } "
             "QListWidget::item:selected { background:#E94F37; color:white; }")
         self.list.currentItemChanged.connect(self._show_details)
@@ -124,13 +128,13 @@ class RocketLibraryWidget(QtWidgets.QWidget):
             b.clicked.connect(slot)
             row2.addWidget(b)
         lv.addLayout(row2)
-        layout.addWidget(left)
+        splitter.addWidget(left)
 
         # --- right: what is stored in the selected rocket ---
         right = QtWidgets.QWidget()
         rv = QtWidgets.QVBoxLayout(right)
         self.title = QtWidgets.QLabel("Select a rocket")
-        self.title.setStyleSheet("font-size:16px; font-weight:bold; color:#3C2F1E;")
+        self.title.setStyleSheet("font-size:13pt; font-weight:bold; color:#3C2F1E;")
         rv.addWidget(self.title)
 
         self.status = QtWidgets.QLabel("")
@@ -142,9 +146,13 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         self.details.setReadOnly(True)
         self.details.setStyleSheet(
             "background:#FDF6E3; border:2px solid #BCA16A; border-radius:8px; "
-            "padding:10px; color:#3C2F1E; font-size:12px;")
+            "padding:10px; color:#3C2F1E; font-size:10pt;")
         rv.addWidget(self.details, stretch=1)
-        layout.addWidget(right, stretch=1)
+        right.setMinimumWidth(360)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
 
     # ---- library management -------------------------------------------------
     def refresh(self):
