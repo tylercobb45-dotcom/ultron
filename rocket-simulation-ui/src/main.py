@@ -17,6 +17,24 @@ from live_code_viewer import LiveCodeViewer  # Import our live code viewer
 from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
 
+
+def user_settings_path():
+    """Location of user_settings.json.
+
+    Running from source this stays next to the code. A frozen build must not
+    write into the bundle: a PyInstaller onefile app unpacks to a temp
+    directory that is deleted on exit, so settings saved there are lost every
+    run, and an install directory may not be writable at all.
+    """
+    if getattr(sys, 'frozen', False):
+        folder = os.path.join(os.path.expanduser('~'), 'JARVIS')
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            folder = os.path.dirname(sys.executable)
+        return os.path.join(folder, 'user_settings.json')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_settings.json')
+
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
 # Theme application is now handled per-widget via apply_theme().
@@ -51,7 +69,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.themes = self.setup_themes()
         
         # Set user settings file path
-        self.user_settings_file = os.path.join(os.path.dirname(__file__), 'user_settings.json')
+        self.user_settings_file = user_settings_path()
         
         # Load saved theme preference
         self.current_theme = self.load_theme_preference()
@@ -4432,14 +4450,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
             'humidity': self.humidity_input.text(),
         }
         try:
-            with open(os.path.join(os.path.dirname(__file__), 'user_settings.json'), 'w') as f:
-                json.dump(data, f)
+            # Merge into whatever is already saved - this file also holds the
+            # theme preference, which a blind overwrite would wipe.
+            settings_path = getattr(self, 'user_settings_file', None) or user_settings_path()
+            try:
+                with open(settings_path, 'r') as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+            existing.update(data)
+            with open(settings_path, 'w') as f:
+                json.dump(existing, f, indent=2)
         except Exception:
             pass
 
     def load_inputs(self):
         try:
-            with open(os.path.join(os.path.dirname(__file__), 'user_settings.json'), 'r') as f:
+            settings_path = getattr(self, 'user_settings_file', None) or user_settings_path()
+            with open(settings_path, 'r') as f:
                 data = json.load(f)
             self.mass_input.setText(str(data.get('mass', '')))
             self.mass_unit.setCurrentIndex(data.get('mass_unit', 0))

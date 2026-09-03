@@ -45,11 +45,17 @@ REM Build the executable
     --add-data "src\JARVIS.ico;." ^
     --add-data "src\jarvis.gif;." ^
     --add-data "src\Rocket.png;." ^
+    --add-data "src\crash.jpg;." ^
     --add-data "thrust_curves;thrust_curves" ^
+    --add-data "hybrid_sim;hybrid_sim" ^
+    --paths "hybrid_sim" ^
     --hidden-import=PyQt5.QtCore ^
     --hidden-import=PyQt5.QtGui ^
     --hidden-import=PyQt5.QtWidgets ^
     --hidden-import=matplotlib.backends.backend_qt5agg ^
+    --hidden-import=hybrid_sim ^
+    --hidden-import=scipy.integrate ^
+    --hidden-import=scipy.optimize ^
     src\main.py
 
 if %ERRORLEVEL% NEQ 0 (

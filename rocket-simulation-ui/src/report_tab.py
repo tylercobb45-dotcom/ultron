@@ -17,6 +17,7 @@ import html
 import io
 import os
 import webbrowser
+from pathlib import Path
 
 from PyQt5 import QtWidgets, QtGui, QtCore
 import matplotlib.pyplot as plt
@@ -433,7 +434,10 @@ class FlightReportWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Export failed", str(exc))
             return
         try:
-            webbrowser.open(f"file://{os.path.abspath(path)}")
+            # Path.as_uri() builds a valid file: URL on every platform. Formatting
+            # "file://" + a Windows path by hand produces file://C:\... which no
+            # browser will open.
+            webbrowser.open(Path(path).resolve().as_uri())
         except Exception:
             pass
 

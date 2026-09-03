@@ -33,15 +33,33 @@ def main():
     
     print("🔨 Building with PyInstaller...")
     
-    # Simple PyInstaller command that should work
+    # PyInstaller uses ';' between source and destination on Windows, ':' elsewhere.
+    sep = ";" if os.name == "nt" else ":"
+    hybrid_sim_dir = project_root / "hybrid_sim"
+
     cmd = [
         sys.executable, "-m", "pyinstaller",
         "--onefile",
-        "--windowed", 
+        "--windowed",
         "--name=JARVIS_Rocket_Simulation",
-        f"--icon={src_dir}/JARVIS.ico",
+        f"--icon={src_dir / 'JARVIS.ico'}",
         "--clean",
         "--noconfirm",
+        # Runtime assets the app loads by name
+        f"--add-data={src_dir / 'JARVIS.ico'}{sep}.",
+        f"--add-data={src_dir / 'jarvis.gif'}{sep}.",
+        f"--add-data={src_dir / 'Rocket.png'}{sep}.",
+        f"--add-data={src_dir / 'crash.jpg'}{sep}.",
+        f"--add-data={project_root / 'thrust_curves'}{sep}thrust_curves",
+        # The hybrid engine package is imported through a runtime path insert,
+        # which PyInstaller's static analysis cannot follow - ship it as data
+        # and put it on the analysis path explicitly.
+        f"--add-data={hybrid_sim_dir}{sep}hybrid_sim",
+        f"--paths={hybrid_sim_dir}",
+        "--hidden-import=hybrid_sim",
+        "--hidden-import=matplotlib.backends.backend_qt5agg",
+        "--hidden-import=scipy.integrate",
+        "--hidden-import=scipy.optimize",
         str(main_py)
     ]
     

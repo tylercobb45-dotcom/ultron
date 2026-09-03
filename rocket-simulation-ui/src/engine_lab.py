@@ -29,9 +29,35 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 # The hybrid_sim package lives in a sibling folder (rocket-simulation-ui/hybrid_sim)
 # so it can be dropped in / updated independently of the app. Make it importable.
-_HYBRID_SIM_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hybrid_sim')
-if _HYBRID_SIM_ROOT not in sys.path:
+def _hybrid_sim_root():
+    """Where the hybrid_sim package lives, running from source or frozen.
+
+    Under PyInstaller the source tree is gone; the bundle unpacks to _MEIPASS
+    (onefile) or sits beside the executable (onedir). The build ships the
+    package as data under a 'hybrid_sim' folder in both cases.
+    """
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', None) or os.path.dirname(sys.executable)
+        return os.path.join(base, 'hybrid_sim')
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hybrid_sim')
+
+
+_HYBRID_SIM_ROOT = _hybrid_sim_root()
+if os.path.isdir(_HYBRID_SIM_ROOT) and _HYBRID_SIM_ROOT not in sys.path:
     sys.path.insert(0, _HYBRID_SIM_ROOT)
+
+
+def _generated_curves_dir():
+    """Where to save generated thrust curves.
+
+    Running from source these sit with the project. Frozen, they must not go
+    into the bundle: a onefile build unpacks to a temp directory that is
+    deleted on exit, and an install location may not be writable - so use a
+    per-user folder that survives and is always writable.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.join(os.path.expanduser('~'), 'JARVIS', 'generated_curves')
+    return os.path.join(_HYBRID_SIM_ROOT, 'generated_curves')
 
 from hybrid_sim import Engine, Rocket, EngineModel, FlightModel, FUELS, metrics as hs_metrics  # noqa: E402
 
@@ -336,13 +362,13 @@ class EngineLabWidget(QtWidgets.QWidget):
     def _send_to_simulation(self):
         if self._last_result is None or self._last_metrics is None:
             return
-        out_dir = os.path.join(_HYBRID_SIM_ROOT, "generated_curves")
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = _generated_curves_dir()
         path = os.path.join(out_dir, f"engine_lab_{int(time.time())}.csv")
         try:
+            os.makedirs(out_dir, exist_ok=True)
             self._export_csv(path, self._last_result, self._last_metrics)
         except OSError as exc:
-            self.error_label.setText(f"Could not save thrust curve: {exc}")
+            self.error_label.setText(f"Could not save thrust curve to {out_dir}: {exc}")
             return
 
         dry_mass = float(self._fields["m_dry"].text() or 20.0)
