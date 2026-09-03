@@ -14,6 +14,7 @@ import csv
 from scipy.interpolate import interp1d
 import matplotlib.patches as mpatches
 from live_code_viewer import LiveCodeViewer  # Import our live code viewer
+from engine_lab import EngineLabWidget  # Hybrid engine design tab
 
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
@@ -1029,7 +1030,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)  # No margins on main window
         main_layout.setSpacing(0)  # No spacing
         self.tabs = QtWidgets.QTabWidget()
-        main_panel = QtWidgets.QWidget()
+        main_panel = self.main_panel = QtWidgets.QWidget()
         main_panel_layout = QtWidgets.QHBoxLayout(main_panel)
         main_panel_layout.setContentsMargins(0, 0, 0, 0)  # No margins on main panel
 
@@ -1300,6 +1301,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         main_panel_layout.addWidget(splitter)
         main_panel_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
         self.tabs.addTab(main_panel, "Simulation")
+
+        # --- Engine Lab: design a custom hybrid engine and feed its thrust
+        # curve into the simulation above ---
+        self.engine_lab = EngineLabWidget(on_send_to_simulation=self.use_engine_lab_thrust_curve)
+        self.tabs.addTab(self.engine_lab, "Engine Lab")
 
         # Settings tab for units and theme
         settings_widget = QtWidgets.QWidget()
@@ -3704,6 +3710,21 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 self.try_set_propellant_mass_from_file(fileName)
             except Exception:
                 pass
+
+    def use_engine_lab_thrust_curve(self, csv_path, propellant_mass_kg, dry_mass_kg):
+        """Callback for the Engine Lab tab: wire its generated thrust curve into
+        the Simulation tab's inputs and switch to it."""
+        self.thrust_curve_path = csv_path
+        self.prop_mass_unit.setCurrentIndex(0)  # kg
+        self.prop_mass_input.setText(f"{propellant_mass_kg:.3f}")
+        self.mass_unit.setCurrentIndex(0)  # kg
+        self.mass_input.setText(f"{dry_mass_kg + propellant_mass_kg:.3f}")
+        self.result_label.setText(
+            f"Loaded thrust curve from Engine Lab: {os.path.basename(csv_path)}<br>"
+            f"Liftoff mass set to {dry_mass_kg + propellant_mass_kg:.3f} kg "
+            f"(dry {dry_mass_kg:.3f} kg + propellant {propellant_mass_kg:.3f} kg)."
+        )
+        self.tabs.setCurrentWidget(self.main_panel)
 
     def try_set_propellant_mass_from_file(self, path):
         import os, csv, re

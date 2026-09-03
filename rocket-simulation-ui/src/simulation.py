@@ -248,6 +248,11 @@ def run_simulation(
         return cd_body * factor
 
     chute_deployed = False
+    # Tracks whether the rocket has ever left the pad. Thrust curves that
+    # (correctly) start at F=0 while chamber pressure builds would otherwise
+    # trip the "landed" break condition on the very first timestep.
+    launched = False
+    max_pad_time = burn_time + 5.0
     # Fixed deployment duration (seconds) replacing previous random period
     deploy_period = chute_deploy_duration if chute_deploy_duration and chute_deploy_duration > 0 else 3.0
     deploy_start = None
@@ -377,9 +382,12 @@ def run_simulation(
             velocity += a * TimeI
             altitude += velocity * TimeI
             time += TimeI
-            if altitude < 0:
+            if altitude > 0:
+                launched = True
+            if altitude < 0 or (altitude <= 0 and not launched):
+                # On the pad (pre-liftoff) or back on the ground post-flight.
                 altitude = 0
-                velocity = 0
+                velocity = 0 if launched else max(0.0, velocity)
             # Dynamic pressure & terminal velocities
             q = 0.5 * rho_local * speed**2
             try:
@@ -436,7 +444,10 @@ def run_simulation(
                 'propellant_mass': propellant_mass if propellant_mass is not None else None,
                 'dry_mass': dry_mass
             })
-            if altitude == 0 and velocity <= 0:
+            if launched and altitude == 0 and velocity <= 0:
+                break
+            if not launched and time > max_pad_time:
+                # Thrust never overcame weight; report the pad sit rather than looping forever.
                 break
         impulse = calculate_total_impulse(thrust_data)
         print("Total Impulse:", impulse, "N·s")

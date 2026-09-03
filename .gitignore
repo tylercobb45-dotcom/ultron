@@ -6,6 +6,9 @@ __pycache__/
 # Windows folder metadata
 desktop.ini
 
+# Engine Lab: thrust curves generated at runtime, not source
+rocket-simulation-ui/hybrid_sim/generated_curves/
+
 # Distribution / packaging
 .Python
 build/

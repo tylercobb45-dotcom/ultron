@@ -13,11 +13,16 @@ rocket-simulation-ui
 ├── src
 │   ├── main.py             # App entry point, PyQt5 UI, themes, telemetry dashboard
 │   ├── simulation.py       # Flight physics: thrust curve parsing, drag, parachute, atmosphere
+│   ├── engine_lab.py       # Engine Lab tab: design a hybrid engine, generate a thrust curve
 │   ├── utils.py            # Small helpers (flight-phase classification)
 │   ├── live_code_viewer.py # In-app viewer for the simulation source
 │   ├── JARVIS.ico          # Window/app icon
 │   ├── crash.jpg           # Image shown in the crash dialog on an unhandled exception
 │   └── profiles/           # Saved rocket configuration presets (JSON)
+├── hybrid_sim/              # Vendored hybrid (N2O/fuel-grain) engine physics package
+│   ├── hybrid_sim/          # Tank blowdown, injector, regression, nozzle, 1-DOF flight - see its README
+│   ├── run.py, verify.py    # Standalone CLI + 27-check verification suite for the physics package
+│   └── README.md            # Physics documentation and validation results
 ├── thrust_curves/          # Sample motor thrust curves (CSV and RASP .eng)
 ├── requirements.txt
 └── README.md
@@ -58,6 +63,16 @@ rocket-simulation-ui
   bump near transonic speeds, and a smoothed/capped parachute deployment
   model.
 - **Live code viewer** — inspect the simulation source from within the app.
+- **Engine Lab** — design a custom hybrid rocket engine (N2O tank, injector,
+  fuel grain, nozzle) on the "Engine Lab" tab and run a physics-based
+  internal-ballistics simulation (tank blowdown, Dyer NHNE injector, Marxman
+  fuel regression, CEA c* table, isentropic nozzle) instead of only loading a
+  pre-made thrust curve. Pick a fuel (HTPB, paraffin, ABS, ...) and a starting
+  preset (a baseline motor or one of two HyperTEK motors the physics is
+  validated against), see the resulting thrust/pressure/O-F/mass-flow plots
+  and performance metrics, then send the generated thrust curve straight into
+  the Simulation tab. See [`hybrid_sim/README.md`](hybrid_sim/README.md) for
+  the physics and its validation against published motor certification data.
 
 ## Packaging & Distribution
 
