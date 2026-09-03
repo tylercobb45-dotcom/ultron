@@ -14,6 +14,9 @@ rocket-simulation-ui
 │   ├── main.py             # App entry point, PyQt5 UI, themes, telemetry dashboard
 │   ├── simulation.py       # Flight physics: thrust curve parsing, drag, parachute, atmosphere
 │   ├── engine_lab.py       # Engine Lab tab: design a hybrid engine, generate a thrust curve
+│   ├── failure_analysis.py # Failure-mode checks run against a completed flight (Qt-free)
+│   ├── materials.py        # Material library: melting points, service temps, strength
+│   ├── report_tab.py       # Flight Report tab: verdict, colour-coded checks, graphs, export
 │   ├── utils.py            # Small helpers (flight-phase classification)
 │   ├── live_code_viewer.py # In-app viewer for the simulation source
 │   ├── JARVIS.ico          # Window/app icon
@@ -63,6 +66,23 @@ rocket-simulation-ui
   bump near transonic speeds, and a smoothed/capped parachute deployment
   model.
 - **Live code viewer** — inspect the simulation source from within the app.
+- **Flight Report** — every simulation run is automatically graded against a
+  numbered list of physical failure modes and a target altitude (50,000 ft by
+  default). Each check reports green (inside limits), yellow (thin margin or a
+  shaky modelling assumption), or red (fails as simulated), with the measured
+  value, the limit, and the moment in flight it happened; the numbers are
+  plotted as markers on the altitude trace so a red dot on the graph points
+  straight at its table row. Build the vehicle out of real materials — the
+  library carries melting points, continuous-service temperatures, yield
+  strength and shear modulus — and the checks grade against what you picked:
+  skin and nose heating vs the airframe's service and failure temperatures,
+  axial stress and column buckling, fin flutter (shear modulus driven), rail
+  exit velocity, deployment shock and landing speed. When the flight was flown
+  on an Engine Lab motor it also grades the motor internals: chamber and tank
+  hoop stress, injector stiffness, O/F band, oxidizer-rich burn tail, grain
+  burn-through, oxidizer mass flux, port-to-throat ratio, flame temperature vs
+  the throat material, nozzle separation, and tank thermal collapse. Exports a
+  self-contained HTML report with the graphs embedded.
 - **Engine Lab** — design a custom hybrid rocket engine (N2O tank, injector,
   fuel grain, nozzle) on the "Engine Lab" tab and run a physics-based
   internal-ballistics simulation (tank blowdown, Dyer NHNE injector, Marxman

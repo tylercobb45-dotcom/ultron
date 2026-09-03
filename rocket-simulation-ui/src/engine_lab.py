@@ -112,6 +112,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._on_send_to_simulation = on_send_to_simulation
         self._last_result = None      # hybrid_sim EngineModel.run() output
         self._last_metrics = None
+        self._last_engine = None      # the Engine dataclass that produced it
         self._fields = {}             # field name -> QLineEdit
         self._build_ui()
         self._apply_preset("Goddard baseline")
@@ -213,6 +214,16 @@ class EngineLabWidget(QtWidgets.QWidget):
         right_layout.addWidget(self.canvas)
         layout.addWidget(right, stretch=1)
 
+    def get_last_run(self):
+        """(engine, result, metrics) from the last successful engine run, or None.
+
+        Used by the Flight Report tab so the failure analysis can grade the
+        engine's internal ballistics, not just the trajectory.
+        """
+        if self._last_result is None or self._last_engine is None:
+            return None
+        return self._last_engine, self._last_result, self._last_metrics
+
     # ---- presets -----------------------------------------------------------
     def _apply_preset(self, name):
         preset = _PRESETS.get(name)
@@ -271,6 +282,7 @@ class EngineLabWidget(QtWidgets.QWidget):
 
         self._last_result = result
         self._last_metrics = m
+        self._last_engine = engine
         self.send_button.setEnabled(True)
         self._plot(result)
 

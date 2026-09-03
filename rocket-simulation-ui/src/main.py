@@ -15,6 +15,7 @@ from scipy.interpolate import interp1d
 import matplotlib.patches as mpatches
 from live_code_viewer import LiveCodeViewer  # Import our live code viewer
 from engine_lab import EngineLabWidget  # Hybrid engine design tab
+from report_tab import FlightReportWidget  # Failure-mode report tab
 
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
@@ -1306,6 +1307,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # curve into the simulation above ---
         self.engine_lab = EngineLabWidget(on_send_to_simulation=self.use_engine_lab_thrust_curve)
         self.tabs.addTab(self.engine_lab, "Engine Lab")
+
+        # --- Flight Report: failure-mode analysis of the last simulation ---
+        self.flight_report = FlightReportWidget()
+        self.tabs.addTab(self.flight_report, "Flight Report")
 
         # Settings tab for units and theme
         settings_widget = QtWidgets.QWidget()
@@ -3715,6 +3720,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         """Callback for the Engine Lab tab: wire its generated thrust curve into
         the Simulation tab's inputs and switch to it."""
         self.thrust_curve_path = csv_path
+        # Remember that this curve came from the Engine Lab, so the Flight Report
+        # only attributes engine-side data to a flight actually flown on it.
+        self.engine_lab_curve_path = csv_path
         self.prop_mass_unit.setCurrentIndex(0)  # kg
         self.prop_mass_input.setText(f"{propellant_mass_kg:.3f}")
         self.mass_unit.setCurrentIndex(0)  # kg
@@ -3889,9 +3897,45 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 return
             self.display_results(results)
             self.plot_results(results)
+            self.update_flight_report(results, body_diameter)
 
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
+
+    def update_flight_report(self, results, body_diameter=None):
+        """Hand the finished run to the Flight Report tab for failure analysis."""
+        if not hasattr(self, 'flight_report'):
+            return
+        try:
+            engine_run = None
+            # Only attribute engine internals to a flight actually flown on the
+            # Engine Lab's own curve.
+            if (getattr(self, 'engine_lab_curve_path', None)
+                    and self.thrust_curve_path == self.engine_lab_curve_path):
+                engine_run = self.engine_lab.get_last_run()
+            engine, engine_result = (engine_run[0], engine_run[1]) if engine_run else (None, None)
+
+            hints = {}
+            if body_diameter:
+                hints['body_od_m'] = body_diameter
+            try:
+                fin_thickness = self.get_value_in_base_unit(
+                    self.fin_thickness_input.text(), self.fin_thickness_unit.currentIndex(),
+                    [1, 0.001, 0.0254])
+                if fin_thickness:
+                    hints['fin_thickness_m'] = fin_thickness
+            except Exception:
+                pass
+            try:
+                if self.fin_count_input.text():
+                    hints['fin_count'] = int(float(self.fin_count_input.text()))
+            except Exception:
+                pass
+
+            self.flight_report.update_from_simulation(
+                results, engine_result=engine_result, engine=engine, geometry_hints=hints)
+        except Exception:
+            traceback.print_exc()
 
     def get_local_speed_of_sound(self):
         try:
