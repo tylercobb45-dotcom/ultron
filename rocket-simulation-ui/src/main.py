@@ -4803,7 +4803,8 @@ if __name__ == "__main__":
 
 def excepthook(type_, value, tb):
     error_text = ''.join(traceback.format_exception(type_, value, tb))
-    dlg = CrashImageDialog(r'c:/blah blah blah/JARVIS/5cdd0647707b66d1d76174d4ffa47ce1.jpg', error_text)
+    crash_image_path = os.path.join(os.path.dirname(__file__), 'crash.jpg')
+    dlg = CrashImageDialog(crash_image_path, error_text)
     dlg.exec_()
     sys.exit(1)
 

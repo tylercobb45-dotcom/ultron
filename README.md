@@ -1,50 +1,35 @@
-# Rocket Simulation UI
-Created By: Riley Wickersham|Holden Eckstrom|Luke King|Austin Aaron|Darren Brandt|Caspian Hurst|Kaleb Cooper|
+# JARVIS
 
-## Overview
-The Rocket Simulation UI project provides a graphical user interface for simulating rocket launches. Users can input various parameters related to the rocket's mass, drag coefficient, cross-sectional area, air density, and motor burn time. The application runs the simulation and visualizes the results, including altitude and velocity over time.
+A PyQt5 desktop app for simulating model-rocket flight, plus the tooling
+used to package and distribute it as a signed Windows executable.
 
-## Project Structure
+The application itself lives in [`rocket-simulation-ui/`](rocket-simulation-ui/README.md) —
+see that README for the project structure, setup, and usage instructions.
+
+## Repository Layout
+
 ```
-rocket-simulation-ui
-├── src
-│   ├── main.py          # Entry point of the application
-│   ├── simulation.py    # Contains simulation logic
-│   ├── ui.py            # User interface handling
-│   └── utils.py         # Utility functions
-├── requirements.txt      # Project dependencies
-└── README.md             # Project documentation
+.
+├── rocket-simulation-ui/       # The application (see its own README)
+├── PressStart2P-Regular.ttf    # Retro-theme font asset
+├── Sign_JARVIS.ps1             # Self-signs the packaged .exe
+├── Get_JARVIS_Info.ps1         # Prints file hash/info for IT whitelist requests
+├── JARVIS_Certificate.cer      # Self-signed code-signing certificate
+├── DIGITAL_SIGNATURE_GUIDE.md  # How to sign the .exe / get it trusted on locked-down PCs
+└── GIT_LFS_SETUP.md            # How large build artifacts (e.g. the .exe) are tracked
 ```
 
-## Setup Instructions
-1. Clone the repository:
-   ```
-   git clone <repository-url>
-   cd rocket-simulation-ui
-   ```
+## Building & Distributing
 
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+1. Build the executable — see [`rocket-simulation-ui/PACKAGING_GUIDE.md`](rocket-simulation-ui/PACKAGING_GUIDE.md).
+2. Sign it for use on managed Windows machines — see
+   [`DIGITAL_SIGNATURE_GUIDE.md`](DIGITAL_SIGNATURE_GUIDE.md).
+3. Package it for sharing — see
+   [`rocket-simulation-ui/DISTRIBUTION_README.md`](rocket-simulation-ui/DISTRIBUTION_README.md).
 
-## Usage
-1. Run the application:
-   ```
-   python src/main.py
-   ```
-
-2. Input the required parameters in the user interface.
-3. Click the "Start Simulation" button to run the simulation.
-4. View the results and graphs displayed in the application.
-
-## Dependencies
-- Tkinter or PyQt (for the user interface)
-- Matplotlib or Seaborn (for data visualization)
+Large binaries (the built `.exe`) are tracked with Git LFS — see
+[`GIT_LFS_SETUP.md`](GIT_LFS_SETUP.md).
 
 ## Contributing
-Contributions are welcome! Please open an issue or submit a pull request for any enhancements or bug fixes.
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
-10010101
+Contributions are welcome — open an issue or a pull request.
