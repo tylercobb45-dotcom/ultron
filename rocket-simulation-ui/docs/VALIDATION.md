@@ -180,16 +180,16 @@ separately written model to about 1%.
 ### The discrepancy worth understanding
 
 Flown instead on **this model's own computed drag**, the same vehicle reaches
-about **17,060 ft — roughly +86%**.
+about **17,965 ft — roughly +96%**.
 
 That gap is entirely the drag coefficient:
 
 | | Cd | Reference area | Drag area |
 |---|---|---|---|
 | Reference vehicle | 1.625 | 0.01539 m² | 0.02501 m² |
-| This model's buildup for the shape entered | 0.524 | 0.01539 m² | 0.00807 m² |
+| This model's buildup for the shape entered | 0.470 | 0.01539 m² | 0.00724 m² |
 
-**A 3.1× difference in drag area.** Cd = 1.625 is very high for a rocket —
+**A 3.5× difference in drag area.** Cd = 1.625 is very high for a rocket —
 typical values are 0.4–0.8 — so the reference is either using a measured value
 for a much draggier vehicle than the shape entered here, or a deliberately
 conservative number. The airframe dimensions of the real vehicle are not in
@@ -211,13 +211,19 @@ own drag buildup.
 
 | Preset | Apogee | Max Mach | Peak g | Rail exit | Drift |
 |---|---|---|---|---|---|
-| HyperTEK J317 Sport | 3,255 ft | 0.40 | 6.8 | 19.8 m/s | 682 m |
-| HyperTEK K240 Altitude | 5,570 ft | 0.55 | 5.0 | 16.1 m/s | 343 m |
+| HyperTEK J317 Sport | 3,346 ft | 0.40 | 6.8 | 19.8 m/s | 702 m |
+| HyperTEK K240 Altitude | 5,805 ft | 0.56 | 5.0 | 16.1 m/s | 340 m |
 | SystemsGo Goddard Baseline | 9,172 ft | 0.57 | 4.2 | 20.7 m/s | 0 m |
-| HyperTEK L550 Supersonic | 15,419 ft | **1.26** | 13.3 | 31.3 m/s | 1,483 m |
+| HyperTEK L550 Supersonic | 15,953 ft | **1.27** | 13.3 | 31.3 m/s | 1,520 m |
 
-Three subsonic cases and one supersonic, spanning 3,000 to 15,000 ft and
+Three subsonic cases and one supersonic, spanning 3,000 to 16,000 ft and
 4 to 13 g.
+
+These rose 3-4% against the previous release: skin friction on the fins was
+being charged twice, once in the body's wetted area and again in the fin term,
+inflating the friction component by about 17%. The Goddard figure is unchanged
+because it flies on a measured-Cd override rather than the buildup, which is
+exactly the behaviour you would expect from that fix.
 
 ## 4. Physical bounds
 

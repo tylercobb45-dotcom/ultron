@@ -184,8 +184,13 @@ class RecoverySystem:
             s._t_fired = None
 
     def update(self, t: float, altitude_m: float, velocity_ms: float,
-               past_apogee: bool):
+               past_apogee: bool, launched: bool = True):
         """Fire any stage whose trigger condition has been met.
+
+        `launched` gates the time-based triggers. trigger_time_s defaults to
+        0.0, so a stage switched to "at a set time" without editing the time
+        would otherwise fire on the first step, with the vehicle still on the
+        rail - which reads as a deployment failure that never happened.
 
         Returns the list of stages that fired on this call.
         """
@@ -203,9 +208,9 @@ class RecoverySystem:
             elif trigger == TRIGGER_ALTITUDE:
                 go = past_apogee and altitude_m <= stage.trigger_altitude_m
             elif trigger == TRIGGER_TIME:
-                go = t >= stage.trigger_time_s
+                go = launched and t > 0.0 and t >= stage.trigger_time_s
             elif trigger == TRIGGER_DELAY:
-                go = (previous_fire_time is not None
+                go = (launched and previous_fire_time is not None
                       and t >= previous_fire_time + stage.trigger_time_s)
             if go:
                 stage._t_fired = t

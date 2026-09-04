@@ -82,6 +82,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         self._report = None
         self._fields = {}
         self._material_combos = {}
+        self._user_edited = set()   # fields a person has typed into
         self._build_ui()
 
     # ---- UI ---------------------------------------------------------------
@@ -149,6 +150,10 @@ class FlightReportWidget(QtWidgets.QWidget):
                 edit = QtWidgets.QLineEdit()
                 edit.setStyleSheet(_INPUT_STYLE)
                 edit.setText(f"{getattr(defaults, attr) * factor:.{dec}f}")
+                # textEdited fires only for typing, never for setText, so this
+                # marks the fields a person has actually taken over.
+                edit.textEdited.connect(
+                    lambda _t, a=attr: self._user_edited.add(a))
                 self._fields[attr] = (edit, factor, dec)
                 form.addRow(label + ":", edit)
             vbox.addWidget(group)
@@ -269,15 +274,23 @@ class FlightReportWidget(QtWidgets.QWidget):
             self._reanalyze()
 
     def apply_geometry_hints(self, hints: dict):
-        """Fill geometry the Simulation tab already knows, without clobbering
-        anything the user has since typed here."""
+        """Fill geometry the Simulation tab already knows.
+
+        Every field here is pre-filled with a default at build time, so
+        "empty means untouched" was never true and the hints were always
+        dropped - the checks then graded a 140 mm four-fin tube no matter what
+        the user had actually flown. A field counts as the user's only once
+        they have typed in it; anything still showing a default or a previous
+        hint gets updated from the run.
+        """
         for attr, value in hints.items():
             entry = self._fields.get(attr)
             if not entry or value in (None, 0):
                 continue
+            if attr in self._user_edited:
+                continue
             edit, factor, dec = entry
-            if not edit.text().strip():
-                edit.setText(f"{value * factor:.{dec}f}")
+            edit.setText(f"{value * factor:.{dec}f}")
 
     # ---- data in -----------------------------------------------------------
     def update_from_simulation(self, flight, engine_result=None, engine=None,

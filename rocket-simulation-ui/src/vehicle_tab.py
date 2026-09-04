@@ -155,12 +155,21 @@ class _StageEditor(QtWidgets.QGroupBox):
         self.disreef = QtWidgets.QLineEdit(f"{stage.disreef_time_s:.1f}")
         form.addRow("Disreef time (s):", self.disreef)
 
-        self._canopy_changed(self.canopy.currentText())
+        # Show the canopy note, but do NOT overwrite the Cd we just loaded:
+        # the stage carries its own value (a dual-deploy drogue is Cd 1.5, not
+        # the drogue-slider default), and a saved custom Cd has to survive a
+        # reload. The type only suggests a Cd when a person picks one.
+        self._describe_canopy(self.canopy.currentText())
         self._reef_toggled(self.reefed.isChecked())
 
-    def _canopy_changed(self, name):
-        cd, note = recovery_mod.CANOPY_TYPES.get(name, (1.5, ""))
+    def _describe_canopy(self, name):
+        _cd, note = recovery_mod.CANOPY_TYPES.get(name, (1.5, ""))
         self.canopy_note.setText(note)
+
+    def _canopy_changed(self, name):
+        """A person picked a canopy type: suggest its typical Cd."""
+        cd, _note = recovery_mod.CANOPY_TYPES.get(name, (1.5, ""))
+        self._describe_canopy(name)
         self.cd.setText(f"{cd:.2f}")
 
     def _reef_toggled(self, on):

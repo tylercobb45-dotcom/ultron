@@ -1294,6 +1294,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.error_label.setStyleSheet("color: red; font-weight: bold;")
         left_layout.addWidget(self.error_label)
 
+        # Which model actually flew, and which inputs on this tab it ignored.
+        # The 2-DOF model takes drag and recovery from the Vehicle tab, so the
+        # fields here can be live and unused at the same time - saying so is
+        # better than letting someone tune a number that does nothing.
+        self.model_note_label = QtWidgets.QLabel("")
+        self.model_note_label.setWordWrap(True)
+        self.model_note_label.setStyleSheet(
+            f"color:{app_theme.PALETTE['text_dim']}; font-size:9pt; "
+            f"border:1px solid {app_theme.PALETTE['border']}; padding:5px;")
+        left_layout.addWidget(self.model_note_label)
+
         left_layout.addStretch()
 
         # Right panel: Graph only (remove wireframe)
@@ -3953,7 +3964,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'propellant_mass': prop_m
             }
             results, self.last_flight_summary = self.run_flight_simulation(
-                m, Cd, A, rho, sim_kwargs, time_step)
+                m, Cd, A, rho, sim_kwargs, time_step,
+                body_diameter=body_diameter)
             # Error handling for simulation results
             if isinstance(results, dict) and 'error' in results:
                 self.error_label.setText(results['error'])
@@ -3968,14 +3980,29 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
 
-    def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step):
+    def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step,
+                              body_diameter=None):
         """Fly the vehicle.
 
         Uses the 2-DOF model (wind, full atmosphere, Mach-5 drag buildup,
         staged recovery, moving CG) whenever there is a thrust curve and a
-        Vehicle configuration to fly. Falls back to the original vertical
-        model otherwise, so profiles saved before the Vehicle tab existed
-        still behave exactly as they did.
+        Vehicle configuration to fly, and falls back to the original vertical
+        model otherwise.
+
+        Which inputs win, and why:
+
+        * Masses and body diameter come from the Simulation tab when entered
+          there - they are the same physical quantities the Vehicle tab holds,
+          and letting the two disagree silently is how a 98 mm rocket ends up
+          flown as the Vehicle tab's 140 mm default.
+        * Drag comes from the Vehicle tab: the 2-DOF model rebuilds Cd every
+          step from the airframe shape, which is the entire point of it. The
+          Simulation tab's single Cd and reference area are used only by the
+          fallback model. Same for its parachute fields, which the Vehicle
+          tab's staged recovery supersedes.
+
+        Anything the 2-DOF model ignored is reported through
+        self.model_note_label rather than dropped in silence.
         """
         curve_path = sim_kwargs.get('thrust_curve_path')
         if hasattr(self, 'vehicle_tab') and curve_path:
@@ -3993,18 +4020,62 @@ class RocketSimulationUI(QtWidgets.QWidget):
                         mass_props.propellant_mass_kg = prop
                     if m > prop > 0:
                         mass_props.dry_mass_kg = m - prop
+                    # Body diameter is one physical thing described on two
+                    # tabs. The one just typed into wins.
+                    if body_diameter and body_diameter > 0:
+                        airframe.body_diameter_m = body_diameter
+                    cd_over = self.vehicle_tab.cd_override()
                     results, summary = flight_model.run_flight(
                         points, airframe, site, recovery_system, mass_props,
                         output_dt=max(0.02, float(time_step or 0.05)),
-                        cd_override=self.vehicle_tab.cd_override())
+                        cd_override=cd_over)
                     if results:
+                        self._note_model_used(results, airframe,
+                                              recovery_system, cd_over, Cd, A)
                         return results, summary
             except Exception:
                 traceback.print_exc()
                 self.error_label.setText(
                     "Advanced flight model failed; fell back to the basic "
                     "vertical model. See the console for details.")
+        self._note_fallback_model()
         return run_simulation(m, Cd, A, rho, **sim_kwargs), None
+
+    def _note_model_used(self, results, airframe, recovery_system,
+                         cd_override, sim_cd, sim_area):
+        """Say which model flew and which Simulation-tab inputs it ignored."""
+        if not hasattr(self, 'model_note_label'):
+            return
+        cds = [r.get('Cd_body_eff', 0.0) for r in results if r.get('Cd_body_eff')]
+        if cd_override:
+            drag = (f"fixed Cd {cd_override:.3f} from the Vehicle tab's "
+                    f"measured-Cd override")
+        elif cds:
+            drag = (f"Cd rebuilt every step from the airframe shape "
+                    f"({min(cds):.3f}-{max(cds):.3f} over the flight)")
+        else:
+            drag = "Cd from the airframe buildup"
+        stages = ", ".join(s.name for s in recovery_system.active_stages()) or "none"
+        ignored = []
+        if sim_cd:
+            ignored.append(f"drag coefficient ({sim_cd:g})")
+        if sim_area:
+            ignored.append(f"reference area ({sim_area:g} m²)")
+        ignored.append("parachute fields")
+        self.model_note_label.setText(
+            f"Flown with the 2-DOF model: {airframe.body_diameter_m*1000:.0f} mm "
+            f"airframe, {drag}, recovery from the Vehicle tab ({stages}).<br>"
+            f"<i>Not used by this model:</i> the Simulation tab's "
+            + ", ".join(ignored) +
+            " — those drive the basic vertical model only.")
+
+    def _note_fallback_model(self):
+        if not hasattr(self, 'model_note_label'):
+            return
+        self.model_note_label.setText(
+            "Flown with the basic vertical model, using the Simulation tab's "
+            "drag coefficient, reference area and parachute settings. Load a "
+            "thrust curve to use the 2-DOF model.")
 
     def update_flight_report(self, results, body_diameter=None):
         """Hand the finished run to the Flight Report tab for failure analysis."""

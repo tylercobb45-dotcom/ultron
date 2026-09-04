@@ -5,10 +5,64 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from .config import Rocket, G0, R_AIR, GAMMA_AIR, P_SL, T_SL, LAPSE, T_TROP, BARO_EXP
 
+# U.S. Standard Atmosphere 1976 layers: (base geopotential altitude [m],
+# base temperature [K], lapse rate dT/dh [K/m]).
+_ISA_LAYERS = (
+    (0.0,     288.15, -0.0065),
+    (11000.0, 216.65,  0.0),
+    (20000.0, 216.65,  0.001),
+    (32000.0, 228.65,  0.0028),
+    (47000.0, 270.65,  0.0),
+    (51000.0, 270.65, -0.0028),
+    (71000.0, 214.65, -0.002),
+)
+_R_EARTH = 6356766.0
+
+
+def _isa_base_pressures():
+    """Pressure at the bottom of each layer, integrated up from sea level."""
+    out = [P_SL]
+    for i in range(len(_ISA_LAYERS) - 1):
+        h0, T0, a = _ISA_LAYERS[i]
+        h1 = _ISA_LAYERS[i + 1][0]
+        P0 = out[-1]
+        if a == 0.0:
+            out.append(P0*math.exp(-G0*(h1 - h0)/(R_AIR*T0)))
+        else:
+            out.append(P0*(1.0 + a*(h1 - h0)/T0)**(-G0/(a*R_AIR)))
+    return tuple(out)
+
+
+_ISA_BASE_P = _isa_base_pressures()
+
+
 def isa(h):
-    h = max(0.0, h)
-    T = max(T_TROP, T_SL - LAPSE*h)
-    P = P_SL*(T/T_SL)**BARO_EXP
+    """Density, pressure and speed of sound at geometric altitude h [m].
+
+    The previous version clamped temperature at the tropopause and then
+    derived pressure from that temperature, which froze pressure and density
+    above 11 km - by 20 km the density was 4x too high, and 20x at 30 km. Any
+    high-altitude preview came back badly pessimistic. This walks the real
+    layers instead.
+    """
+    z = max(0.0, h)
+    # Geopotential altitude: what the ISA layer table is defined against.
+    hg = _R_EARTH*z/(_R_EARTH + z)
+    idx = 0
+    for i, layer in enumerate(_ISA_LAYERS):
+        if hg >= layer[0]:
+            idx = i
+        else:
+            break
+    h0, T0, a = _ISA_LAYERS[idx]
+    P0 = _ISA_BASE_P[idx]
+    dh = hg - h0
+    if a == 0.0:
+        T = T0
+        P = P0*math.exp(-G0*dh/(R_AIR*T0))
+    else:
+        T = T0 + a*dh
+        P = P0*(T/T0)**(-G0/(a*R_AIR))
     return P/(R_AIR*T), P, math.sqrt(GAMMA_AIR*R_AIR*T)
 
 class FlightModel:

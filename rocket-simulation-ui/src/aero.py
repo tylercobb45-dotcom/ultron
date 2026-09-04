@@ -123,11 +123,14 @@ class Airframe:
         dx = self.fin_sweep_m + 0.5 * (self.fin_tip_chord_m - self.fin_root_chord_m)
         return math.hypot(dx, self.fin_span_m)
 
-    def wetted_area(self) -> float:
-        """Total wetted area: nose + body tube + boat tail + both fin faces."""
+    def body_wetted_area(self) -> float:
+        """Wetted area of the body alone: nose + body tube + boat tail.
+
+        Fins are deliberately excluded. Their friction is computed in
+        fin_drag_coefficient, with its own thickness form factor, so counting
+        them here as well charges for the same surface twice.
+        """
         d, r = self.body_diameter_m, self.radius
-        # Nose wetted area, approximated as a cone-equivalent lateral surface
-        # scaled by shape (ogive/Von Karman are slightly fuller than a cone).
         slant = math.hypot(self.nose_length_m, r)
         fullness = 1.0 if self.nose_shape == "Conical" else 1.06
         nose = math.pi * r * slant * fullness
@@ -136,8 +139,19 @@ class Airframe:
         if self.boattail_length_m > 0 and self.boattail_exit_diameter_m > 0:
             r2 = self.boattail_exit_diameter_m / 2.0
             boat = math.pi * (r + r2) * math.hypot(self.boattail_length_m, r - r2)
-        fins = 2.0 * self.fin_count * self.fin_planform_area
-        return nose + body + boat + fins
+        return nose + body + boat
+
+    def fin_wetted_area(self) -> float:
+        """Wetted area of both faces of every fin."""
+        return 2.0 * self.fin_count * self.fin_planform_area
+
+    def wetted_area(self) -> float:
+        """Total wetted area: nose + body tube + boat tail + both fin faces.
+
+        Reporting only - the drag buildup uses the body and fin parts
+        separately so neither gets counted twice.
+        """
+        return self.body_wetted_area() + self.fin_wetted_area()
 
     def base_area(self) -> float:
         """Area of the blunt aft end, after any boat tail."""
@@ -288,9 +302,9 @@ def fin_drag_coefficient(mach: float, airframe: Airframe, cf: float) -> float:
     mean_chord = max(1e-4, 0.5 * (airframe.fin_root_chord_m + airframe.fin_tip_chord_m))
     tc = airframe.fin_thickness_m / mean_chord
 
-    # Friction on both faces, with a thickness form factor
-    wetted = 2.0 * airframe.fin_count * airframe.fin_planform_area
-    cd = cf * (1.0 + 2.0 * tc) * wetted / a_ref
+    # Friction on both faces, with a thickness form factor. This is the only
+    # place fin friction is charged; the body term uses body_wetted_area().
+    cd = cf * (1.0 + 2.0 * tc) * airframe.fin_wetted_area() / a_ref
 
     # Edge pressure drag, strongly profile- and Mach-dependent. Blended through
     # the transonic band: a hard switch at Mach 1 puts a step discontinuity in
@@ -332,7 +346,7 @@ def drag_coefficient(mach: float, altitude_m: float, speed_ms: float,
     # Body friction with a fineness form factor (slender bodies pay less)
     fr = max(1.0, airframe.body_fineness)
     form = 1.0 + 60.0 / (fr ** 3) + 0.0025 * fr
-    cd_friction = cf * form * airframe.wetted_area() / a_ref
+    cd_friction = cf * form * airframe.body_wetted_area() / a_ref
 
     cd_base = base_drag_coefficient(mach, thrusting) * airframe.base_area() / a_ref
     cd_wave = wave_drag_coefficient(mach, airframe)

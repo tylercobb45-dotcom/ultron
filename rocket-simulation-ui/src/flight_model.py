@@ -420,7 +420,7 @@ def run_flight(thrust_points,
         if launched and not past_apogee and vz < 0:
             past_apogee = True
 
-        recovery_system.update(t, z, vz, past_apogee)
+        recovery_system.update(t, z, vz, past_apogee, launched=launched)
 
         if launched and z <= 0.0:
             break

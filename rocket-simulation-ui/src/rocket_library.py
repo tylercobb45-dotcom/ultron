@@ -284,6 +284,24 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         name, path = self._selected()
         if not path:
             return
+
+        # Bundled examples ship with the app and are what the validation suite
+        # is checked against; deleting one takes the reference out of the
+        # install and it does not come back. Update already refuses to write
+        # over them for the same reason - delete has to match.
+        user_copy = os.path.join(self._writable_dir(), f"{name}.json")
+        if not self._is_writable_path(path):
+            if os.path.exists(user_copy):
+                path = user_copy       # only ever remove the user's own copy
+            else:
+                QtWidgets.QMessageBox.information(
+                    self, "Bundled rocket",
+                    f"'{name}' is one of the presets that ship with JARVIS, so "
+                    f"it cannot be deleted - the validation suite is checked "
+                    f"against it.\n\nUse Duplicate if you want a version of "
+                    f"your own to change or remove.")
+                return
+
         if not self._confirm("Delete rocket?",
                              f"Permanently delete '{name}'?\n\n{path}"):
             return
@@ -293,9 +311,20 @@ class RocketLibraryWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Could not delete", str(exc))
             return
         self.refresh()
-        self.status.setText(f"Deleted '{name}'.")
+        bundled_back = os.path.exists(path) or not self._is_writable_path(path)
+        self.status.setText(
+            f"Deleted your copy of '{name}'; the bundled preset is back."
+            if bundled_back else f"Deleted '{name}'.")
         if self._on_changed:
             self._on_changed()
+
+    def _is_writable_path(self, path) -> bool:
+        """Is this file in the user's own rocket directory rather than bundled?"""
+        try:
+            writable = os.path.realpath(self._writable_dir())
+            return os.path.realpath(path).startswith(writable + os.sep)
+        except Exception:
+            return False
 
     def _import(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(

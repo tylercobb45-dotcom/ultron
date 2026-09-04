@@ -617,6 +617,32 @@ def _fin_flutter_check(rep, v, fin, t, alt, vel):
 # flight / recovery
 # ---------------------------------------------------------------------------
 
+def _mach_aware_drag(flight) -> bool:
+    """Did this flight rebuild Cd as Mach changed, or hold it fixed?
+
+    A fixed Cd - the Vehicle tab's measured-Cd override, or the legacy
+    vertical model - shows the same body Cd at every Mach number. The 2-DOF
+    buildup does not. Decided from the data rather than from which code path
+    we think ran, so an override is caught even inside the 2-DOF model.
+    """
+    if not flight:
+        return False
+    cds, machs = [], []
+    for row in flight:
+        cd = row.get("Cd_body_eff", row.get("cd_body_eff"))
+        mach = row.get("Mach")
+        if cd is None or mach is None or cd <= 0:
+            continue
+        cds.append(float(cd))
+        machs.append(float(mach))
+    if len(cds) < 3:
+        return False
+    if max(machs) - min(machs) < 0.05:
+        return False        # nothing moved; can't tell, so don't claim it did
+    return (max(cds) - min(cds)) > 1e-6 * max(cds)
+
+
+
 def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight):
     # R-01 rail exit velocity
     rail_i = next((i for i, h in enumerate(alt) if h >= v.rail_length_m), None)
@@ -653,23 +679,42 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight):
         "the rail unstable." if twr < 5 else "Healthy launch acceleration.",
         t_event=t[0], margin=twr / 5.0 - 1.0))
 
-    # R-02 model fidelity in the transonic/supersonic regime
-    if rep.max_mach >= 0.8:
+    # R-02 transonic drag fidelity.
+    #
+    # This has to know which drag model actually flew. The 2-DOF model rebuilds
+    # Cd every step from Reynolds and Mach, and W-04 grades that. But the same
+    # report is produced for a flight flown on a FIXED Cd - either the Vehicle
+    # tab's measured-Cd override, or the legacy vertical model - and for those
+    # the old warning is still exactly right. Asserting "fixed Cd" regardless
+    # of what ran is what made R-02 contradict W-04 in the same report.
+    mach_varying = _mach_aware_drag(flight)
+    if mach_varying:
+        rep.checks.append(Check(
+            "R-02", "Fidelity", "Transonic drag model validity", OK,
+            f"Mach {rep.max_mach:.2f}", "Cd rebuilt every step",
+            "Drag was recomputed at each step from Reynolds and Mach rather "
+            "than held fixed, so the transonic rise is represented. W-04 "
+            "grades how far that model can be trusted.",
+            ""))
+    elif rep.max_mach >= 0.8:
         status = CAUTION if rep.max_mach < 1.2 else CRITICAL
         rep.checks.append(Check(
             "R-02", "Fidelity", "Transonic drag model validity", status,
             f"Mach {rep.max_mach:.2f}", "Mach 0.8",
-            "The flight model uses a fixed drag coefficient (with at most a small "
-            "Mach bump). Real Cd can rise by 50-100% through the transonic rise, so "
-            "above Mach 0.8 the predicted apogee is optimistic.",
-            "Treat the apogee number as an upper bound. For a 50,000 ft attempt you "
-            "want a Cd(M) table or CFD/RASAero data behind the drag model.",
+            "This flight was flown on a FIXED drag coefficient - either a "
+            "measured-Cd override or the legacy vertical model. Real Cd can "
+            "rise by 50-100% through the transonic rise, so above Mach 0.8 the "
+            "predicted apogee is optimistic.",
+            "Clear the measured-Cd override on the Vehicle tab to use the "
+            "Mach-aware drag buildup, or supply a Cd(M) table from "
+            "CFD/RASAero.",
             t_event=None))
     else:
         rep.checks.append(Check(
             "R-02", "Fidelity", "Transonic drag model validity", OK,
             f"Mach {rep.max_mach:.2f}", "Mach 0.8",
-            "Flight stays subsonic, where a fixed drag coefficient is a reasonable model.",
+            "Flight stays subsonic, where a fixed drag coefficient is a "
+            "reasonable model.",
             ""))
 
     # R-03 deployment shock
@@ -875,7 +920,17 @@ def _engine_checks(rep, v, res, eng):
         t_event=t[-1], margin=frac / 0.15 - 1.0))
 
     # P-07 oxidizer mass flux
-    flux = [(mdot_ox[i] / (math.pi * r_port[i] ** 2), i) for i in burn if r_port[i] > 0]
+    # Flux is per unit of PORT area, and a multi-port grain has n_ports of
+    # them. Dividing by a single port's area reports the flux n_ports times too
+    # high and trips a false CRITICAL. Engine.A_port is what the solver itself
+    # uses, so use it here too.
+    def _port_area(r):
+        if hasattr(eng, "A_port"):
+            return eng.A_port(r)
+        return math.pi * r ** 2
+
+    flux = [(mdot_ox[i] / _port_area(r_port[i]), i)
+            for i in burn if r_port[i] > 0 and _port_area(r_port[i]) > 0]
     if flux:
         g_max, i_g = max(flux)
     else:
