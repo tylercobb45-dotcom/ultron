@@ -178,18 +178,25 @@ def run_flight(thrust_points,
                dt: float = 0.01,
                output_dt: float = 0.05,
                max_time: float = 900.0,
-               cd_override: float | None = None):
+               cd_override=None):
     """Integrate a flight. Returns a list of per-sample dicts.
 
     Semi-implicit Euler at a small fixed step: recovery deployment and rail
     departure are state-dependent events, which a fixed small step handles
     cleanly and an adaptive solver does not without event machinery.
 
-    cd_override forces a single constant drag coefficient instead of the
-    component buildup. Use it when you have a measured or CFD-derived Cd you
-    trust more than the estimate, or to compare against another tool that
-    assumed a fixed number.
+    cd_override replaces the component buildup. It takes either:
+
+      * a number - one constant drag coefficient, for comparing against a
+        tool that assumed a fixed value, or
+      * a callable of Mach, such as an aero.CdMachTable - a full Cd(Mach)
+        curve from RASAero, CFD or a wind tunnel.
+
+    The curve is the one worth having. Drag dominates the altitude answer, and
+    a single number cannot represent the transonic rise at all.
     """
+    cd_lookup = cd_override if callable(cd_override) else None
+    cd_constant = None if cd_lookup else cd_override
     site = site or atmosphere_mod.LaunchSite()
     airframe = airframe or aero_mod.Airframe()
     recovery_system = recovery_system or recovery_mod.RecoverySystem.dual_deploy()
@@ -286,8 +293,10 @@ def run_flight(thrust_points,
         deployed_before = recovery_system.any_deployed()
         cd_body, breakdown = aero_mod.drag_coefficient(
             mach, z, speed_rel, airframe, site, thrusting=thrusting)
-        if cd_override is not None:
-            cd_body = cd_override
+        if cd_lookup is not None:
+            cd_body = float(cd_lookup(mach))
+        elif cd_constant is not None:
+            cd_body = cd_constant
         cda_body = cd_body * a_ref
         cda_recovery = recovery_system.drag_area(t)
         # Once a canopy is out the airframe is no longer flying nose-first;

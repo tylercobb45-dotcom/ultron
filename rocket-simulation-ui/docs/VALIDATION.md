@@ -7,7 +7,7 @@ what matched, what did not, and why. Run it yourself with
 python tools/validate_presets.py
 ```
 
-**58 / 58 checks pass.** Nothing here is asserted without a number behind it,
+**67 / 67 checks pass.** Nothing here is asserted without a number behind it,
 and every disagreement is explained or flagged as unexplained.
 
 ---
@@ -239,6 +239,45 @@ preset:
 - **Statically stable throughout boost** — the Barrowman margin never goes
   negative, or the flight being simulated is fiction.
 
+
+## 5. The Cd(Mach) curve
+
+The Aero Analysis tab sweeps the drag buildup across Mach and can export the
+result, or fly a curve imported from RASAero, CFD or a wind tunnel instead.
+
+There is no external drag curve for these airframes to check against, so the
+sweep is validated on **shape** rather than absolute value. Every published
+rocket drag curve has these properties, and a model that violates them is
+wrong whatever its numbers say:
+
+| Property | Result |
+|---|---|
+| Transonic peak sits just past Mach 1 | peak at **Mach 1.20** |
+| Rise over subsonic is the published 30–120% | **+51%** (0.493 → 0.746) |
+| Cd falls monotonically above Mach 2 | 0.528 at Mach 2 → 0.251 at Mach 5 |
+| Power-on Cd never exceeds power-off | holds — the plume can only *remove* base drag |
+
+The table machinery is checked end to end: a curve round-trips through CSV to
+5 × 10⁻⁶, holds flat outside its Mach range instead of extrapolating, and a
+table of a single repeated value flies **bit-for-bit identically** to that
+value as a scalar override (15,421.3 ft both ways). A real curve then moves
+the answer — the L550 preset reaches 15,421 ft on a constant Cd = 0.55 and
+14,784 ft on the swept curve, **+4.3%** of optimism from ignoring the
+transonic rise.
+
+### A limitation of tables, worth knowing
+
+A Cd(Mach) table is a function of Mach alone. The component buildup is a
+function of Mach *and* altitude, because skin friction is Reynolds-dependent —
+the same vehicle at the same Mach has less friction drag at 30,000 ft than on
+the pad. So a table swept at one altitude and then flown over a whole
+trajectory will disagree with the buildup, and the difference is real physics
+rather than an error in either.
+
+Sweep at an altitude representative of where the vehicle spends its fast,
+high-drag seconds — for most flights that is the first few thousand feet, not
+apogee.
+
 ---
 
 ## What is *not* validated
@@ -258,9 +297,11 @@ worse than one that admits its limits:
 - **Airframe dimensions for the preset rockets are representative.** Only the
   *motors* carry manufacturer-published geometry.
 - **Supersonic drag is an engineering correlation, not CFD.** The transonic
-  rise and supersonic falloff have the right shape and magnitude, but treat
-  the coefficient as ±20%. For a serious altitude attempt, get a Cd(Mach)
-  table from RASAero or CFD and put it in the Cd override field.
+  rise and supersonic falloff have the right shape and magnitude - checked
+  above - but no absolute value has been compared against a measured drag
+  curve for these shapes, so treat the coefficient as ±20%. For a serious
+  altitude attempt, get a Cd(Mach) table from RASAero or CFD and import it on
+  the Aero Analysis tab, which is exactly what that importer is for.
 - **Throat erosion, tank venting and multi-port grains are modelled but
   unvalidated.** They default to off. The trends are right — an eroding throat
   drops chamber pressure, a vent costs Isp — but no measured case has been

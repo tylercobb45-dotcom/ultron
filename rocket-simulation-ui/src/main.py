@@ -19,6 +19,7 @@ from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
+from aero_tab import AeroAnalysisWidget  # Cd vs Mach analysis tab
 import theme as app_theme
 import flight_model
 import aero
@@ -1366,6 +1367,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # curve into the simulation above ---
         self.engine_lab = EngineLabWidget(on_send_to_simulation=self.use_engine_lab_thrust_curve)
         self.tabs.addTab(self.engine_lab, "Engine Lab")
+
+        # Cd(Mach) analysis, and the place an external drag curve gets loaded.
+        self.aero_tab = AeroAnalysisWidget(
+            get_airframe=lambda: self.vehicle_tab.airframe(),
+            get_cg=lambda: self.vehicle_tab.mass_properties().dry_cg_m,
+            on_table_changed=self._cd_table_changed)
+        self.tabs.addTab(self.aero_tab, "Aero Analysis")
 
         # --- Flight Report: failure-mode analysis of the last simulation ---
         self.flight_report = FlightReportWidget()
@@ -3980,6 +3988,36 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
 
+    def cd_source(self):
+        """What drag the flight should use: a curve, a constant, or None.
+
+        Precedence is by how much the source actually knows. An imported
+        Cd(Mach) table describes the transonic rise; the Vehicle tab's single
+        measured Cd does not but is still a measurement; with neither, the
+        component buildup estimates it.
+        """
+        table = None
+        if hasattr(self, 'aero_tab'):
+            table = self.aero_tab.current_table()
+        if table is not None:
+            return table
+        return self.vehicle_tab.cd_override() if hasattr(self, 'vehicle_tab') else None
+
+    def _cd_table_changed(self, table):
+        """The Aero tab loaded or cleared an external drag curve."""
+        if not hasattr(self, 'error_label'):
+            return
+        if table is None:
+            self.error_label.setText("")
+            return
+        lo, hi = table.mach_range
+        self.error_label.setText("")
+        if hasattr(self, 'model_note_label'):
+            self.model_note_label.setText(
+                f"Drag will come from the imported curve <b>{table.name}</b> "
+                f"(Mach {lo:.2f}-{hi:.2f}) instead of the computed buildup. "
+                f"Run a simulation to fly it.")
+
     def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step,
                               body_diameter=None):
         """Fly the vehicle.
@@ -4024,7 +4062,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     # tabs. The one just typed into wins.
                     if body_diameter and body_diameter > 0:
                         airframe.body_diameter_m = body_diameter
-                    cd_over = self.vehicle_tab.cd_override()
+                    # An imported Cd(Mach) curve beats a single number,
+                    # which in turn beats the estimate.
+                    cd_over = self.cd_source()
                     results, summary = flight_model.run_flight(
                         points, airframe, site, recovery_system, mass_props,
                         output_dt=max(0.02, float(time_step or 0.05)),
@@ -4047,7 +4087,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if not hasattr(self, 'model_note_label'):
             return
         cds = [r.get('Cd_body_eff', 0.0) for r in results if r.get('Cd_body_eff')]
-        if cd_override:
+        if callable(cd_override):
+            lo, hi = cd_override.mach_range
+            drag = (f"imported Cd(Mach) curve '{cd_override.name}' "
+                    f"(Mach {lo:.2f}-{hi:.2f})")
+        elif cd_override:
             drag = (f"fixed Cd {cd_override:.3f} from the Vehicle tab's "
                     f"measured-Cd override")
         elif cds:

@@ -173,6 +173,28 @@ Needs Python 3.12 or newer.
   hardware against and none of them are typed in directly. Then send the
   generated thrust curve straight into the Simulation tab. See
   [`hybrid_sim/README.md`](hybrid_sim/README.md) for the physics.
+- **Aero Analysis (Cd vs Mach)** — the drag curve, presented the way RASAero
+  presents it, because a single drag coefficient cannot describe a rocket that
+  goes transonic. Sweep the airframe across Mach at a chosen altitude and get
+  power-off and power-on Cd curves, a stacked breakdown of what each component
+  contributes (skin friction, base, nose wave, fins, interference), Reynolds
+  number, centre of pressure and static margin across the same range — plotted,
+  tabulated, and exportable. Power-on differs from power-off only in base drag,
+  since the exhaust plume fills the base while the motor burns.
+
+  The sweep is per-altitude on purpose: skin friction is Reynolds-dependent, so
+  the same vehicle at the same Mach number has measurably less friction drag at
+  30,000 ft than on the pad.
+
+  It also **imports and flies external Cd(Mach) tables**. Point it at a
+  two-column Mach,Cd file — a RASAero export, RockSim output, CFD results or
+  your own spreadsheet — and the flight model flies that curve instead of the
+  estimate. The reader skips header lines and copes with comma, semicolon or
+  tab separators. Outside the table's Mach range the end values are held flat
+  rather than extrapolated, because extrapolating a drag curve past its last
+  point is how you get a confident wrong answer. Drag precedence is by how much
+  the source actually knows: an imported curve beats the Vehicle tab's single
+  measured Cd, which beats the computed buildup.
 - **Two spreadsheets per run** — the Simulation tab's right-hand panel carries
   a **Flight Data** sheet (one row per trajectory sample: position, velocity,
   Mach, acceleration in m/s² and g, thrust, drag and its component buildup,

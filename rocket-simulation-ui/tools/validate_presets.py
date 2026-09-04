@@ -25,6 +25,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -293,6 +294,94 @@ def validate_bounds(name, rows, summary, airframe, site, mass, system, points):
           f"minimum margin {worst:.2f} cal")
 
 
+# ---------------------------------------------------------------------------
+# 5. Cd(Mach) sweep and table
+# ---------------------------------------------------------------------------
+
+def validate_aero_sweep():
+    """The drag curve and the table that can replace it.
+
+    The sweep is checked for shape rather than against an external number:
+    a transonic peak in the right place, of roughly the right size, falling
+    away supersonically. Those are properties every published rocket drag
+    curve has, so a model that violates them is wrong regardless of what its
+    absolute values are.
+    """
+    banner("5. Cd(Mach) SWEEP AND TABLE")
+
+    preset = next(p for p in preset_defs.PRESET_ROCKETS if "L550" in p["name"])
+    _rows, _summary, airframe, site, mass, system, points = fly_preset(preset)
+
+    sweep = aero.drag_sweep(airframe, site, altitude_m=0.0,
+                            mach_min=0.05, mach_max=5.0, mach_step=0.05,
+                            cg_m=mass.dry_cg_m)
+    check("  sweep produces a full curve", len(sweep) > 90,
+          f"{len(sweep)} points, Mach {sweep[0]['mach']:.2f}-{sweep[-1]['mach']:.2f}")
+
+    sub = [r["cd_power_off"] for r in sweep if r["mach"] <= 0.3]
+    cd_sub = sum(sub) / len(sub)
+    peak = max(sweep, key=lambda r: r["cd_power_off"])
+    check("  transonic peak sits just past Mach 1",
+          0.9 <= peak["mach"] <= 1.4,
+          f"peak at Mach {peak['mach']:.2f}")
+    rise = peak["cd_power_off"] / cd_sub - 1.0
+    check("  transonic rise is the published 30-120% of subsonic Cd",
+          0.30 <= rise <= 1.20,
+          f"{rise*100:.0f}% (subsonic {cd_sub:.3f} -> peak {peak['cd_power_off']:.3f})")
+
+    suparr = [r for r in sweep if r["mach"] >= 2.0]
+    falling = all(suparr[i]["cd_power_off"] >= suparr[i + 1]["cd_power_off"] - 1e-9
+                  for i in range(len(suparr) - 1))
+    check("  Cd falls away monotonically above Mach 2", falling,
+          f"{suparr[0]['cd_power_off']:.3f} at Mach 2 -> "
+          f"{suparr[-1]['cd_power_off']:.3f} at Mach {suparr[-1]['mach']:.1f}")
+
+    on_le_off = all(r["cd_power_on"] <= r["cd_power_off"] + 1e-9 for r in sweep)
+    check("  power-on Cd never exceeds power-off", on_le_off,
+          "the exhaust plume fills the base, it cannot add base drag")
+
+    # Table round-trip and interpolation
+    table = aero.CdMachTable([(r["mach"], r["cd_power_off"]) for r in sweep],
+                             "sweep")
+    tmp = os.path.join(tempfile.gettempdir(), "jarvis_cd_check.csv")
+    table.to_csv(tmp)
+    back = aero.CdMachTable.from_csv(tmp)
+    os.remove(tmp)
+    worst = max(abs(back(r["mach"]) - r["cd_power_off"]) for r in sweep)
+    check("  Cd(Mach) table round-trips through CSV", worst < 1e-4,
+          f"worst node error {worst:.2e}")
+
+    lo, hi = table.mach_range
+    flat_ok = (abs(table(lo - 1.0) - table(lo)) < 1e-12
+               and abs(table(hi + 3.0) - table(hi)) < 1e-12)
+    check("  table holds flat outside its range rather than extrapolating",
+          flat_ok, "extrapolating a drag curve invents confident wrong answers")
+
+    # End to end: a table of one constant must fly identically to that constant.
+    flat = aero.CdMachTable([(0.0, 0.55), (5.0, 0.55)], "flat 0.55")
+    system.reset()
+    _r1, s1 = flight_model.run_flight(points, airframe, site, system, mass,
+                                      output_dt=0.05, cd_override=0.55)
+    system.reset()
+    _r2, s2 = flight_model.run_flight(points, airframe, site, system, mass,
+                                      output_dt=0.05, cd_override=flat)
+    err = abs(s2["apogee_ft"] - s1["apogee_ft"]) / max(1.0, s1["apogee_ft"])
+    check("  a flat table flies identically to the same constant Cd",
+          err < 1e-9,
+          f"{s1['apogee_ft']:,.1f} ft vs {s2['apogee_ft']:,.1f} ft")
+
+    # And a real curve must differ from a constant, or the feature does nothing.
+    system.reset()
+    _r3, s3 = flight_model.run_flight(points, airframe, site, system, mass,
+                                      output_dt=0.05, cd_override=table)
+    diff = (s1["apogee_ft"] - s3["apogee_ft"]) / s3["apogee_ft"]
+    check("  the curve changes the answer against a constant Cd",
+          abs(diff) > 0.02,
+          f"constant 0.55 gives {s1['apogee_ft']:,.0f} ft, the curve "
+          f"{s3['apogee_ft']:,.0f} ft ({diff*100:+.1f}%)")
+    print()
+
+
 def main():
     validate_hardware()
     validate_engines()
@@ -320,6 +409,8 @@ def main():
     for name, data in flights.items():
         validate_bounds(name, *data)
         print()
+
+    validate_aero_sweep()
 
     banner("SUMMARY")
     passed = sum(1 for _l, ok, _d in _results if ok)

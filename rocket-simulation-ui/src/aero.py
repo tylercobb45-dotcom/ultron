@@ -358,3 +358,164 @@ def drag_coefficient(mach: float, altitude_m: float, speed_ms: float,
         "friction": cd_friction, "base": cd_base, "wave": cd_wave,
         "fins": cd_fins, "interference": cd_interference, "reynolds": reynolds,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cd(Mach) sweeps and tables
+#
+# RASAero's central output is not a single drag coefficient, it is a curve:
+# Cd against Mach, power-on and power-off, broken into the components that
+# make it up. That curve is what actually decides an altitude prediction -
+# getting the trajectory integration right is worth about 1%, getting Cd wrong
+# by 3x costs a factor of two in apogee.
+#
+# Two things live here: sweeping this model to produce that curve, and a
+# lookup table so a curve from anywhere else (RASAero, CFD, wind tunnel) can
+# be flown instead.
+# ---------------------------------------------------------------------------
+
+def drag_sweep(airframe: "Airframe", atmos, altitude_m: float = 0.0,
+               mach_min: float = 0.05, mach_max: float = 5.0,
+               mach_step: float = 0.05, cg_m: float | None = None):
+    """Cd against Mach at one altitude, power-off and power-on.
+
+    Returns a list of row dicts, one per Mach number, carrying the total in
+    both power states and the component breakdown behind the power-off value,
+    plus centre of pressure and - when a CG is given - static margin.
+
+    Altitude matters because skin friction is Reynolds-dependent: the same
+    vehicle at the same Mach number has measurably less friction drag at
+    30,000 ft than on the pad, which is why the sweep is per-altitude rather
+    than a single universal curve.
+    """
+    rows = []
+    if mach_step <= 0:
+        mach_step = 0.05
+    _T, _P, _rho, a_sound, _mu = atmos.properties(altitude_m)
+    d = airframe.body_diameter_m
+    a_ref = airframe.reference_area
+
+    n = int(round((mach_max - mach_min) / mach_step)) + 1
+    for i in range(max(1, n)):
+        mach = mach_min + i * mach_step
+        if mach > mach_max + 1e-9:
+            break
+        speed = mach * a_sound
+        cd_off, parts = drag_coefficient(mach, altitude_m, speed, airframe,
+                                         atmos, thrusting=False)
+        cd_on, _ = drag_coefficient(mach, altitude_m, speed, airframe,
+                                    atmos, thrusting=True)
+        cp = airframe.center_of_pressure(mach)
+        row = {
+            "mach": mach,
+            "speed_ms": speed,
+            "altitude_m": altitude_m,
+            "cd_power_off": cd_off,
+            "cd_power_on": cd_on,
+            "cd_friction": parts["friction"],
+            "cd_base": parts["base"],
+            "cd_wave": parts["wave"],
+            "cd_fins": parts["fins"],
+            "cd_interference": parts["interference"],
+            "reynolds": parts["reynolds"],
+            "cda_power_off": cd_off * a_ref,
+            "cda_power_on": cd_on * a_ref,
+            "cp_m": cp,
+        }
+        if cg_m is not None and d > 0:
+            row["cg_m"] = cg_m
+            row["stability_cal"] = (cp - cg_m) / d
+        rows.append(row)
+    return rows
+
+
+class CdMachTable:
+    """A Cd(Mach) curve to fly instead of the buildup.
+
+    This is the shape RASAero, CFD and wind-tunnel data all come in, and the
+    thing docs/VALIDATION.md tells you to go and get for a serious altitude
+    attempt. Linear interpolation between points; flat outside the range,
+    because extrapolating a drag curve past its last point is how you get a
+    confident wrong answer.
+    """
+
+    def __init__(self, points, name: str = "Cd(Mach) table"):
+        pts = sorted((float(m), float(c)) for m, c in points if c is not None)
+        self.points = [(m, c) for m, c in pts if c >= 0]
+        self.name = name
+        if not self.points:
+            raise ValueError("A Cd(Mach) table needs at least one point.")
+
+    @property
+    def mach_range(self):
+        return self.points[0][0], self.points[-1][0]
+
+    def __call__(self, mach: float) -> float:
+        pts = self.points
+        if mach <= pts[0][0]:
+            return pts[0][1]
+        if mach >= pts[-1][0]:
+            return pts[-1][1]
+        lo, hi = 0, len(pts) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if pts[mid][0] <= mach:
+                lo = mid
+            else:
+                hi = mid
+        m0, c0 = pts[lo]
+        m1, c1 = pts[hi]
+        if m1 == m0:
+            return c0
+        return c0 + (c1 - c0) * (mach - m0) / (m1 - m0)
+
+    def to_rows(self):
+        return [{"mach": m, "cd": c} for m, c in self.points]
+
+    @staticmethod
+    def from_csv(path: str) -> "CdMachTable":
+        """Read a two-column Mach,Cd file.
+
+        Deliberately forgiving about the header, because every tool writes it
+        differently: RASAero, RockSim and a hand-typed spreadsheet all land
+        here. Any line whose first two fields parse as numbers is a data row.
+        """
+        import csv as _csv
+        import os as _os
+        points = []
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
+            sample = fh.read(4096)
+            fh.seek(0)
+            delim = ";" if sample.count(";") > sample.count(",") else ","
+            if sample.count("\t") > sample.count(delim):
+                delim = "\t"
+            for raw in _csv.reader(fh, delimiter=delim):
+                if len(raw) < 2:
+                    continue
+                try:
+                    mach = float(str(raw[0]).strip())
+                    cd = float(str(raw[1]).strip())
+                except (TypeError, ValueError):
+                    continue          # header or blurb line
+                if mach < 0 or cd < 0:
+                    continue
+                points.append((mach, cd))
+        if not points:
+            raise ValueError(
+                "No Mach,Cd rows found. Expected two numeric columns, "
+                "Mach first and Cd second.")
+        return CdMachTable(points, name=_os.path.basename(path))
+
+    def to_csv(self, path: str):
+        import csv as _csv
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["Mach", "Cd"])
+            for m, c in self.points:
+                w.writerow([f"{m:.4f}", f"{c:.5f}"])
+
+    def summary(self) -> str:
+        lo, hi = self.mach_range
+        cds = [c for _m, c in self.points]
+        return (f"{self.name}: {len(self.points)} points, Mach {lo:.2f}-{hi:.2f}, "
+                f"Cd {min(cds):.3f}-{max(cds):.3f}")
