@@ -276,7 +276,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         for title, fields in (
             ("Oxidizer Tank (self-pressurizing N2O)", _TANK_FIELDS),
             ("Injector", _INJ_FIELDS),
-            ("Fuel Grain & Combustion Chamber", _GRAIN_FIELDS),
+            ("Fuel Grain && Combustion Chamber", _GRAIN_FIELDS),
             ("Nozzle", _NOZZLE_FIELDS),
             ("Combustion Gas", _GAS_FIELDS),
         ):
@@ -359,6 +359,9 @@ class EngineLabWidget(QtWidgets.QWidget):
         right.setMinimumWidth(420)
         right_layout = QtWidgets.QVBoxLayout(right)
         self.figure = plt.Figure(figsize=(8, 6))
+        # Theme it immediately: an unthemed canvas is a white slab in a black
+        # window until the first run, which reads as a broken panel.
+        theme.style_figure(self.figure)
         self.canvas = FigureCanvas(self.figure)
         right_layout.addWidget(self.canvas)
         splitter.addWidget(right)

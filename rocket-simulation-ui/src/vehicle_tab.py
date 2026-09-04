@@ -1,4 +1,4 @@
-"""Vehicle tab: airframe shape, mass and balance, launch site, and recovery.
+"""Aerodynamics: airframe shape, mass and balance, launch site, and recovery.
 
 Three things the simulator needs that had nowhere to live before:
 
@@ -246,7 +246,7 @@ class VehicleTabWidget(QtWidgets.QWidget):
         self.tabs.addTab(self._airframe_page(), "Airframe")
         self.tabs.addTab(self._site_page(), "Launch Site")
         self.tabs.addTab(self._recovery_page(), "Recovery")
-        self.tabs.addTab(self._mass_page(), "Mass & Ballast")
+        self.tabs.addTab(self._mass_page(), "Mass && Ballast")
         outer.addWidget(self.tabs, stretch=1)
 
         self.summary = QtWidgets.QLabel()

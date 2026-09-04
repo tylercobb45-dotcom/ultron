@@ -83,7 +83,7 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
         intro = QtWidgets.QLabel(
             "<b>Aero Analysis</b><br>"
             "<span style='font-size:9pt'>Drag coefficient against Mach for the "
-            "airframe on the Vehicle tab, the way RASAero presents it: "
+            "airframe on this tab, the way RASAero presents it: "
             "power-off and power-on curves, the component breakdown behind "
             "them, and stability across the same range.</span>")
         intro.setWordWrap(True)
@@ -107,10 +107,10 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
         self.mach_step = QtWidgets.QLineEdit("0.05")
         form.addRow("Mach step:", self.mach_step)
         self.cg_input = QtWidgets.QLineEdit("")
-        self.cg_input.setPlaceholderText("blank = take from Vehicle tab")
+        self.cg_input.setPlaceholderText("blank = take from Airframe page")
         self.cg_input.setToolTip(
             "CG from the nose tip, for the static margin column. Blank uses "
-            "the Vehicle tab's dry CG.")
+            "the dry CG from the Airframe page.")
         form.addRow("CG from nose (m):", self.cg_input)
         lv.addWidget(sweep)
 

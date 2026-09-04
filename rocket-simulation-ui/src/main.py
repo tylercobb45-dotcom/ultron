@@ -1300,7 +1300,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         left_layout.addWidget(self.error_label)
 
         # Which model actually flew, and which inputs on this tab it ignored.
-        # The 2-DOF model takes drag and recovery from the Vehicle tab, so the
+        # The 2-DOF model takes drag and recovery from the Aerodynamics tab, so
         # fields here can be live and unused at the same time - saying so is
         # better than letting someone tune a number that does nothing.
         self.model_note_label = QtWidgets.QLabel("")
@@ -4025,7 +4025,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         """What drag the flight should use: a curve, a constant, or None.
 
         Precedence is by how much the source actually knows. An imported
-        Cd(Mach) table describes the transonic rise; the Vehicle tab's single
+        Cd(Mach) table describes the transonic rise; the Aerodynamics tab's
         measured Cd does not but is still a measurement; with neither, the
         component buildup estimates it.
         """
@@ -4063,10 +4063,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         Which inputs win, and why:
 
         * Masses and body diameter come from the Simulation tab when entered
-          there - they are the same physical quantities the Vehicle tab holds,
+          there - they are the same physical quantities the Aerodynamics tab
           and letting the two disagree silently is how a 98 mm rocket ends up
-          flown as the Vehicle tab's 140 mm default.
-        * Drag comes from the Vehicle tab: the 2-DOF model rebuilds Cd every
+          flown as the Aerodynamics tab's 140 mm default.
+        * Drag comes from the Aerodynamics tab: the 2-DOF model rebuilds Cd
           step from the airframe shape, which is the entire point of it. The
           Simulation tab's single Cd and reference area are used only by the
           fallback model. Same for its parachute fields, which the Vehicle
@@ -4122,7 +4122,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             drag = (f"imported Cd(Mach) curve '{cd_override.name}' "
                     f"(Mach {lo:.2f}-{hi:.2f})")
         elif cd_override:
-            drag = (f"fixed Cd {cd_override:.3f} from the Vehicle tab's "
+            drag = (f"fixed Cd {cd_override:.3f} from the Aerodynamics tab's "
                     f"measured-Cd override")
         elif cds:
             drag = (f"Cd rebuilt every step from the airframe shape "

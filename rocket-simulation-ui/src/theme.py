@@ -70,10 +70,13 @@ QTabBar::tab {{
     color: {p['text_dim']};
     border: 1px solid {p['border_soft']};
     border-bottom: none;
-    padding: 8px 14px;
+    /* Generous horizontal padding and a minimum width: with letter-spacing
+       applied, Qt sizes the tab from the unspaced text and then clips the
+       first character off every label. */
+    padding: 8px 20px;
+    min-width: 70px;
     margin-right: 2px;
     font-weight: 600;
-    letter-spacing: 0.2px;
     font-size: 9pt;
 }}
 QTabBar::tab:selected {{

@@ -620,7 +620,7 @@ def _fin_flutter_check(rep, v, fin, t, alt, vel):
 def _mach_aware_drag(flight) -> bool:
     """Did this flight rebuild Cd as Mach changed, or hold it fixed?
 
-    A fixed Cd - the Vehicle tab's measured-Cd override, or the legacy
+    A fixed Cd - the Aerodynamics tab's measured-Cd override, or the legacy
     vertical model - shows the same body Cd at every Mach number. The 2-DOF
     buildup does not. Decided from the data rather than from which code path
     we think ran, so an override is caught even inside the 2-DOF model.
@@ -705,7 +705,7 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight):
             "measured-Cd override or the legacy vertical model. Real Cd can "
             "rise by 50-100% through the transonic rise, so above Mach 0.8 the "
             "predicted apogee is optimistic.",
-            "Clear the measured-Cd override on the Vehicle tab to use the "
+            "Clear the measured-Cd override on the Aerodynamics tab to use the "
             "Mach-aware drag buildup, or supply a Cd(M) table from "
             "CFD/RASAero.",
             t_event=None))

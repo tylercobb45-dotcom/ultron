@@ -63,7 +63,20 @@ class MassBuildupWidget(QtWidgets.QWidget):
 
         self.table = QtWidgets.QTableWidget(0, len(_COLS))
         self.table.setHorizontalHeaderLabels(_COLS)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        # Stretch the NAME column and size the rest to their content. Stretching
+        # the last section instead left "Length" absurdly wide and clipped the
+        # "Station" header down to "tation".
+        header.setStretchLastSection(False)
+        modes = [QtWidgets.QHeaderView.ResizeToContents,   # Use
+                 QtWidgets.QHeaderView.Stretch,            # Name
+                 QtWidgets.QHeaderView.ResizeToContents,   # Kind
+                 QtWidgets.QHeaderView.ResizeToContents,   # Mass
+                 QtWidgets.QHeaderView.ResizeToContents,   # Station
+                 QtWidgets.QHeaderView.ResizeToContents]   # Length
+        for i, mode in enumerate(modes):
+            header.setSectionResizeMode(i, mode)
+        header.setMinimumSectionSize(70)
         self.table.verticalHeader().setVisible(False)
         self.table.itemChanged.connect(lambda _i: self.refresh_summary())
         v.addWidget(self.table, stretch=1)
