@@ -16,13 +16,9 @@ import shutil
 
 from PyQt5 import QtWidgets, QtCore
 
-_INPUT_STYLE = """
-    QLineEdit, QComboBox {
-        padding: 5px 8px; font-size: 10pt;
-        border: 2px solid #BCA16A; border-radius: 6px;
-        background-color: #FDF6E3; color: #3C2F1E; min-height: 22px;
-    }
-"""
+import theme
+
+_INPUT_STYLE = ""
 
 # Fields worth surfacing in the summary pane, per section.
 _SUMMARY = [
@@ -37,6 +33,9 @@ _SUMMARY = [
         ("L_tank", "Tank length (mm)"), ("d_throat", "Throat diameter (mm)"),
         ("eps_exp", "Expansion ratio"), ("d_grain_outer", "Grain OD (mm)"),
         ("d_port_0", "Initial port (mm)"), ("L_grain", "Grain length (mm)"),
+    ]),
+    ("Airframe & site", "airframe", [
+        ("nose_shape", "Nose profile"),
     ]),
     ("Materials & structure", "vehicle", [
         ("airframe_material", "Airframe"), ("fin_material", "Fins"),
@@ -90,11 +89,7 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         lv.addWidget(intro)
 
         self.list = QtWidgets.QListWidget()
-        self.list.setStyleSheet(
-            "QListWidget { background:#FDF6E3; border:2px solid #BCA16A; "
-            "border-radius:6px; font-size:11pt; } "
-            "QListWidget::item { padding:7px; } "
-            "QListWidget::item:selected { background:#E94F37; color:white; }")
+        self.list.setStyleSheet("QListWidget { font-size:11pt; }")
         self.list.currentItemChanged.connect(self._show_details)
         self.list.itemDoubleClicked.connect(self._load_selected)
         lv.addWidget(self.list, stretch=1)
@@ -134,19 +129,17 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         right = QtWidgets.QWidget()
         rv = QtWidgets.QVBoxLayout(right)
         self.title = QtWidgets.QLabel("Select a rocket")
-        self.title.setStyleSheet("font-size:13pt; font-weight:bold; color:#3C2F1E;")
+        self.title.setStyleSheet(f"font-size:13pt; font-weight:bold; color:{theme.PALETTE['accent']};")
         rv.addWidget(self.title)
 
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
-        self.status.setStyleSheet("color:#1E6B2E; font-weight:bold;")
+        self.status.setStyleSheet(f"color:{theme.PALETTE['ok']}; font-weight:bold;")
         rv.addWidget(self.status)
 
         self.details = QtWidgets.QTextEdit()
         self.details.setReadOnly(True)
-        self.details.setStyleSheet(
-            "background:#FDF6E3; border:2px solid #BCA16A; border-radius:8px; "
-            "padding:10px; color:#3C2F1E; font-size:10pt;")
+        self.details.setStyleSheet(f"font-size:10pt; padding:10px;")
         rv.addWidget(self.details, stretch=1)
         right.setMinimumWidth(360)
         splitter.addWidget(right)
@@ -371,13 +364,13 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         if config.get("description"):
             lines.append(f"<i>{config['description']}</i><br>")
         if config.get("created"):
-            lines.append(f"<span style='color:#6A6154'>Saved {config['created']}</span><br>")
+            lines.append(f"<span style='color:#A8A8B4'>Saved {config['created']}</span><br>")
 
         for heading, section, fields in _SUMMARY:
             data = config.get(section) or {}
             if not data:
                 lines.append(f"<br><b>{heading}</b><br>"
-                             f"<span style='color:#8A6100'>not stored in this rocket "
+                             f"<span style='color:#F5A623'>not stored in this rocket "
                              f"- it was saved before this section existed, and loading "
                              f"it will leave those tabs untouched.</span><br>")
                 continue
@@ -390,7 +383,7 @@ class RocketLibraryWidget(QtWidgets.QWidget):
             exists = os.path.exists(curve)
             lines.append(
                 f"<br><b>Thrust curve</b><br>&nbsp;&nbsp;{os.path.basename(curve)}"
-                + ("" if exists else " <span style='color:#8E1B10'>(file is missing - "
+                + ("" if exists else " <span style='color:#FF3B30'>(file is missing - "
                                     "regenerate it in the Engine Lab)</span>") + "<br>")
         self.details.setHtml("".join(lines))
 

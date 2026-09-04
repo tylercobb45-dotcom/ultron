@@ -24,6 +24,7 @@ import time
 import traceback
 
 from PyQt5 import QtWidgets, QtCore
+import theme
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -115,18 +116,8 @@ _PRESETS = {
     ),
 }
 
-_INPUT_STYLE = """
-    QLineEdit, QComboBox {
-        padding: 6px 10px;
-        font-size: 11pt;
-        border: 2px solid #BCA16A;
-        border-radius: 6px;
-        background-color: #FDF6E3;
-        color: #3C2F1E;
-        min-height: 26px;
-    }
-    QLineEdit:focus, QComboBox:focus { border: 2px solid #E94F37; background-color: #FFFFFF; }
-"""
+# Inputs are styled by the application-wide theme; nothing local needed.
+_INPUT_STYLE = ""
 
 
 class EngineLabWidget(QtWidgets.QWidget):
@@ -224,15 +215,16 @@ class EngineLabWidget(QtWidgets.QWidget):
 
         self.results_label = QtWidgets.QLabel("Run the engine to see performance metrics.")
         self.results_label.setWordWrap(True)
-        self.results_label.setStyleSheet('''
-            QLabel { background-color: #FDF6E3; border: 2px solid #E94F37;
-                     border-radius: 8px; padding: 10px; color: #3C2F1E; font-size: 10pt; }
-        ''')
+        self.results_label.setStyleSheet(
+            f"QLabel {{ background:{theme.PALETTE['panel']}; "
+            f"border:1px solid {theme.PALETTE['border']}; "
+            f"border-left:3px solid {theme.PALETTE['accent']}; padding:10px; "
+            f"color:{theme.PALETTE['text']}; font-size:10pt; }}")
         left_layout.addWidget(self.results_label)
 
         self.error_label = QtWidgets.QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: red; font-weight: bold;")
+        self.error_label.setStyleSheet(f"color:{theme.PALETTE['critical']}; font-weight:bold;")
         left_layout.addWidget(self.error_label)
 
         splitter.addWidget(left)
@@ -388,6 +380,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         ax[1, 1].legend(fontsize=9)
         for a in ax.flat:
             a.grid(alpha=0.3)
+        theme.style_figure(self.figure)
         if self.figure.get_layout_engine() is None:
             self.figure.tight_layout()
         self.canvas.draw()

@@ -7,6 +7,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from simulation import run_simulation
 import os
 import json
+import copy
 import numpy as np
 import random
 import traceback
@@ -17,6 +18,10 @@ from live_code_viewer import LiveCodeViewer  # Import our live code viewer
 from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
+from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
+import theme as app_theme
+import flight_model
+import aero
 
 
 def user_settings_path():
@@ -66,7 +71,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self._rocket_img_cache = {}
         
         # Initialize theme system
-        self.current_theme = "retro"  # Default to retro theme
+        self.current_theme = "futuristic"  # Dark futuristic is the default now
         self.themes = self.setup_themes()
         
         # Set user settings file path
@@ -226,7 +231,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     def setup_themes(self):
         """Define all available themes for the application"""
-        return {
+        themes = {
             "retro": {
                 "name": "JARVIS Retro",
                 "description": "Classic 8BitDo retro gaming aesthetic",
@@ -282,6 +287,46 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 "plot_bg": "#1A252F"
             }
         }
+        # Build the dark theme from an existing one so it is guaranteed to
+        # carry every key the widget-styling code reads, then recolour it.
+        # Missing a single key here raises deep inside init_ui, and the app's
+        # own crash handler turns that into a modal dialog that just hangs.
+        pal = app_theme.PALETTE
+        futuristic = copy.deepcopy(themes["professional"])
+        futuristic["name"] = "Dark Futuristic"
+        futuristic["description"] = "Black ground, red accent, white text, sharp edges"
+        futuristic["plot_bg"] = pal["plot_bg"]
+
+        def _recolour(key, value):
+            k = key.lower()
+            if "gradient" in str(value):
+                return pal["panel"]
+            if "status_active" in k:
+                return pal["ok"]
+            if "status_inactive" in k:
+                return pal["text_faint"]
+            if "accent" in k:
+                return pal["accent"]
+            if "border" in k:
+                return pal["border"]
+            if "button_bg" in k or "gauge_bg" in k or "header_bg" in k:
+                return pal["raised"]
+            if "secondary_bg" in k or k.endswith("_bg") or k == "bg":
+                return pal["panel"]
+            if "primary_bg" in k:
+                return pal["bg"]
+            if "text" in k:
+                return pal["text"]
+            return value
+
+        for section in ("colors", "telemetry"):
+            block = futuristic.get(section)
+            if isinstance(block, dict):
+                for key in list(block):
+                    block[key] = _recolour(key, block[key])
+        themes["futuristic"] = futuristic
+        return themes
+
 
     def apply_theme(self, theme_name):
         """Apply the selected theme to the entire application"""
@@ -292,7 +337,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         theme = self.themes[theme_name]
         
         # Apply base application style
-        if theme_name == "retro":
+        if theme_name == "futuristic":
+            self.apply_futuristic_theme(theme)
+        elif theme_name == "retro":
             self.apply_retro_theme(theme)
         elif theme_name == "professional":
             self.apply_professional_theme(theme)
@@ -322,6 +369,31 @@ class RocketSimulationUI(QtWidgets.QWidget):
             
         # Save theme preference
         self.save_theme_preference()
+
+    def apply_futuristic_theme(self, theme):
+        """Dark futuristic theme.
+
+        Unlike the other two, this one does not paint widgets individually -
+        the whole look comes from the application-wide stylesheet in theme.py.
+        All this has to do is strip the per-widget sheets the other themes
+        leave behind, otherwise their cream backgrounds sit on top of it
+        (a widget stylesheet always beats the application one).
+        """
+        self.setStyleSheet("")
+        pal = app_theme.PALETTE
+        for name, extra in (('result_label', f"border-left:3px solid {pal['accent']};"),
+                            ('error_label', f"color:{pal['critical']}; font-weight:bold;")):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setStyleSheet(
+                    f"background:{pal['panel']}; color:{pal['text']}; "
+                    f"border:1px solid {pal['border']}; padding:10px; {extra}")
+        # The application-wide sheet is installed once at startup; re-applying
+        # it here forces a full restyle of the entire widget tree on every
+        # theme switch, which is slow and unnecessary.
+        app = QtWidgets.QApplication.instance()
+        if app is not None and not app.styleSheet():
+            app.setStyleSheet(app_theme.stylesheet())
 
     def apply_retro_theme(self, theme):
         """Apply the retro JARVIS theme"""
@@ -569,10 +641,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             try:
                 with open(self.user_settings_file, 'r') as f:
                     settings = json.load(f)
-                    return settings.get('theme', 'retro')
+                    return settings.get('theme', 'futuristic')
             except:
                 pass
-        return 'retro'
+        return 'futuristic'
 
     def update_telemetry_theme(self):
         """Update telemetry dashboard styling based on current theme"""
@@ -1125,28 +1197,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.chute_size_unit = QtWidgets.QComboBox(); self.chute_size_unit.addItems(["m²", "ft²"])
         chute_size_row = QtWidgets.QHBoxLayout(); chute_size_row.addWidget(self.chute_size_input); chute_size_row.addWidget(self.chute_size_unit)
 
-        # Set size policies and styling for better spacing
-        input_style = """
-            QLineEdit {
-                padding: 8px 12px;
-                font-size: 14px;
-                font-family: 'Arial', sans-serif;
-                border: 2px solid #BCA16A;
-                border-radius: 6px;
-                background-color: #FDF6E3;
-                color: #3C2F1E;
-                min-height: 32px;
-                min-width: 120px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #E94F37;
-                background-color: #FFFFFF;
-            }
-            QLineEdit:hover {
-                border: 2px solid #E94F37;
-                background-color: #FFFFFF;
-            }
-        """
+        # Inputs are styled by the application-wide theme (theme.py).
+        # Themes that want their own look re-apply it in apply_*_theme().
+        input_style = ""
         
         for widget in [self.mass_input, self.prop_mass_input, self.cd_input, self.area_input, self.rho_input,
                        self.timestep_input,
@@ -1155,38 +1208,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
             widget.setStyleSheet(input_style)
             
-        # Style combo boxes to match
-        combo_style = """
-            QComboBox {
-                padding: 8px 12px;
-                font-size: 14px;
-                font-family: 'Arial', sans-serif;
-                border: 2px solid #BCA16A;
-                border-radius: 6px;
-                background-color: #FDF6E3;
-                color: #3C2F1E;
-                min-height: 32px;
-                min-width: 80px;
-            }
-            QComboBox:focus {
-                border: 2px solid #E94F37;
-                background-color: #FFFFFF;
-            }
-            QComboBox:hover {
-                border: 2px solid #E94F37;
-                background-color: #FFFFFF;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 20px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border: none;
-                color: #3C2F1E;
-                font-size: 12px;
-            }
-        """
+        combo_style = ""
         
         for combo in [self.mass_unit, self.prop_mass_unit, self.area_unit, self.rho_unit, self.timestep_unit,
                        self.fin_thickness_unit, self.fin_length_unit, self.body_diameter_unit,
@@ -1330,6 +1352,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # --- Flight Report: failure-mode analysis of the last simulation ---
         self.flight_report = FlightReportWidget()
         self.tabs.addTab(self.flight_report, "Flight Report")
+
+        # --- Vehicle: airframe shape, mass and balance, launch site, recovery ---
+        self.vehicle_tab = VehicleTabWidget()
+        self.tabs.insertTab(1, self.vehicle_tab, "Vehicle")
 
         # --- Rockets: the saved-rocket library. First tab, because picking a
         # rocket is where a session starts. ---
@@ -3757,6 +3783,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.prop_mass_input.setText(f"{propellant_mass_kg:.3f}")
         self.mass_unit.setCurrentIndex(0)  # kg
         self.mass_input.setText(f"{dry_mass_kg + propellant_mass_kg:.3f}")
+        if hasattr(self, 'vehicle_tab'):
+            self.vehicle_tab.set_propellant_mass(propellant_mass_kg)
         self.result_label.setText(
             f"Loaded thrust curve from Engine Lab: {os.path.basename(csv_path)}<br>"
             f"Liftoff mass set to {dry_mass_kg + propellant_mass_kg:.3f} kg "
@@ -3917,12 +3945,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'chute_cd': chute_cd,
                 'propellant_mass': prop_m
             }
-            results = run_simulation(m, Cd, A, rho, **sim_kwargs)
+            results, self.last_flight_summary = self.run_flight_simulation(
+                m, Cd, A, rho, sim_kwargs, time_step)
             # Error handling for simulation results
             if isinstance(results, dict) and 'error' in results:
                 self.error_label.setText(results['error'])
                 return
-            if not isinstance(results, list):
+            if not isinstance(results, list) or not results:
                 self.error_label.setText("Simulation returned unexpected data.")
                 return
             self.display_results(results)
@@ -3931,6 +3960,43 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
+
+    def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step):
+        """Fly the vehicle.
+
+        Uses the 2-DOF model (wind, full atmosphere, Mach-5 drag buildup,
+        staged recovery, moving CG) whenever there is a thrust curve and a
+        Vehicle configuration to fly. Falls back to the original vertical
+        model otherwise, so profiles saved before the Vehicle tab existed
+        still behave exactly as they did.
+        """
+        curve_path = sim_kwargs.get('thrust_curve_path')
+        if hasattr(self, 'vehicle_tab') and curve_path:
+            try:
+                points, curve_prop = flight_model.load_thrust_curve(curve_path)
+                if points:
+                    airframe = self.vehicle_tab.airframe()
+                    site = self.vehicle_tab.launch_site()
+                    recovery_system = self.vehicle_tab.recovery_system()
+                    mass_props = self.vehicle_tab.mass_properties()
+                    # The Simulation tab's masses win if they were entered:
+                    # liftoff mass there is dry + propellant.
+                    prop = sim_kwargs.get('propellant_mass') or curve_prop or 0.0
+                    if prop > 0:
+                        mass_props.propellant_mass_kg = prop
+                    if m > prop > 0:
+                        mass_props.dry_mass_kg = m - prop
+                    results, summary = flight_model.run_flight(
+                        points, airframe, site, recovery_system, mass_props,
+                        output_dt=max(0.02, float(time_step or 0.05)))
+                    if results:
+                        return results, summary
+            except Exception:
+                traceback.print_exc()
+                self.error_label.setText(
+                    "Advanced flight model failed; fell back to the basic "
+                    "vertical model. See the console for details.")
+        return run_simulation(m, Cd, A, rho, **sim_kwargs), None
 
     def update_flight_report(self, results, body_diameter=None):
         """Hand the finished run to the Flight Report tab for failure analysis."""
@@ -3986,10 +4052,16 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if results:
          # --- Populate spreadsheet table ---
             headers = list(results[0].keys()) if results else []
+            # Rendering every sample of a long flight means tens of thousands
+            # of cells and a window that locks up for a minute; show a strided
+            # view instead. The full dataset still drives the plots and report.
+            max_rows = 600
+            stride = max(1, len(results) // max_rows)
+            shown = results[::stride]
             self.spreadsheet_table.setColumnCount(len(headers))
-            self.spreadsheet_table.setRowCount(len(results))
+            self.spreadsheet_table.setRowCount(len(shown))
             self.spreadsheet_table.setHorizontalHeaderLabels([h.capitalize() for h in headers])
-            for row_idx, row in enumerate(results):
+            for row_idx, row in enumerate(shown):
                 for col_idx, key in enumerate(headers):
                     val = row[key]
                     # Format floats for readability
@@ -4678,6 +4750,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             config['engine'] = self.engine_lab.get_config()
         if hasattr(self, 'flight_report'):
             config['vehicle'] = self.flight_report.get_config()
+        if hasattr(self, 'vehicle_tab'):
+            config['airframe'] = self.vehicle_tab.get_config()
         return config
 
     def apply_configuration(self, config):
@@ -4733,6 +4807,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 self.engine_lab.apply_config(config['engine'])
             if hasattr(self, 'flight_report') and config.get('vehicle'):
                 self.flight_report.apply_config(config['vehicle'])
+            if hasattr(self, 'vehicle_tab') and config.get('airframe'):
+                self.vehicle_tab.apply_config(config['airframe'])
 
             # Thrust curve
             thrust_path = config.get('thrust_curve_path')
@@ -4956,6 +5032,9 @@ if __name__ == "__main__":
     base_font = app.font()
     base_font.setPointSizeF(max(base_font.pointSizeF(), 10.0))
     app.setFont(base_font)
+
+    # Dark futuristic theme, applied once for every widget in the app.
+    app.setStyleSheet(app_theme.stylesheet())
 
     # Splash screen with GIF animation
     gif_path = os.path.join(os.path.dirname(__file__), 'jarvis.gif')

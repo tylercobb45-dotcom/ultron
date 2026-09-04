@@ -229,16 +229,107 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight)
     _engine_checks(rep, v, engine_result, engine)
 
+    _trajectory_checks(rep, v, flight, t, alt, vel)
+
     rep.not_evaluated = [
-        "Static stability margin (CP/CG) - the simulator does not track "
-        "component masses or Barrowman geometry.",
-        "Fin torsional divergence, flutter of a non-trapezoidal planform.",
+        "Fin torsional divergence, and flutter of a non-trapezoidal planform.",
         "Joint-level structure: shear pins, coupler bond lines, motor mount "
         "retention, deployment zippering.",
         "Ignition transient and chuffing at motor start.",
-        "Wind, weathercocking, and off-vertical rail departure.",
+        "Gusts and wind direction changes - the wind model is a steady "
+        "power-law profile, not turbulence.",
+        "Roll, coning, and any motion out of the vertical plane.",
     ]
     return _finalize(rep)
+
+
+def _trajectory_checks(rep, v, flight, t, alt, vel):
+    """Checks that need the 2-DOF model's data. Skipped on a legacy run."""
+    if not flight or 'stability_cal' not in flight[0]:
+        return
+
+    # --- W-01 static stability margin through the burn ---
+    thrust = _series(flight, "thrust")
+    peak = max(thrust) if thrust else 0.0
+    boost = [r for r in flight if r.get("thrust", 0) > 0.05 * peak] if peak > 0 else []
+    if boost:
+        margins = [r["stability_cal"] for r in boost]
+        worst = min(margins)
+        i_worst = margins.index(worst)
+        status = _band_status(worst, 1.0, 1.5, 4.0, 6.0)
+        rep.checks.append(Check(
+            "W-01", "Stability", "Static stability margin", status,
+            f"{worst:,.2f} cal min ({max(margins):,.2f} max)",
+            "1.5 - 4.0 calibers",
+            f"Barrowman centre of pressure against the centre of gravity as "
+            f"propellant burns off. Under 1 caliber the vehicle is unstable and "
+            f"will tumble; over about 4 it is overstable and weathercocks hard "
+            f"into wind, trading altitude for a trip downwind. Margin moves "
+            f"during the burn because the CG walks as propellant leaves.",
+            "Under 1 cal: move mass forward or grow the fins. Over 4 cal: the "
+            "rocket is nose-heavy, which costs altitude in any wind."
+            if status != OK else "Margin stays in the usual flyable band.",
+            t_event=boost[i_worst]["time"], margin=worst / 1.5 - 1.0))
+
+    # --- W-02 weathercocking / angle of attack ---
+    if 'angle_of_attack_deg' in flight[0] and boost:
+        # While the vehicle is on the rail it is physically constrained, so the
+        # angle between its axis and the wind is not an angle of attack it is
+        # actually flying at. Only free flight counts.
+        aoa = [(abs(r.get("angle_of_attack_deg", 0.0)), r["time"])
+               for r in boost if r["time"] > 0.3 and not r.get("on_rail")]
+        if aoa:
+            worst_aoa, t_aoa = max(aoa)
+            tilt = max(abs(r.get("angle_from_vertical_deg", 0.0)) for r in boost)
+            rep.checks.append(Check(
+                "W-02", "Stability", "Weathercocking / angle of attack",
+                _band_status(worst_aoa, None, None, 10.0, 20.0),
+                f"{worst_aoa:,.1f} deg AoA, {tilt:,.1f} deg tilt",
+                "under 10 deg",
+                f"Peak angle of attack during boost, and how far off vertical the "
+                f"vehicle ended up pointing. Fins only work at small angles - past "
+                f"10-15 degrees they stall and the restoring moment collapses. The "
+                f"tilt is where the altitude went if the flight came up short.",
+                "Reduce the stability margin, launch in less wind, or tilt the "
+                "rail into the wind to cancel the weathercock."
+                if worst_aoa > 10 else "Vehicle tracks close to its flight path.",
+                t_event=t_aoa))
+
+    # --- W-03 downrange drift / recovery distance ---
+    if 'downrange' in flight[0]:
+        drift = abs(flight[-1].get("downrange", 0.0))
+        rep.checks.append(Check(
+            "W-03", "Recovery", "Downrange drift",
+            _band_status(drift, None, None, 1500.0, 4000.0),
+            f"{drift:,.0f} m ({drift*3.28084:,.0f} ft)",
+            "under 1.5 km",
+            f"Where the vehicle lands relative to the pad, from weathercocking on "
+            f"the way up plus wind drift under canopy on the way down. High-altitude "
+            f"dual deploy drifts kilometres; that is the whole reason to hold the "
+            f"main until low altitude.",
+            "Deploy the main lower, use a smaller drogue, or check the recovery "
+            "area is big enough for this." if drift > 1500 else
+            "Landing stays within a reasonable recovery walk.",
+            t_event=t[-1]))
+
+    # --- W-04 supersonic model validity, now that drag is Mach-aware ---
+    if rep.max_mach > 5.0:
+        rep.checks.append(Check(
+            "W-04", "Fidelity", "Aerodynamic model range", CRITICAL,
+            f"Mach {rep.max_mach:.2f}", "validated to Mach 5",
+            "The drag buildup is built and checked for the subsonic through "
+            "Mach 5 range. Above Mach 5 real air starts dissociating and this "
+            "model does not represent it.",
+            "Treat this trajectory as unreliable above Mach 5."))
+    else:
+        rep.checks.append(Check(
+            "W-04", "Fidelity", "Aerodynamic model range", OK,
+            f"Mach {rep.max_mach:.2f}", "validated to Mach 5",
+            "Drag is recomputed every step from Reynolds and Mach with a "
+            "component buildup (skin friction, base, wave, fins), so the "
+            "transonic rise and supersonic falloff are represented rather than "
+            "a single fixed coefficient. Supersonic wave drag is an engineering "
+            "correlation - treat it as +/-20%, not CFD."))
 
 
 def _finalize(rep: Report) -> Report:

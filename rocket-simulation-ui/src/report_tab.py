@@ -20,6 +20,7 @@ import webbrowser
 from pathlib import Path
 
 from PyQt5 import QtWidgets, QtGui, QtCore
+import theme
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -28,20 +29,13 @@ import failure_analysis as fa
 
 # status -> (table row background, text colour, banner colour)
 _COLORS = {
-    fa.OK:       ("#DDF0DC", "#1E6B2E", "#2E8B57"),
-    fa.CAUTION:  ("#FBEFCE", "#8A6100", "#E8A33D"),
-    fa.CRITICAL: ("#F8DAD6", "#8E1B10", "#C0392B"),
-    fa.NO_DATA:  ("#ECECEC", "#5A5A5A", "#8A8A8A"),
+    fa.OK:       theme.status_colors("OK"),
+    fa.CAUTION:  theme.status_colors("CAUTION"),
+    fa.CRITICAL: theme.status_colors("CRITICAL"),
+    fa.NO_DATA:  theme.status_colors("NO DATA"),
 }
 
-_INPUT_STYLE = """
-    QLineEdit, QComboBox {
-        padding: 5px 8px; font-size: 10pt;
-        border: 2px solid #BCA16A; border-radius: 6px;
-        background-color: #FDF6E3; color: #3C2F1E; min-height: 22px;
-    }
-    QLineEdit:focus, QComboBox:focus { border: 2px solid #E94F37; background-color: #FFFFFF; }
-"""
+_INPUT_STYLE = ""
 
 # (label, VehicleConfig attribute, display factor, decimals)
 _AIRFRAME_FIELDS = [
@@ -139,8 +133,9 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.material_note = QtWidgets.QLabel()
         self.material_note.setWordWrap(True)
         self.material_note.setStyleSheet(
-            "font-size: 9pt; color: #4A3A24; background: #FDF6E3; "
-            "border: 1px solid #BCA16A; border-radius: 6px; padding: 6px;")
+            f"font-size:9pt; color:{theme.PALETTE['text_dim']}; "
+            f"background:{theme.PALETTE['panel']}; "
+            f"border:1px solid {theme.PALETTE['border']}; padding:6px;")
         mat_form.addRow(self.material_note)
         vbox.addWidget(mat_group)
 
@@ -182,7 +177,8 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.banner = QtWidgets.QLabel("Run a simulation to generate a failure report.")
         self.banner.setWordWrap(True)
         self.banner.setStyleSheet(
-            "background:#ECECEC; color:#3C2F1E; border-radius:8px; padding:12px; font-size:11pt;")
+            f"background:{theme.PALETTE['panel']}; color:{theme.PALETTE['text']}; "
+            f"padding:12px; font-size:11pt; border-left:4px solid {theme.PALETTE['border']};")
         vbox.addWidget(self.banner)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -207,8 +203,9 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.detail.setMinimumHeight(90)
         self.detail.setMaximumHeight(170)
         self.detail.setStyleSheet(
-            "background:#FDF6E3; border:2px solid #BCA16A; border-radius:8px; "
-            "padding:10px; color:#3C2F1E; font-size:10pt;")
+            f"background:{theme.PALETTE['panel']}; "
+            f"border:1px solid {theme.PALETTE['border']}; padding:10px; "
+            f"color:{theme.PALETTE['text']}; font-size:10pt;")
         table_layout.addWidget(self.detail)
         splitter.addWidget(table_host)
 
@@ -309,7 +306,8 @@ class FlightReportWidget(QtWidgets.QWidget):
         goal_text = ("GOAL MET" if rep.goal_met else "GOAL NOT MET")
         delta = rep.apogee_ft - rep.target_ft
         self.banner.setStyleSheet(
-            f"background:{goal_bg}; color:#FFFFFF; border-radius:8px; padding:12px; font-size:11pt;")
+            f"background:{theme.PALETTE['panel']}; color:{theme.PALETTE['text']}; "
+            f"border-left:5px solid {goal_bg}; padding:12px; font-size:11pt;")
         engine_note = ("" if rep.has_engine_data else
                        " &nbsp;|&nbsp; <i>no engine data - send an Engine Lab motor to the "
                        "simulation to enable the 11 propulsion checks</i>")
@@ -434,8 +432,8 @@ class FlightReportWidget(QtWidgets.QWidget):
         a3.set_title("Skin heating vs material", fontsize=10)
         a3.legend(fontsize=8)
 
+        theme.style_figure(self.figure)
         for a in ax.flat:
-            a.grid(alpha=0.3)
             a.tick_params(labelsize=8)
             a.xaxis.label.set_size(9)
             a.yaxis.label.set_size(9)

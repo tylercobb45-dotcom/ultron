@@ -14,6 +14,12 @@ rocket-simulation-ui
 │   ├── main.py             # App entry point, PyQt5 UI, themes, telemetry dashboard
 │   ├── simulation.py       # Flight physics: thrust curve parsing, drag, parachute, atmosphere
 │   ├── engine_lab.py       # Engine Lab tab: design a hybrid engine, generate a thrust curve
+│   ├── atmosphere.py       # ISA-1976 to 86 km + launch-site conditions and wind shear
+│   ├── aero.py             # Nose/body/fin geometry, Mach-5 drag buildup, Barrowman CP
+│   ├── recovery.py         # Recovery trains: single, dual, reefed, streamer
+│   ├── flight_model.py     # 2-DOF flight: wind drift, moving CG, staged recovery
+│   ├── vehicle_tab.py      # Vehicle tab: airframe, mass/balance, launch site, recovery
+│   ├── theme.py            # Dark futuristic theme (black/red/white, sharp edges)
 │   ├── failure_analysis.py # Failure-mode checks run against a completed flight (Qt-free)
 │   ├── materials.py        # Material library: melting points, service temps, strength
 │   ├── report_tab.py       # Flight Report tab: verdict, colour-coded checks, graphs, export
@@ -68,16 +74,33 @@ Needs Python 3.12 or newer.
 
 ## Features
 
-- **Two themes** — a retro pixel-art look and an aerospace "mission control"
-  look, switchable at runtime and persisted to `src/user_settings.json`.
+- **Dark futuristic UI** — black ground, red accent, white text, square edges,
+  applied as one application-wide stylesheet. High-DPI aware, so it stays sharp
+  on scaled Windows displays.
 - **Live telemetry dashboard** — real-time altitude, velocity, acceleration,
   G-force, thrust, drag, mass, and Mach number during a simulated flight,
   plus flight-phase tracking (liftoff, powered ascent, coast, descent,
   chute descent, landed).
-- **Physics** — thrust-curve driven mass flow (Isp derived from propellant
-  mass when provided), optional ISA atmosphere model, a simple Mach-drag
-  bump near transonic speeds, and a smoothed/capped parachute deployment
-  model.
+- **Flight physics to Mach 5, at any altitude** — the U.S. Standard Atmosphere
+  to 86 km (the old model froze the temperature above 11 km and was wrong
+  through the stratosphere), and a drag coefficient rebuilt every timestep
+  from Reynolds and Mach: skin friction, base drag, nose wave drag and fin
+  drag, so the transonic rise and supersonic falloff are actually represented
+  instead of a single fixed number. Base drag drops while the motor burns,
+  because the exhaust plume fills the base.
+- **Wind and launch site** — field elevation, temperature, pressure, humidity,
+  and a wind profile that shears with height. The vehicle flies against
+  air-relative velocity, weathercocks into the wind with real pitch inertia
+  and fin restoring moment, and the model reports downrange drift and where it
+  lands.
+- **Airframe you can shape** — eight nose cone profiles (Von Karman through
+  conical, each with its own wave-drag penalty), body tube, boat tail, and fin
+  planform, all feeding the drag buildup and the Barrowman centre of pressure.
+- **Mass and balance** — CG tracked as propellant burns off, against CP, so
+  static stability margin is reported through the whole burn.
+- **Recovery systems** — single deploy, dual deploy, reefed (opens partially,
+  then disreefs), and streamer drogues, with per-stage canopy type, size,
+  trigger, and inflation time all editable.
 - **Live code viewer** — inspect the simulation source from within the app.
 - **Rocket library** — the "Rockets" tab stores every rocket you have built
   and switches between them: loading one repopulates the flight inputs, the
