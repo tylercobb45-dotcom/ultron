@@ -89,6 +89,29 @@ _NOZZLE_FIELDS = [
     ("Molar mass (g/mol)", "MW", 1.0, 1),
 ]
 
+def _hypertek_presets():
+    """Engine Lab entries for the real HyperTEK motors.
+
+    Built from presets.ENGINE_FITS so the values the UI offers are exactly the
+    ones tools/validate_presets.py checks against published performance.
+    """
+    try:
+        import presets as preset_defs
+    except Exception:
+        return {}
+    out = {}
+    for name, fit in preset_defs.ENGINE_FITS.items():
+        entry = dict(
+            fill_frac=fit.get("fill_frac", 0.85), T_tank_0=293,
+            n_holes=fit.get("n_holes", 1), Cd_inj=0.7, fuel="HTPB",
+            alpha_deg=15.0, gamma=1.22, MW=26.0,
+            rocket=dict(m_dry=6.0, Cd_body=0.55, d_body=0.098))
+        entry.update({k: v for k, v in fit.items()
+                      if k not in ("fill_frac", "n_holes")})
+        out[name] = entry
+    return out
+
+
 _PRESETS = {
     "Goddard baseline": dict(
         d_tank=0.100, L_tank=1.019, fill_frac=0.85, T_tank_0=293,
@@ -115,6 +138,7 @@ _PRESETS = {
         rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
     ),
 }
+_PRESETS.update(_hypertek_presets())
 
 # Inputs are styled by the application-wide theme; nothing local needed.
 _INPUT_STYLE = ""

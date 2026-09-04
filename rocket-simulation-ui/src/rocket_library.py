@@ -363,6 +363,10 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         lines = []
         if config.get("description"):
             lines.append(f"<i>{config['description']}</i><br>")
+        if config.get("reference"):
+            lines.append(
+                f"<span style='color:{theme.PALETTE['accent']}'>Reference data: "
+                f"{config['reference']}</span><br>")
         if config.get("created"):
             lines.append(f"<span style='color:#A8A8B4'>Saved {config['created']}</span><br>")
 
@@ -380,12 +384,18 @@ class RocketLibraryWidget(QtWidgets.QWidget):
 
         curve = config.get("thrust_curve_path")
         if curve:
-            exists = os.path.exists(curve)
+            exists = os.path.exists(curve) or os.path.exists(
+                os.path.join(_project_root(), curve))
             lines.append(
                 f"<br><b>Thrust curve</b><br>&nbsp;&nbsp;{os.path.basename(curve)}"
                 + ("" if exists else " <span style='color:#FF3B30'>(file is missing - "
                                     "regenerate it in the Engine Lab)</span>") + "<br>")
         self.details.setHtml("".join(lines))
+
+
+def _project_root() -> str:
+    """The rocket-simulation-ui directory, which preset paths are relative to."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _safe_name(name: str) -> str:

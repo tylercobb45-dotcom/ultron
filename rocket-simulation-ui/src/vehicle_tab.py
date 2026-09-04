@@ -39,6 +39,9 @@ _BODY_FIELDS = [
     ("Surface roughness (um)", "surface_roughness_um", 1.0, 1,
      "20 um is smooth painted glass; 100 um is a rough finish. Sets the "
      "skin-friction floor."),
+    ("Measured Cd override", "cd_override", 1.0, 3,
+     "0 = use the computed drag buildup. Set a number here to force a Cd you "
+     "measured or got from CFD/RASAero - it replaces the estimate entirely."),
     ("Boat tail length (mm)", "boattail_length_m", 1000.0, 1,
      "Zero for a plain blunt aft end."),
     ("Boat tail exit dia (mm)", "boattail_exit_diameter_m", 1000.0, 1,
@@ -337,7 +340,7 @@ class VehicleTabWidget(QtWidgets.QWidget):
     def _add_fields(self, form, spec, defaults):
         for label, attr, factor, dec, tip in spec:
             edit = QtWidgets.QLineEdit()
-            value = getattr(defaults, attr, 0.0)
+            value = getattr(defaults, attr, 0.0) or 0.0
             edit.setText(f"{value * factor:.{dec}f}")
             if tip:
                 edit.setToolTip(tip)
@@ -393,6 +396,11 @@ class VehicleTabWidget(QtWidgets.QWidget):
             return fallback
         edit, factor, _dec = entry
         return _f(edit.text(), fallback * factor) / factor
+
+    def cd_override(self):
+        """A measured Cd to use instead of the buildup, or None."""
+        value = self._value("cd_override", 0.0)
+        return value if value and value > 0 else None
 
     def airframe(self) -> aero.Airframe:
         af = aero.Airframe()

@@ -20,6 +20,7 @@ rocket-simulation-ui
 │   ├── flight_model.py     # 2-DOF flight: wind drift, moving CG, staged recovery
 │   ├── vehicle_tab.py      # Vehicle tab: airframe, mass/balance, launch site, recovery
 │   ├── theme.py            # Dark futuristic theme (black/red/white, sharp edges)
+│   ├── presets.py          # Preset engines and rockets, with their reference data
 │   ├── failure_analysis.py # Failure-mode checks run against a completed flight (Qt-free)
 │   ├── materials.py        # Material library: melting points, service temps, strength
 │   ├── report_tab.py       # Flight Report tab: verdict, colour-coded checks, graphs, export
@@ -33,7 +34,11 @@ rocket-simulation-ui
 │   ├── hybrid_sim/          # Tank blowdown, injector, regression, nozzle, 1-DOF flight - see its README
 │   ├── run.py, verify.py    # Standalone CLI + 27-check verification suite for the physics package
 │   └── README.md            # Physics documentation and validation results
-├── thrust_curves/          # Sample motor thrust curves (CSV and RASP .eng)
+├── tools/
+│   ├── fit_engines.py       # Fits Engine Lab configs to published motor performance
+│   ├── build_presets.py     # Regenerates the preset rocket profiles
+│   └── validate_presets.py  # Checks presets against published/reference data
+├── thrust_curves/          # Real measured motor curves (thrustcurve.org) + RASP .eng
 ├── requirements.txt
 └── README.md
 ```
@@ -102,6 +107,14 @@ Needs Python 3.12 or newer.
   then disreefs), and streamer drogues, with per-stage canopy type, size,
   trigger, and inflation time all editable.
 - **Live code viewer** — inspect the simulation source from within the app.
+- **Preset rockets and engines** — four rockets and five engines ship with the
+  app, spanning subsonic to supersonic. Each preset rocket flies a *real
+  measured* thrust curve from thrustcurve.org rather than a modelled one, and
+  the engine presets are Engine Lab configurations fitted to reproduce
+  published HyperTEK motor performance. `python tools/validate_presets.py`
+  checks all of it against the reference data and prints the residuals, so the
+  agreement (and every disagreement) is visible rather than asserted. See
+  `docs/VALIDATION.md` for what matched, what did not, and why.
 - **Rocket library** — the "Rockets" tab stores every rocket you have built
   and switches between them: loading one repopulates the flight inputs, the
   engine design, and the materials/structure in a single step, so you can keep

@@ -3988,7 +3988,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
                         mass_props.dry_mass_kg = m - prop
                     results, summary = flight_model.run_flight(
                         points, airframe, site, recovery_system, mass_props,
-                        output_dt=max(0.02, float(time_step or 0.05)))
+                        output_dt=max(0.02, float(time_step or 0.05)),
+                        cd_override=self.vehicle_tab.cd_override())
                     if results:
                         return results, summary
             except Exception:
@@ -4687,6 +4688,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
             f"this rocket - press Start Simulation to fly it.")
         self.tabs.setCurrentWidget(self.main_panel)
 
+    def resolve_thrust_curve(self, path):
+        """Turn a stored thrust-curve path into one that exists on this machine.
+
+        Presets that ship with the app record a path relative to the project so
+        they survive being unzipped anywhere; a path the user chose is already
+        absolute.
+        """
+        if not path:
+            return None
+        if os.path.isabs(path) and os.path.exists(path):
+            return path
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for base in (project_root, os.path.dirname(os.path.abspath(__file__))):
+            candidate = os.path.normpath(os.path.join(base, path))
+            if os.path.exists(candidate):
+                return candidate
+        return path if os.path.exists(path) else None
+
     def find_profile_path(self, filename):
         """Locate a profile file across every search directory."""
         for directory in self.get_profile_search_dirs():
@@ -4810,8 +4829,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if hasattr(self, 'vehicle_tab') and config.get('airframe'):
                 self.vehicle_tab.apply_config(config['airframe'])
 
-            # Thrust curve
-            thrust_path = config.get('thrust_curve_path')
+            # Thrust curve. Shipped presets store a project-relative path so
+            # they work on any machine; anything the user picked themselves is
+            # absolute and resolves directly.
+            thrust_path = self.resolve_thrust_curve(config.get('thrust_curve_path'))
             if thrust_path and os.path.exists(thrust_path):
                 self.thrust_curve_path = thrust_path
                 self.result_label.setText(f"Loaded profile thrust curve: {os.path.basename(thrust_path)}")

@@ -177,12 +177,18 @@ def run_flight(thrust_points,
                mass_props: MassProperties,
                dt: float = 0.01,
                output_dt: float = 0.05,
-               max_time: float = 900.0):
+               max_time: float = 900.0,
+               cd_override: float | None = None):
     """Integrate a flight. Returns a list of per-sample dicts.
 
     Semi-implicit Euler at a small fixed step: recovery deployment and rail
     departure are state-dependent events, which a fixed small step handles
     cleanly and an adaptive solver does not without event machinery.
+
+    cd_override forces a single constant drag coefficient instead of the
+    component buildup. Use it when you have a measured or CFD-derived Cd you
+    trust more than the estimate, or to compare against another tool that
+    assumed a fixed number.
     """
     site = site or atmosphere_mod.LaunchSite()
     airframe = airframe or aero_mod.Airframe()
@@ -280,6 +286,8 @@ def run_flight(thrust_points,
         deployed_before = recovery_system.any_deployed()
         cd_body, breakdown = aero_mod.drag_coefficient(
             mach, z, speed_rel, airframe, site, thrusting=thrusting)
+        if cd_override is not None:
+            cd_body = cd_override
         cda_body = cd_body * a_ref
         cda_recovery = recovery_system.drag_area(t)
         # Once a canopy is out the airframe is no longer flying nose-first;

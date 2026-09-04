@@ -124,7 +124,7 @@ class RecoverySystem:
     def single_deploy(diameter_m=2.0, cd=1.5, altitude_m=0.0,
                       canopy="Round parachute"):
         """One canopy, out at apogee. Simple, and it drifts for miles."""
-        return RecoverySystem("Single deploy", [
+        return RecoverySystem("Single deploy (main at apogee)", [
             RecoveryStage(name="Main", canopy_type=canopy, diameter_m=diameter_m,
                           cd=cd, trigger=TRIGGER_APOGEE, inflation_time_s=2.0),
         ])
@@ -134,7 +134,7 @@ class RecoverySystem:
                     main_altitude_m=300.0, drogue_canopy="Drogue slider",
                     main_canopy="Round parachute"):
         """Drogue at apogee, main down low. The standard for anything high."""
-        return RecoverySystem("Dual deploy", [
+        return RecoverySystem("Dual deploy (drogue + main)", [
             RecoveryStage(name="Drogue", canopy_type=drogue_canopy,
                           diameter_m=drogue_d, cd=drogue_cd,
                           trigger=TRIGGER_APOGEE, inflation_time_s=1.0),
