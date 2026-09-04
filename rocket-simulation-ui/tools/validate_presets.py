@@ -382,6 +382,133 @@ def validate_aero_sweep():
     print()
 
 
+# ---------------------------------------------------------------------------
+# 6. drag model internals vs the correlations they claim to implement
+# ---------------------------------------------------------------------------
+
+def validate_drag_internals():
+    """Check each drag component against the published form it is built on.
+
+    Section 5 checks that the assembled curve has the right SHAPE. This checks
+    that each piece is the correlation it says it is, evaluated against the
+    closed form by hand. Between them they cover "is the changing Cd right":
+    correct pieces, assembled into a curve with the right shape.
+
+    What this cannot do is compare an absolute Cd against a measured drag
+    curve for these airframes, because no such measurement exists here. That
+    limit is stated in docs/VALIDATION.md and is why the Aero tab imports
+    external tables.
+    """
+    banner("6. DRAG COMPONENTS vs THEIR SOURCE CORRELATIONS")
+
+    # --- skin friction ---
+    print("  Skin friction: Blasius laminar, Prandtl-Schlichting turbulent.\n")
+    re = 1.0e5
+    want = 1.328 / math.sqrt(re)
+    got = aero.skin_friction_coefficient(re, 0.0, 0.0, 1.0)
+    check("    laminar Cf = 1.328/sqrt(Re) at Re=1e5",
+          abs(got - want) < 1e-9, f"{got:.6e} vs {want:.6e}")
+
+    re = 1.0e7
+    want = 0.455 / (math.log10(re) ** 2.58)
+    got = aero.skin_friction_coefficient(re, 0.0, 0.0, 1.0)
+    check("    turbulent Cf = 0.455/(log10 Re)^2.58 at Re=1e7",
+          abs(got - want) < 1e-9, f"{got:.6e} vs {want:.6e}")
+
+    # Roughness floor: Cf = 0.032 (Rs/L)^0.2, the standard Barrowman form.
+    rough, length = 20e-6, 2.0
+    want = 0.032 * (rough / length) ** 0.2
+    got = aero.skin_friction_coefficient(1.0e12, 0.0, rough, length)
+    check("    roughness floor Cf = 0.032 (Rs/L)^0.2 binds at high Re",
+          abs(got - want) < 1e-9, f"{got:.6e} vs {want:.6e}")
+
+    smooth = aero.skin_friction_coefficient(1.0e7, 0.0, 1e-9, 2.0)
+    rougher = aero.skin_friction_coefficient(1.0e7, 0.0, 60e-6, 2.0)
+    check("    a rougher airframe never has less friction than a smooth one",
+          rougher >= smooth, f"{rougher:.6e} >= {smooth:.6e}")
+
+    cfs = [aero.skin_friction_coefficient(r, 0.0, 0.0, 1.0)
+           for r in (1e6, 1e7, 1e8, 1e9)]
+    check("    turbulent Cf falls monotonically with Reynolds",
+          all(cfs[i] > cfs[i + 1] for i in range(len(cfs) - 1)),
+          " -> ".join(f"{c:.2e}" for c in cfs))
+
+    comp = [aero.skin_friction_coefficient(1e7, m, 0.0, 1.0)
+            for m in (0.0, 1.0, 3.0, 5.0)]
+    check("    compressibility reduces friction monotonically with Mach",
+          all(comp[i] > comp[i + 1] for i in range(len(comp) - 1)),
+          " -> ".join(f"{c:.2e}" for c in comp))
+
+    # --- base drag ---
+    print("\n  Base drag: the standard 0.12 + 0.13 M^2 / 0.25 M correlation.\n")
+    b0 = aero.base_drag_coefficient(0.0, False)
+    check("    subsonic base Cd at M=0 is 0.12",
+          abs(b0 - 0.12) < 1e-12, f"{b0:.4f}")
+    # Cross-check against Hoerner's Cd_base = 0.029/sqrt(Cd_friction), with a
+    # representative airframe friction coefficient.
+    hoerner = 0.029 / math.sqrt(0.05)
+    check("    and agrees with Hoerner 0.029/sqrt(Cf) to within 20%",
+          abs(b0 - hoerner) / hoerner < 0.20,
+          f"{b0:.4f} vs {hoerner:.4f} at Cf=0.05")
+
+    lo = aero.base_drag_coefficient(0.999999, False)
+    hi = aero.base_drag_coefficient(1.000001, False)
+    check("    subsonic and supersonic branches meet at Mach 1",
+          abs(lo - hi) < 1e-5, f"{lo:.6f} vs {hi:.6f}")
+
+    on = aero.base_drag_coefficient(0.5, True)
+    off = aero.base_drag_coefficient(0.5, False)
+    check("    the plume reduces base drag while thrusting", on < off,
+          f"{on:.4f} thrusting vs {off:.4f} coasting")
+
+    # --- wave drag ---
+    print("\n  Nose wave drag: zero below drag divergence, peak just past M=1.\n")
+    af = aero.Airframe(nose_shape="Von Karman (LV-Haack)", nose_length_m=0.42,
+                       body_diameter_m=0.076)
+    check("    zero below drag divergence",
+          aero.wave_drag_coefficient(0.5, af) == 0.0, "Cd_wave = 0 at Mach 0.5")
+    peak_m = max((m / 100.0 for m in range(80, 300)),
+                 key=lambda m: aero.wave_drag_coefficient(m, af))
+    check("    peaks in the transonic band", 1.0 <= peak_m <= 1.3,
+          f"peak at Mach {peak_m:.2f}")
+
+    blunt = aero.Airframe(nose_shape="Hemispherical", nose_length_m=0.42,
+                          body_diameter_m=0.076)
+    check("    a blunt nose pays more wave drag than a Von Karman",
+          aero.wave_drag_coefficient(1.2, blunt) > aero.wave_drag_coefficient(1.2, af),
+          f"{aero.wave_drag_coefficient(1.2, blunt):.4f} vs "
+          f"{aero.wave_drag_coefficient(1.2, af):.4f} at Mach 1.2")
+
+    short = aero.Airframe(nose_shape="Tangent Ogive", nose_length_m=0.15,
+                          body_diameter_m=0.076)
+    long_ = aero.Airframe(nose_shape="Tangent Ogive", nose_length_m=0.60,
+                          body_diameter_m=0.076)
+    check("    a finer nose pays less wave drag",
+          aero.wave_drag_coefficient(1.2, long_) < aero.wave_drag_coefficient(1.2, short),
+          f"fineness 7.9 -> {aero.wave_drag_coefficient(1.2, long_):.4f}, "
+          f"fineness 2.0 -> {aero.wave_drag_coefficient(1.2, short):.4f}")
+
+    # --- assembled totals land where hobby rockets actually live ---
+    print("\n  Assembled subsonic Cd against the range real rockets occupy.\n")
+    for preset in preset_defs.PRESET_ROCKETS:
+        if preset.get("airframe", {}).get("cd_override"):
+            continue          # flown on a measured Cd, not the buildup
+        af = _airframe_from_preset(preset)
+        site = atmosphere.LaunchSite()
+        cd, _parts = aero.drag_coefficient(0.3, 0.0, 0.3 * 340.0, af, site)
+        check(f"    {preset['name']}: subsonic Cd in the published 0.3-0.9 band",
+              0.30 <= cd <= 0.90, f"Cd = {cd:.3f} at Mach 0.3")
+    print()
+
+
+def _airframe_from_preset(preset):
+    af = aero.Airframe()
+    for key, value in preset.get("airframe", {}).items():
+        if hasattr(af, key):
+            setattr(af, key, value)
+    return af
+
+
 def main():
     validate_hardware()
     validate_engines()
@@ -411,6 +538,7 @@ def main():
         print()
 
     validate_aero_sweep()
+    validate_drag_internals()
 
     banner("SUMMARY")
     passed = sum(1 for _l, ok, _d in _results if ok)

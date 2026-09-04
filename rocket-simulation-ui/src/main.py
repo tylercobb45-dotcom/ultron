@@ -20,6 +20,7 @@ from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
 from aero_tab import AeroAnalysisWidget  # Cd vs Mach analysis tab
+from sections import EngineSection, AerodynamicsSection, AssemblyPanel
 import theme as app_theme
 import flight_model
 import aero
@@ -1133,6 +1134,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         left_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding)
         left_widget.setMinimumWidth(330)  # Splitter governs the width from here
         left_layout = QtWidgets.QVBoxLayout(left_widget)
+        # The assembly panel goes in at the top once both design sections
+        # exist; a rocket is the pairing they describe.
+        self._sim_left_layout = left_layout
         left_layout.setContentsMargins(8, 8, 8, 8)  # More comfortable margins
         left_layout.setSpacing(8)  # Better spacing between elements
 
@@ -1363,25 +1367,40 @@ class RocketSimulationUI(QtWidgets.QWidget):
         main_panel_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
         self.tabs.addTab(main_panel, "Simulation")
 
-        # --- Engine Lab: design a custom hybrid engine and feed its thrust
-        # curve into the simulation above ---
-        self.engine_lab = EngineLabWidget(on_send_to_simulation=self.use_engine_lab_thrust_curve)
-        self.tabs.addTab(self.engine_lab, "Engine Lab")
+        # A rocket is an assembly of two independently designed halves, so
+        # they get a section each rather than being scattered across tabs.
+        #
+        #   ENGINE        what makes the thrust
+        #   AERODYNAMICS  what the thrust has to push
+        #
+        # The Simulation tab pairs one of each, and that pairing is the rocket.
 
-        # Cd(Mach) analysis, and the place an external drag curve gets loaded.
+        # --- Engine: the motor, and the library of saved motor designs ---
+        self.engine_lab = EngineLabWidget(
+            on_send_to_simulation=self.use_engine_lab_thrust_curve)
+        self.engine_section = EngineSection(self.engine_lab,
+                                            self.get_profiles_dir)
+        self.tabs.addTab(self.engine_section, "Engine")
+
+        # --- Aerodynamics: airframe shape, recovery, and the drag it makes ---
+        self.vehicle_tab = VehicleTabWidget()
         self.aero_tab = AeroAnalysisWidget(
             get_airframe=lambda: self.vehicle_tab.airframe(),
             get_cg=lambda: self.vehicle_tab.mass_properties().dry_cg_m,
             on_table_changed=self._cd_table_changed)
-        self.tabs.addTab(self.aero_tab, "Aero Analysis")
+        self.aero_section = AerodynamicsSection(
+            self.vehicle_tab, self.aero_tab, self.get_profiles_dir)
+        self.tabs.addTab(self.aero_section, "Aerodynamics")
+
+        # The Simulation tab is where the two halves get combined. Put the
+        # pairing at the very top of it, above the numbers it governs.
+        self.assembly = AssemblyPanel(self.engine_section, self.aero_section,
+                                      on_changed=self._assembly_changed)
+        self._sim_left_layout.insertWidget(0, self.assembly)
 
         # --- Flight Report: failure-mode analysis of the last simulation ---
         self.flight_report = FlightReportWidget()
         self.tabs.addTab(self.flight_report, "Flight Report")
-
-        # --- Vehicle: airframe shape, mass and balance, launch site, recovery ---
-        self.vehicle_tab = VehicleTabWidget()
-        self.tabs.insertTab(1, self.vehicle_tab, "Vehicle")
 
         # --- Rockets: the saved-rocket library. First tab, because picking a
         # rocket is where a session starts. ---
@@ -3988,6 +4007,20 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
 
+    def _assembly_changed(self):
+        """A different engine or airframe was paired on the Simulation tab."""
+        try:
+            if hasattr(self, 'vehicle_tab'):
+                self.vehicle_tab._refresh_summary()
+        except Exception:
+            pass
+        if hasattr(self, 'model_note_label'):
+            engine, aero = self.assembly.selection()
+            self.model_note_label.setText(
+                f"Assembly changed: engine <b>{engine or 'from the Engine tab'}"
+                f"</b>, aerodynamics <b>{aero or 'from the Aerodynamics tab'}"
+                f"</b>. Run a simulation to fly it.")
+
     def cd_source(self):
         """What drag the flight should use: a curve, a constant, or None.
 
@@ -4058,10 +4091,6 @@ class RocketSimulationUI(QtWidgets.QWidget):
                         mass_props.propellant_mass_kg = prop
                     if m > prop > 0:
                         mass_props.dry_mass_kg = m - prop
-                    # Body diameter is one physical thing described on two
-                    # tabs. The one just typed into wins.
-                    if body_diameter and body_diameter > 0:
-                        airframe.body_diameter_m = body_diameter
                     # An imported Cd(Mach) curve beats a single number,
                     # which in turn beats the estimate.
                     cd_over = self.cd_source()
@@ -4071,7 +4100,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
                         cd_override=cd_over)
                     if results:
                         self._note_model_used(results, airframe,
-                                              recovery_system, cd_over, Cd, A)
+                                              recovery_system, cd_over, Cd, A,
+                                              body_diameter)
                         return results, summary
             except Exception:
                 traceback.print_exc()
@@ -4082,7 +4112,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         return run_simulation(m, Cd, A, rho, **sim_kwargs), None
 
     def _note_model_used(self, results, airframe, recovery_system,
-                         cd_override, sim_cd, sim_area):
+                         cd_override, sim_cd, sim_area, sim_diameter=None):
         """Say which model flew and which Simulation-tab inputs it ignored."""
         if not hasattr(self, 'model_note_label'):
             return
@@ -4106,12 +4136,25 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if sim_area:
             ignored.append(f"reference area ({sim_area:g} m²)")
         ignored.append("parachute fields")
-        self.model_note_label.setText(
-            f"Flown with the 2-DOF model: {airframe.body_diameter_m*1000:.0f} mm "
-            f"airframe, {drag}, recovery from the Vehicle tab ({stages}).<br>"
-            f"<i>Not used by this model:</i> the Simulation tab's "
-            + ", ".join(ignored) +
+        text = (
+            f"Flown with the 2-DOF model: "
+            f"{airframe.body_diameter_m*1000:.0f} mm airframe from the "
+            f"Aerodynamics tab, {drag}, recovery from the Aerodynamics tab "
+            f"({stages}).<br><i>Not used by this model:</i> the Simulation "
+            f"tab's " + ", ".join(ignored) +
             " — those drive the basic vertical model only.")
+        # Geometry is owned by the Aerodynamics section, but the same quantity
+        # exists on this tab. If the two disagree, say so rather than picking
+        # one silently - that is how a 76 mm rocket gets flown as 2 mm.
+        if (sim_diameter and sim_diameter > 0 and airframe.body_diameter_m > 0
+                and abs(sim_diameter - airframe.body_diameter_m)
+                > 0.02 * airframe.body_diameter_m):
+            text += (f"<br><b>Body diameter disagrees between tabs:</b> "
+                     f"{sim_diameter*1000:.1f} mm here vs "
+                     f"{airframe.body_diameter_m*1000:.1f} mm on the "
+                     f"Aerodynamics tab. The Aerodynamics value was flown. "
+                     f"Check the unit selector on this tab.")
+        self.model_note_label.setText(text)
 
     def _note_fallback_model(self):
         if not hasattr(self, 'model_note_label'):
@@ -4711,6 +4754,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.fin_length_input.setText(str(data.get('fin_length', '')))
             self.fin_length_unit.setCurrentIndex(data.get('fin_length_unit', 0))
             self.body_diameter_input.setText(str(data.get('body_diameter', '')))
+            self.body_diameter_unit.setCurrentIndex(
+                data.get('body_diameter_unit', 0))
             self.body_diameter_unit.setCurrentIndex(data.get('body_diameter_unit', 0))
             self.chute_height_input.setText(str(data.get('chute_height', '')))
             self.chute_height_unit.setCurrentIndex(data.get('chute_height_unit', 0))
@@ -4880,6 +4925,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'fin_length_unit': self.fin_length_unit.currentIndex(),
                 'body_diameter': self.body_diameter_input.text(),
                 'body_diameter_unit': self.body_diameter_unit.currentIndex(),
+                'body_diameter_unit': self.body_diameter_unit.currentIndex(),
                 'chute_height': self.chute_height_input.text(),
                 'chute_height_unit': self.chute_height_unit.currentIndex(),
                 'chute_size': self.chute_size_input.text(),
@@ -4911,11 +4957,27 @@ class RocketSimulationUI(QtWidgets.QWidget):
             config['vehicle'] = self.flight_report.get_config()
         if hasattr(self, 'vehicle_tab'):
             config['airframe'] = self.vehicle_tab.get_config()
+        # A rocket is a pairing. Record which named designs it was assembled
+        # from, so the Simulation tab can show the pairing again on reload.
+        # The full configs above are still stored, so a rocket keeps working
+        # even if one of its component designs is later renamed or deleted.
+        if hasattr(self, 'assembly'):
+            engine_name, aero_name = self.assembly.selection()
+            config['assembly'] = {'engine': engine_name,
+                                  'aerodynamics': aero_name}
         return config
 
     def apply_configuration(self, config):
         """Apply a configuration to the current inputs"""
         try:
+            asm = config.get('assembly') or {}
+            if asm and hasattr(self, 'assembly'):
+                # Show the pairing this rocket was built from. The stored
+                # engine/airframe configs below still win, so a rocket loads
+                # correctly whether or not those named designs still exist.
+                self.assembly.refresh()
+                self.assembly.set_selection(asm.get('engine'),
+                                            asm.get('aerodynamics'))
             # Rocket parameters
             rp = config.get('rocket_parameters', {})
             self.mass_input.setText(rp.get('mass', ''))
@@ -4935,6 +4997,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.fin_length_input.setText(rp.get('fin_length', ''))
             self.fin_length_unit.setCurrentIndex(rp.get('fin_length_unit', 0))
             self.body_diameter_input.setText(rp.get('body_diameter', ''))
+            self.body_diameter_unit.setCurrentIndex(
+                rp.get('body_diameter_unit', 0))
             self.body_diameter_unit.setCurrentIndex(rp.get('body_diameter_unit', 0))
             self.chute_height_input.setText(rp.get('chute_height', ''))
             self.chute_height_unit.setCurrentIndex(rp.get('chute_height_unit', 0))

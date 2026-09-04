@@ -7,7 +7,7 @@ what matched, what did not, and why. Run it yourself with
 python tools/validate_presets.py
 ```
 
-**67 / 67 checks pass.** Nothing here is asserted without a number behind it,
+**84 / 84 checks pass.** Nothing here is asserted without a number behind it,
 and every disagreement is explained or flagged as unexplained.
 
 ---
@@ -277,6 +277,53 @@ rather than an error in either.
 Sweep at an altitude representative of where the vehicle spends its fast,
 high-drag seconds — for most flights that is the first few thousand feet, not
 apogee.
+
+
+## 6. Is the changing Cd actually right?
+
+Section 5 checks that the assembled curve has the right *shape*. This checks
+that each piece is the correlation it claims to be, evaluated against the
+closed form by hand. Between them: correct components, assembled into a curve
+with the right shape.
+
+**Skin friction** — Blasius laminar and Prandtl-Schlichting turbulent, matched
+to 10⁻⁹:
+
+| Check | Result |
+|---|---|
+| `Cf = 1.328/√Re` at Re = 10⁵ | 4.199505e-03 vs 4.199505e-03 |
+| `Cf = 0.455/(log₁₀Re)^2.58` at Re = 10⁷ | 3.003713e-03 vs 3.003713e-03 |
+| Roughness floor `Cf = 0.032(Rs/L)^0.2` binds at high Re | 3.200000e-03 vs 3.200000e-03 |
+| A rougher airframe never has *less* friction than a smooth one | holds |
+| Turbulent Cf falls monotonically with Re | 4.47e-03 → 1.57e-03 over Re 10⁶–10⁹ |
+| Compressibility reduces friction monotonically with Mach | 3.00e-03 → 1.22e-03 over Mach 0–5 |
+
+**Base drag** — the standard `0.12 + 0.13M²` / `0.25/M` correlation:
+
+| Check | Result |
+|---|---|
+| Subsonic base Cd at M=0 is 0.12 | exact |
+| Agrees with Hoerner `0.029/√Cf` within 20% | 0.1200 vs 0.1297 at Cf = 0.05 |
+| Subsonic and supersonic branches meet at Mach 1 | 0.250000 both sides — continuous, no step for the integrator |
+| The plume reduces base drag while thrusting | 0.023 vs 0.153 at Mach 0.5 |
+
+**Nose wave drag** — an engineering correlation, so checked on behaviour:
+zero below drag divergence, peaks at Mach 1.10, a hemispherical nose pays
+0.301 against a Von Karman's 0.116 at Mach 1.2, and a fineness-7.9 nose pays
+0.083 against a fineness-2.0 nose's 0.438.
+
+**Assembled totals** land where real high-power rockets live — subsonic Cd
+0.423 (J317 Sport), 0.439 (K240 Altitude), 0.457 (L550 Supersonic), against
+the published 0.3–0.9 band.
+
+### What this still does not prove
+
+No absolute Cd has been compared against a *measured* drag curve for these
+airframes, because none exists here. The components are provably the
+correlations they claim to be, and the curve provably has the right shape —
+but the correlations themselves carry the ±20% supersonic uncertainty stated
+below. That is exactly why the Aerodynamics tab imports external Cd(Mach)
+tables.
 
 ---
 

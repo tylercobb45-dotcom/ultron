@@ -224,11 +224,13 @@ class VehicleTabWidget(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._airframe_page(), "Airframe")
-        tabs.addTab(self._site_page(), "Launch Site")
-        tabs.addTab(self._recovery_page(), "Recovery")
-        outer.addWidget(tabs, stretch=1)
+        # Kept as an attribute so the Aerodynamics section can add the
+        # Cd-vs-Mach page alongside these rather than nesting another tab bar.
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(self._airframe_page(), "Airframe")
+        self.tabs.addTab(self._site_page(), "Launch Site")
+        self.tabs.addTab(self._recovery_page(), "Recovery")
+        outer.addWidget(self.tabs, stretch=1)
 
         self.summary = QtWidgets.QLabel()
         self.summary.setWordWrap(True)

@@ -77,6 +77,31 @@ Needs Python 3.12 or newer.
 4. Run the simulation and review the live telemetry dashboard and the
    altitude/velocity/acceleration/mass plots.
 
+## How it is organised
+
+A rocket is an assembly of two independently designed halves, and the tabs are
+split the same way:
+
+| Tab | What lives there |
+|---|---|
+| **Engine** | The motor: oxidizer tank, injector, fuel grain and combustion chamber, nozzle, combustion gas. Resize any of it - bigger tank, different orifice, longer grain - run it, and get a thrust curve. Saves named **engine designs**. |
+| **Aerodynamics** | The airframe: nose cone, body tube, boat tail, fins, surface finish, launch site, recovery train, and the **Cd vs Mach** sweep that geometry produces. Saves named **aerodynamics designs**. |
+| **Simulation** | Where the two get paired. Pick an engine and an aerodynamics design at the top, set the masses, and fly it. **That pairing is the rocket** - it is what the Rockets tab saves and what gets run. |
+
+They are separate because they change on different schedules: one motor gets
+flown in several airframes while you tune the airframe, and one airframe gets
+tried with several motors while you chase an altitude. Changing one does not
+disturb the other. A saved rocket records which pair it was built from, and
+also stores both full configurations, so it still loads correctly if a
+component design is later renamed or deleted.
+
+Designs are plain JSON under `profiles/engines/` and `profiles/airframes/`, so
+they can be copied between machines, diffed and checked into version control.
+
+Geometry is owned by the Aerodynamics tab. The Simulation tab still carries
+some legacy fields for the basic vertical model; if one of them disagrees with
+the airframe, the run says so rather than silently picking a side.
+
 ## Features
 
 - **Dark futuristic UI** — black ground, red accent, white text, square edges,
