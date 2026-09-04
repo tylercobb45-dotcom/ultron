@@ -59,6 +59,7 @@ FLIGHT_COLUMNS = [
     ("cg_m",                    "CG from nose",      "m",       1.0,    4),
     ("cp_m",                    "CP from nose",      "m",       1.0,    4),
     ("stability_cal",           "Stability",         "cal",     1.0,    3),
+    ("pitch_inertia",           "Pitch inertia",     "kg.m2",   1.0,    4),
     ("angle_from_vertical_deg", "Tilt",              "deg",     1.0,    3),
     ("angle_of_attack_deg",     "Angle of attack",   "deg",     1.0,    3),
     ("wind_speed",              "Wind speed",        "m/s",     1.0,    3),

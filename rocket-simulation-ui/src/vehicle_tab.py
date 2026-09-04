@@ -23,6 +23,7 @@ import aero
 import atmosphere as atmosphere_mod
 import recovery as recovery_mod
 import flight_model
+import mass_tab
 import theme
 
 _P = theme.PALETTE
@@ -155,6 +156,19 @@ class _StageEditor(QtWidgets.QGroupBox):
         self.disreef = QtWidgets.QLineEdit(f"{stage.disreef_time_s:.1f}")
         form.addRow("Disreef time (s):", self.disreef)
 
+        # A canopy, its harness, bag and charges are real mass at a real
+        # station, so they belong in the mass buildup like anything else.
+        self.mass = QtWidgets.QLineEdit(f"{stage.mass_kg:.3f}")
+        self.mass.setToolTip(
+            "Canopy, shroud lines, harness, deployment bag and charges. "
+            "Counted in the Mass & Ballast buildup.")
+        form.addRow("Stage mass (kg):", self.mass)
+        self.position = QtWidgets.QLineEdit(f"{stage.position_m*1000:.1f}")
+        self.position.setToolTip(
+            "Where it is packed, from the nose tip. Recovery normally sits "
+            "forward of the motor, so it pulls the CG forward.")
+        form.addRow("Packed station (mm):", self.position)
+
         # Show the canopy note, but do NOT overwrite the Cd we just loaded:
         # the stage carries its own value (a dual-deploy drogue is Cd 1.5, not
         # the drogue-slider default), and a saved custom Cd has to survive a
@@ -183,6 +197,8 @@ class _StageEditor(QtWidgets.QGroupBox):
         s.canopy_type = self.canopy.currentText()
         s.diameter_m = _f(self.diameter.text(), s.diameter_m)
         s.cd = _f(self.cd.text(), s.cd)
+        s.mass_kg = _f(self.mass.text(), s.mass_kg)
+        s.position_m = _f(self.position.text(), s.position_m * 1000.0) / 1000.0
         s.trigger = [recovery_mod.TRIGGER_APOGEE, recovery_mod.TRIGGER_ALTITUDE,
                      recovery_mod.TRIGGER_TIME, recovery_mod.TRIGGER_DELAY][
             self.trigger.currentIndex()]
@@ -230,6 +246,7 @@ class VehicleTabWidget(QtWidgets.QWidget):
         self.tabs.addTab(self._airframe_page(), "Airframe")
         self.tabs.addTab(self._site_page(), "Launch Site")
         self.tabs.addTab(self._recovery_page(), "Recovery")
+        self.tabs.addTab(self._mass_page(), "Mass & Ballast")
         outer.addWidget(self.tabs, stretch=1)
 
         self.summary = QtWidgets.QLabel()
@@ -299,6 +316,25 @@ class VehicleTabWidget(QtWidgets.QWidget):
         cols.addLayout(right, 1)
         self._nose_changed(self.nose_shape.currentText())
         return self._scroll(host)
+
+    def _mass_page(self):
+        """Where the weight sits, which is what actually sets stability."""
+        self.mass_builder = mass_tab.MassBuildupWidget(
+            on_changed=self._mass_changed,
+            get_cp=lambda: self.airframe().center_of_pressure(0.3),
+            get_diameter=lambda: self.airframe().body_diameter_m,
+            get_propellant=self._propellant_for_mass)
+        return self.mass_builder
+
+    def _propellant_for_mass(self):
+        """(mass, station, length) of the propellant, for the mass readout."""
+        return (self._value("propellant_mass_kg", 0.0),
+                self._value("propellant_cg_m", 0.0),
+                0.0)
+
+    def _mass_changed(self):
+        if getattr(self, "_ready", False):
+            self._refresh_summary()
 
     def _site_page(self):
         host = QtWidgets.QWidget()
@@ -431,6 +467,18 @@ class VehicleTabWidget(QtWidgets.QWidget):
         for attr in ("dry_mass_kg", "propellant_mass_kg", "dry_cg_m",
                      "propellant_cg_m"):
             setattr(mp, attr, self._value(attr, getattr(mp, attr)))
+        # Components win when there are any: they know where the weight is,
+        # not just where its average is, so CG, its migration through the burn
+        # and the pitch inertia all come out of them rather than being typed.
+        # The recovery train joins the same buildup - a main and its harness
+        # are real mass at a real station.
+        builder = getattr(self, "mass_builder", None)
+        if builder is not None:
+            buildup = builder.buildup()
+            buildup.components = list(buildup.components)
+            buildup.components += self.recovery_system().mass_components()
+            if buildup.active():
+                mp.buildup = buildup
         return mp
 
     def launch_site(self) -> atmosphere_mod.LaunchSite:
@@ -518,6 +566,8 @@ class VehicleTabWidget(QtWidgets.QWidget):
             "nose_shape": self.nose_shape.currentText(),
             "fin_profile": self.fin_profile.currentText(),
             "recovery": self.recovery_system().to_dict(),
+            "mass_components": (self.mass_builder.get_config()
+                                if hasattr(self, "mass_builder") else []),
         }
 
     def apply_config(self, cfg: dict):
@@ -527,6 +577,8 @@ class VehicleTabWidget(QtWidgets.QWidget):
             entry = self._fields.get(attr)
             if entry:
                 entry[0].setText(str(value))
+        if hasattr(self, "mass_builder"):
+            self.mass_builder.apply_config(cfg.get("mass_components") or [])
         for combo, key in ((self.nose_shape, "nose_shape"),
                            (self.fin_profile, "fin_profile")):
             idx = combo.findText(str(cfg.get(key, "")))

@@ -59,6 +59,11 @@ class RecoveryStage:
     reef_duration_s: float = 3.0       # time spent reefed before disreef
     disreef_time_s: float = 1.0        # ramp from reefed to full
     enabled: bool = True
+    # A parachute is not weightless, and where it sits changes the CG. Canopy,
+    # harness, deployment bag and charges all live at one station, so they get
+    # folded into the mass buildup along with everything else.
+    mass_kg: float = 0.0
+    position_m: float = 0.0            # from the nose tip
 
     @property
     def area(self) -> float:
@@ -227,6 +232,21 @@ class RecoverySystem:
                 total += stage.drag_area_at(t - fired)
         return total
 
+    def mass_components(self):
+        """The recovery train as mass components, for the mass buildup."""
+        import mass_model
+        out = []
+        for s in self.stages:
+            if s.mass_kg > 0:
+                out.append(mass_model.MassComponent(
+                    name=f"{s.name} (recovery)", mass_kg=s.mass_kg,
+                    position_m=s.position_m, kind="Recovery",
+                    enabled=s.enabled))
+        return out
+
+    def total_mass(self) -> float:
+        return sum(s.mass_kg for s in self.stages if s.enabled)
+
     def deployed_names(self):
         return [s.name for s in self.active_stages()
                 if getattr(s, "_t_fired", None) is not None]
@@ -264,6 +284,7 @@ class RecoverySystem:
                 "reefed": s.reefed, "reef_ratio": s.reef_ratio,
                 "reef_duration_s": s.reef_duration_s,
                 "disreef_time_s": s.disreef_time_s, "enabled": s.enabled,
+                "mass_kg": s.mass_kg, "position_m": s.position_m,
             } for s in self.stages],
         }
 

@@ -85,7 +85,7 @@ split the same way:
 | Tab | What lives there |
 |---|---|
 | **Engine** | The motor: oxidizer tank, injector, fuel grain and combustion chamber, nozzle, combustion gas. Resize any of it - bigger tank, different orifice, longer grain - run it, and get a thrust curve. Saves named **engine designs**. |
-| **Aerodynamics** | The airframe: nose cone, body tube, boat tail, fins, surface finish, launch site, recovery train, and the **Cd vs Mach** sweep that geometry produces. Saves named **aerodynamics designs**. |
+| **Aerodynamics** | The airframe: nose cone, body tube, boat tail, fins, surface finish, launch site, the full **recovery train**, a **Mass & Ballast** buildup, and the **Cd vs Mach** sweep that geometry produces. Saves named **aerodynamics designs**. |
 | **Simulation** | Where the two get paired. Pick an engine and an aerodynamics design at the top, set the masses, and fly it. **That pairing is the rocket** - it is what the Rockets tab saves and what gets run. |
 
 They are separate because they change on different schedules: one motor gets
@@ -126,8 +126,29 @@ the airframe, the run says so rather than silently picking a side.
 - **Airframe you can shape** — eight nose cone profiles (Von Karman through
   conical, each with its own wave-drag penalty), body tube, boat tail, and fin
   planform, all feeding the drag buildup and the Barrowman centre of pressure.
-- **Mass and balance** — CG tracked as propellant burns off, against CP, so
-  static stability margin is reported through the whole burn.
+- **Mass and balance, by component** — instead of typing a dry mass and a CG
+  you worked out yourself, place the parts: nose weight, nose cone, avionics
+  bay, recovery, body tube, fin can, motor hardware, ballast — each with a
+  mass, a station from the nose tip, and optionally a length so it counts as
+  distributed rather than as a point. Dry mass, CG and pitch inertia all fall
+  out of that list, and the recovery train joins the same buildup, because a
+  main and its harness are real mass at a real station.
+
+  Three things follow, live, as you edit: **CG**, how far it **migrates**
+  through the burn, and the **static margin at liftoff and at burnout** —
+  colour-coded, with a warning under 1 caliber. Adding 400 g at the nose moves
+  the margin visibly, which is the whole point.
+
+  Pitch inertia is the part that used to be missing. The flight model needs it
+  to work out how fast the vehicle weathercocks into a crosswind, and it was
+  estimated as `mass·(L/3.5)²` — a uniform rod. Real rockets are not uniform
+  rods, and a proper `Σmr²` changes the answer: on the L550 preset, 1.5 kg of
+  nose ballast costs 850 ft of altitude, buys 3.2 calibers of margin, raises
+  inertia from 1.15 to 2.82 kg·m², and cuts drift from 1,512 m to 984 m. All
+  four move together, because they are the same trade.
+
+  The old two-number form still works — leave the component table empty and
+  nothing changes.
 - **Recovery systems** — single deploy, dual deploy, reefed (opens partially,
   then disreefs), and streamer drogues, with per-stage canopy type, size,
   trigger, and inflation time all editable.

@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.join(ROOT, "hybrid_sim"))
 import aero
 import atmosphere
 import flight_model
+import mass_model
 import recovery as recovery_mod
 import presets as preset_defs
 from hybrid_sim import Engine, EngineModel, FUELS, metrics as hsm, n2o
@@ -509,6 +510,136 @@ def _airframe_from_preset(preset):
     return af
 
 
+# ---------------------------------------------------------------------------
+# 7. mass components, CG migration and stability
+# ---------------------------------------------------------------------------
+
+def validate_mass_components():
+    """Weight where it actually sits, and what that does to the flight.
+
+    Checked against closed-form mass properties (a hand-computable two-mass
+    case, and a uniform rod) rather than against the simulation, then flown to
+    confirm the coupling is real: ballast has to cost altitude AND buy
+    stability AND raise inertia AND cut drift, all at once. Any one of those
+    moving on its own would mean the mass model is not actually reaching the
+    trajectory.
+    """
+    banner("7. MASS COMPONENTS, CG MIGRATION AND STABILITY")
+
+    # --- closed-form checks ---
+    b = mass_model.MassBuildup([
+        mass_model.MassComponent("A", 2.0, 0.0),
+        mass_model.MassComponent("B", 2.0, 2.0),
+    ])
+    check("  two equal point masses balance at their midpoint",
+          abs(b.cg() - 1.0) < 1e-12, f"CG {b.cg():.6f} m")
+    # I = sum m r^2 = 2*1^2 + 2*1^2 = 4
+    check("  and their inertia about that CG is sum m*r^2",
+          abs(b.inertia() - 4.0) < 1e-12, f"{b.inertia():.6f} kg m^2 vs 4.0")
+
+    # A rod split into many point masses must approach the analytic mL^2/12.
+    n, mass_kg, length = 400, 3.0, 2.0
+    rod = mass_model.MassBuildup([
+        mass_model.MassComponent(f"s{i}", mass_kg / n,
+                                 length * (i + 0.5) / n)
+        for i in range(n)])
+    analytic = mass_kg * length ** 2 / 12.0
+    err = abs(rod.inertia() - analytic) / analytic
+    check("  a discretised rod converges on the analytic mL^2/12",
+          err < 1e-4, f"{rod.inertia():.6f} vs {analytic:.6f} ({err*100:.4f}%)")
+
+    # A single component WITH a length must equal the same rod exactly.
+    one = mass_model.MassBuildup([
+        mass_model.MassComponent("rod", mass_kg, length / 2.0, length)])
+    check("  a length-aware component equals that rod exactly",
+          abs(one.inertia() - analytic) < 1e-12,
+          f"{one.inertia():.6f} vs {analytic:.6f}")
+
+    # --- CG migration ---
+    preset = next(p for p in preset_defs.PRESET_ROCKETS if "L550" in p["name"])
+    _rows, _s, airframe, site, mass, system, points = fly_preset(preset)
+    comps = [
+        mass_model.MassComponent("Nose cone", 0.5, 0.28, 0.42, "Nose cone"),
+        mass_model.MassComponent("Avionics", 0.6, 0.90, 0.25, "Avionics bay"),
+        mass_model.MassComponent("Recovery", 0.5, 1.10, 0.30, "Recovery"),
+        mass_model.MassComponent("Body tube", 1.2, 1.05, 1.40, "Body tube"),
+        mass_model.MassComponent("Motor hardware", 1.5, 1.60, 0.50,
+                                 "Motor hardware"),
+    ]
+
+    def fly(nose_ballast_kg):
+        build = mass_model.MassBuildup(
+            ([mass_model.MassComponent("Nose ballast", nose_ballast_kg, 0.05,
+                                       kind="Nose weight")]
+             if nose_ballast_kg > 0 else []) + list(comps))
+        mp = flight_model.MassProperties(
+            propellant_mass_kg=1.552, propellant_cg_m=1.50,
+            propellant_length_m=0.46, buildup=build)
+        system.reset()
+        return flight_model.run_flight(points, airframe, site, system, mp,
+                                       output_dt=0.05)
+
+    r0, s0 = fly(0.0)
+    check("  dry mass flown is the sum of the components",
+          abs(r0[0]["dry_mass"] - sum(c.mass_kg for c in comps)) < 1e-9,
+          f"{r0[0]['dry_mass']:.4f} kg")
+    cg_first, cg_last = r0[0]["cg_m"], r0[-1]["cg_m"]
+    check("  CG walks forward as propellant burns off",
+          cg_last < cg_first,
+          f"{cg_first*1000:,.0f} mm -> {cg_last*1000:,.0f} mm "
+          f"({(cg_last-cg_first)*1000:+,.0f} mm)")
+    check("  so the static margin increases through the burn",
+          max(x["stability_cal"] for x in r0) > r0[0]["stability_cal"],
+          f"{r0[0]['stability_cal']:.2f} -> "
+          f"{max(x['stability_cal'] for x in r0):.2f} cal")
+
+    # --- the coupled trade, all four at once ---
+    r1, s1 = fly(0.5)
+    r2, s2 = fly(1.5)
+    print()
+    print("   %-14s %10s %10s %10s %10s" %
+          ("nose ballast", "apogee ft", "margin", "inertia", "drift m"))
+    for kg, r, sm in ((0.0, r0, s0), (0.5, r1, s1), (1.5, r2, s2)):
+        print("   %-14s %10.0f %10.2f %10.3f %10.0f" %
+              (f"{kg:.1f} kg", sm["apogee_ft"], r[0]["stability_cal"],
+               r[0]["pitch_inertia"], abs(sm["drift_m"])))
+    print()
+    check("  ballast costs altitude",
+          s2["apogee_ft"] < s1["apogee_ft"] < s0["apogee_ft"],
+          f"{s0['apogee_ft']:,.0f} -> {s1['apogee_ft']:,.0f} -> "
+          f"{s2['apogee_ft']:,.0f} ft")
+    check("  ballast buys static margin",
+          r2[0]["stability_cal"] > r1[0]["stability_cal"] > r0[0]["stability_cal"],
+          f"{r0[0]['stability_cal']:.2f} -> {r1[0]['stability_cal']:.2f} -> "
+          f"{r2[0]['stability_cal']:.2f} cal")
+    check("  ballast raises pitch inertia",
+          r2[0]["pitch_inertia"] > r1[0]["pitch_inertia"] > r0[0]["pitch_inertia"],
+          f"{r0[0]['pitch_inertia']:.3f} -> {r1[0]['pitch_inertia']:.3f} -> "
+          f"{r2[0]['pitch_inertia']:.3f} kg m^2")
+    check("  and more inertia means less weathercocking drift",
+          abs(s2["drift_m"]) < abs(s1["drift_m"]) < abs(s0["drift_m"]),
+          f"{abs(s0['drift_m']):,.0f} -> {abs(s1['drift_m']):,.0f} -> "
+          f"{abs(s2['drift_m']):,.0f} m")
+
+    # --- recovery mass joins the same buildup ---
+    sysm = recovery_mod.RecoverySystem.dual_deploy()
+    sysm.stages[0].mass_kg, sysm.stages[0].position_m = 0.25, 1.05
+    sysm.stages[1].mass_kg, sysm.stages[1].position_m = 0.65, 1.15
+    rc = sysm.mass_components()
+    check("  recovery stages contribute mass components",
+          len(rc) == 2 and abs(sum(c.mass_kg for c in rc) - 0.90) < 1e-12,
+          f"{len(rc)} components, {sum(c.mass_kg for c in rc):.3f} kg")
+
+    # --- an empty buildup must leave old profiles exactly as they were ---
+    system.reset()
+    r_leg, s_leg = flight_model.run_flight(points, airframe, site, system,
+                                           mass, output_dt=0.05)
+    check("  a profile with no components is unchanged",
+          abs(s_leg["apogee_ft"] - 15952.66) < 1.0,
+          f"{s_leg['apogee_ft']:,.1f} ft against the recorded 15,952.7")
+    print()
+
+
 def main():
     validate_hardware()
     validate_engines()
@@ -539,6 +670,7 @@ def main():
 
     validate_aero_sweep()
     validate_drag_internals()
+    validate_mass_components()
 
     banner("SUMMARY")
     passed = sum(1 for _l, ok, _d in _results if ok)

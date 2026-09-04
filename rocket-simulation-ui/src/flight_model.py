@@ -29,6 +29,7 @@ from dataclasses import dataclass
 import aero as aero_mod
 import atmosphere as atmosphere_mod
 import recovery as recovery_mod
+import mass_model
 
 G0 = 9.80665
 SIM_VERSION = 3
@@ -36,20 +37,62 @@ SIM_VERSION = 3
 
 @dataclass
 class MassProperties:
-    """Mass and balance. Positions are measured from the nose tip, in metres."""
+    """Mass and balance. Positions are measured from the nose tip, in metres.
+
+    Two ways to describe the same vehicle:
+
+      * the simple one - a dry mass and a dry CG you worked out yourself;
+      * a list of mass components at stations along the airframe (see
+        mass_model), from which dry mass, CG and pitch inertia are all
+        derived. When components are present they win, because they carry
+        strictly more information: they know where the weight is, not just
+        where its average is.
+
+    Either way the CG moves as propellant burns off, which is what makes a
+    rocket get more stable through the boost.
+    """
     dry_mass_kg: float = 20.0
     propellant_mass_kg: float = 6.0
     dry_cg_m: float = 1.60          # CG of the empty vehicle
     propellant_cg_m: float = 2.40   # CG of the propellant column (aft)
+    propellant_length_m: float = 0.0  # 0 = treat propellant as a point mass
+    buildup: object = None          # mass_model.MassBuildup, or None
+
+    def _has_components(self) -> bool:
+        return bool(self.buildup and self.buildup.active())
+
+    def effective_dry_mass(self) -> float:
+        return (self.buildup.total_mass() if self._has_components()
+                else self.dry_mass_kg)
+
+    def effective_dry_cg(self) -> float:
+        return self.buildup.cg() if self._has_components() else self.dry_cg_m
 
     def cg(self, propellant_remaining_kg: float) -> float:
         """Instantaneous CG. Moves as propellant burns off - forward for the
         usual aft-mounted motor, which is why stability changes during boost."""
         m_p = max(0.0, propellant_remaining_kg)
-        total = self.dry_mass_kg + m_p
+        dry = self.effective_dry_mass()
+        total = dry + m_p
         if total <= 0:
-            return self.dry_cg_m
-        return (self.dry_mass_kg * self.dry_cg_m + m_p * self.propellant_cg_m) / total
+            return self.effective_dry_cg()
+        return (dry * self.effective_dry_cg() + m_p * self.propellant_cg_m) / total
+
+    def inertia(self, propellant_remaining_kg: float,
+                total_length_m: float = 0.0) -> float:
+        """Pitch inertia about the current CG [kg m^2].
+
+        With components this is a real sum of m*r^2. Without them it falls
+        back to the uniform-rod estimate the model used before, so an old
+        profile behaves exactly as it did.
+        """
+        m_p = max(0.0, propellant_remaining_kg)
+        if self._has_components():
+            _total, _cg, inertia = self.buildup.with_propellant(
+                m_p, self.propellant_cg_m, self.propellant_length_m)
+            return inertia
+        return mass_model.uniform_rod_inertia(
+            self.effective_dry_mass() + m_p, total_length_m)
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +280,9 @@ def run_flight(thrust_points,
 
     while steps < max_steps:
         steps += 1
-        mass = mass_props.dry_mass_kg + prop_left
+        # effective_dry_mass(), not dry_mass_kg: when mass components are
+        # defined they ARE the dry mass, and the typed-in field is ignored.
+        mass = mass_props.effective_dry_mass() + prop_left
         thrust = _thrust_at(thrust_points, t)
         thrusting = thrust > 0.01
 
@@ -270,7 +315,12 @@ def run_flight(thrust_points,
             margin_cal = (cp_now - cg_now) / diameter
             # Pitch natural frequency from the aerodynamic restoring moment,
             # against a slender-body inertia estimate.
-            inertia = mass * (airframe.total_length / 3.5) ** 2
+            # Real inertia from the mass components when they exist, and the
+            # uniform-rod estimate when they do not. This is what sets how
+            # fast the vehicle can turn into a crosswind: a rocket with a
+            # heavy nose and a heavy tail weathercocks more slowly than a rod
+            # of the same mass and length.
+            inertia = mass_props.inertia(prop_left, airframe.total_length)
             restoring = (q_now * a_ref * diameter
                          * airframe.normal_force_slope() * max(0.0, margin_cal))
             if restoring > 0 and inertia > 0:
@@ -377,9 +427,9 @@ def run_flight(thrust_points,
                 'chute_drag_signed_smoothed': -(q * chute_cda),
                 'ballistic_coeff_body': (mass / cda_body) if cda_body > 0 else 0.0,
                 'ballistic_coeff_current': (mass / cda_total) if cda_total > 0 else 0.0,
-                'initial_mass': mass_props.dry_mass_kg + prop_mass,
+                'initial_mass': mass_props.effective_dry_mass() + prop_mass,
                 'propellant_mass': prop_mass,
-                'dry_mass': mass_props.dry_mass_kg,
+                'dry_mass': mass_props.effective_dry_mass(),
                 # --- new in the 2-DOF model ---
                 'downrange': x,
                 'horizontal_velocity': vx,
@@ -393,6 +443,8 @@ def run_flight(thrust_points,
                 'cg_m': cg,
                 'cp_m': cp,
                 'stability_cal': stability,
+                'pitch_inertia': mass_props.inertia(
+                    prop_left, airframe.total_length),
                 'propellant_remaining': prop_left,
                 'cd_friction': breakdown['friction'],
                 'cd_base': breakdown['base'],

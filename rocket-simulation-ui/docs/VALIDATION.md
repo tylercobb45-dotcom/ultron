@@ -7,7 +7,7 @@ what matched, what did not, and why. Run it yourself with
 python tools/validate_presets.py
 ```
 
-**84 / 84 checks pass.** Nothing here is asserted without a number behind it,
+**97 / 97 checks pass.** Nothing here is asserted without a number behind it,
 and every disagreement is explained or flagged as unexplained.
 
 ---
@@ -325,6 +325,51 @@ but the correlations themselves carry the ±20% supersonic uncertainty stated
 below. That is exactly why the Aerodynamics tab imports external Cd(Mach)
 tables.
 
+
+## 7. Mass components, CG migration and stability
+
+Mass is now a list of components at stations along the airframe, and dry mass,
+CG and pitch inertia are derived from it rather than typed in.
+
+**Closed-form checks**, hand-computable and independent of the simulation:
+
+| Check | Result |
+|---|---|
+| Two equal point masses balance at their midpoint | CG 1.000000 m |
+| Their inertia about that CG is Σmr² | 4.000000 vs 4.0 kg·m² |
+| A rod discretised into 400 point masses converges on mL²/12 | 0.999994 vs 1.000000 (0.0006%) |
+| A single length-aware component equals that rod exactly | 1.000000 vs 1.000000 |
+
+**CG migration** through the burn, on the L550 airframe: CG walks forward from
+1,233 mm to 1,137 mm, and the static margin rises 2.47 → 5.03 cal. That is the
+right direction — an aft-mounted motor makes a rocket more stable as it burns.
+
+**The coupled trade.** Nose ballast has to do four things at once, and any one
+of them moving alone would mean the mass model was not really reaching the
+trajectory:
+
+| Nose ballast | Apogee | Margin | Pitch inertia | Drift |
+|---|---|---|---|---|
+| 0.0 kg | 15,950 ft | 2.47 cal | 1.151 kg·m² | 1,512 m |
+| 0.5 kg | 15,708 ft | 3.70 cal | 1.796 kg·m² | 1,322 m |
+| 1.5 kg | 15,102 ft | 5.65 cal | 2.823 kg·m² | 984 m |
+
+Ballast costs altitude, buys margin, raises inertia, and — because a
+higher-inertia vehicle turns into a crosswind more slowly — cuts drift by a
+third. All four checked as monotonic.
+
+Recovery stages contribute to the same buildup (2 components, 0.900 kg on a
+dual-deploy train), and a profile with no components flies **exactly** as it
+did before: 15,952.7 ft against the recorded 15,952.7.
+
+### One bug this found
+
+Flying a component buildup for the first time gave 2,453 ft instead of 15,950.
+The trajectory was reading `dry_mass_kg` — the typed-in field — rather than
+the component sum, so every vehicle flew as the 20 kg default and adding
+ballast changed nothing. Fixed, and the "dry mass flown is the sum of the
+components" check exists so it cannot come back silently.
+
 ---
 
 ## What is *not* validated
@@ -353,7 +398,11 @@ worse than one that admits its limits:
   unvalidated.** They default to off. The trends are right — an eroding throat
   drops chamber pressure, a vent costs Isp — but no measured case has been
   checked.
-- **Weathercocking magnitudes are approximate.** The trends are right, but the
-  absolute angles have not been checked against flight data.
+- **Weathercocking magnitudes are approximate.** The trends are right, and
+  pitch inertia is now a real sum of m·r² rather than a uniform-rod estimate,
+  but the absolute angles have not been checked against flight data.
+- **Component masses are yours to get right.** The buildup computes CG and
+  inertia correctly from what you enter; it has no way to know whether the
+  masses and stations you entered match the hardware.
 - **The atmosphere is a standard day plus your ground conditions.** No
   turbulence, no gusts, no wind direction changes, no jet stream.
