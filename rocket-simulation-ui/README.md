@@ -140,16 +140,52 @@ Needs Python 3.12 or newer.
   burn-through, oxidizer mass flux, port-to-throat ratio, flame temperature vs
   the throat material, nozzle separation, and tank thermal collapse. Exports a
   self-contained HTML report with the graphs embedded.
-- **Engine Lab** — design a custom hybrid rocket engine (N2O tank, injector,
-  fuel grain, nozzle) on the "Engine Lab" tab and run a physics-based
-  internal-ballistics simulation (tank blowdown, Dyer NHNE injector, Marxman
-  fuel regression, CEA c* table, isentropic nozzle) instead of only loading a
-  pre-made thrust curve. Pick a fuel (HTPB, paraffin, ABS, ...) and a starting
-  preset (a baseline motor or one of two HyperTEK motors the physics is
-  validated against), see the resulting thrust/pressure/O-F/mass-flow plots
-  and performance metrics, then send the generated thrust curve straight into
-  the Simulation tab. See [`hybrid_sim/README.md`](hybrid_sim/README.md) for
-  the physics and its validation against published motor certification data.
+- **Engine Lab** — design a custom hybrid rocket engine on the "Engine Lab"
+  tab and run a physics-based internal-ballistics simulation (tank blowdown,
+  Dyer NHNE injector, Marxman fuel regression, CEA c* table, isentropic
+  nozzle) instead of only loading a pre-made thrust curve. Every component is
+  editable, grouped the way the hardware is actually built, and each field
+  carries a tooltip explaining what it does to the motor:
+
+  - **Oxidizer tank (self-pressurizing N2O)** — internal diameter and length,
+    fill fraction, initial temperature, vent orifice and its discharge
+    coefficient, and the tank cooling coefficient. Nitrous supplies its own
+    pressure: there is no pressurant and no regulator, so tank pressure *is*
+    the saturation pressure at tank temperature (293 K ≈ 5.0 MPa / 730 psi),
+    and it falls as the liquid boils off and chills the tank. The cooling
+    coefficient sets how steeply that decay runs, which is what makes a
+    blowdown curve peaky or flat.
+  - **Injector** — type (single orifice, showerhead, pintle, swirl,
+    impinging — picking one suggests its typical discharge coefficient), hole
+    count, hole diameter, and Cd.
+  - **Fuel grain and combustion chamber** — fuel material, grain length, outer
+    diameter, initial port, number of ports for multi-port grains, and pre-
+    and post-combustion chamber lengths.
+  - **Nozzle** — throat diameter, expansion ratio, divergence and convergence
+    half angles, and a throat erosion rate, because graphite and phenolic
+    throats really do open up during a burn and bleed off chamber pressure.
+  - **Combustion gas** — ratio of specific heats and molar mass.
+
+  A live "derived geometry" panel shows what falls out of those numbers as you
+  type — tank volume, liquid N2O loaded, tank pressure at the chosen
+  temperature, fuel mass and web thickness, injector and throat areas, exit
+  diameter, and L\* — since those are the quantities you actually size
+  hardware against and none of them are typed in directly. Then send the
+  generated thrust curve straight into the Simulation tab. See
+  [`hybrid_sim/README.md`](hybrid_sim/README.md) for the physics.
+- **Two spreadsheets per run** — the Simulation tab's right-hand panel carries
+  a **Flight Data** sheet (one row per trajectory sample: position, velocity,
+  Mach, acceleration in m/s² and g, thrust, drag and its component buildup,
+  mass, dynamic pressure, atmospheric state, CG/CP and stability margin, tilt
+  and angle of attack, recovery drag area and canopy fill — 58 columns) and a
+  separate **Engine Data** sheet holding the motor internals on their own time
+  base (chamber and tank pressure in MPa and psi, tank temperature, injector
+  ΔP and stiffness, oxidizer and fuel mass flow, O/F, c* ideal and delivered,
+  thrust coefficient, instantaneous Isp, oxidizer flux, regression rate, port
+  radius and area, web remaining, throat diameter, expansion ratio, L\*, gas
+  residence time, and the liquid/vapour split in the tank — 36 columns). Both
+  have an **Export CSV** button that writes *every* sample, not just the
+  strided rows drawn on screen.
 
 ## Packaging & Distribution
 

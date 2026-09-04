@@ -35,8 +35,15 @@ ENGINE_FACTORS = {
     "d_grain_outer": 1000.0, "d_port_0": 1000.0, "d_throat": 1000.0,
     "eps_exp": 1.0, "alpha_deg": 1.0, "eta_cstar": 1.0, "eta_nozzle": 1.0,
     "gamma": 1.0, "MW": 1.0, "m_dry": 1.0, "Cd_body": 1.0, "d_body": 1000.0,
+    # component fields added with the expanded engine model
+    "d_vent": 1000.0, "Cd_vent": 1.0, "cooling_coeff": 1.0, "n_ports": 1.0,
+    "L_pre": 1000.0, "L_post": 1000.0, "beta_conv_deg": 1.0,
+    "erosion_rate": 1000.0, "fuel_a": 1.0, "fuel_n": 1.0, "Cd_inj": 1.0,
 }
-ENGINE_DECIMALS = {"d_hole": 3, "d_throat": 2, "fill_frac": 0, "n_holes": 0}
+ENGINE_DECIMALS = {"d_hole": 3, "d_throat": 3, "fill_frac": 1, "n_holes": 0,
+                   "n_ports": 0, "cooling_coeff": 4, "erosion_rate": 4,
+                   "eta_cstar": 3, "eta_nozzle": 3, "Cd_inj": 3,
+                   "d_tank": 2, "L_tank": 2, "fuel_a": 8, "fuel_n": 4}
 
 AIRFRAME_FACTORS = {
     "nose_length_m": 1000.0, "body_diameter_m": 1000.0, "body_length_m": 1000.0,

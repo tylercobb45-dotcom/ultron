@@ -61,33 +61,120 @@ def _generated_curves_dir():
     return os.path.join(_HYBRID_SIM_ROOT, 'generated_curves')
 
 from hybrid_sim import Engine, Rocket, EngineModel, FlightModel, FUELS, metrics as hs_metrics  # noqa: E402
+from hybrid_sim.config import INJECTOR_TYPES  # noqa: E402
 
-# name -> Engine field, display factor (value shown = field value * factor), decimals
+# (label, Engine field, display factor [shown = field * factor], decimals, tooltip)
+# The form is generated from these lists, so adding a field to the physics and
+# a line here is all it takes to make it editable.
 _TANK_FIELDS = [
-    ("Tank diameter (mm)", "d_tank", 1000.0, 1),
-    ("Tank length (mm)", "L_tank", 1000.0, 1),
-    ("Fill fraction (%)", "fill_frac", 100.0, 0),
-    ("Initial tank temp (K)", "T_tank_0", 1.0, 1),
+    ("Tank diameter (mm)", "d_tank", 1000.0, 2,
+     "Internal diameter of the oxidizer tank."),
+    ("Tank length (mm)", "L_tank", 1000.0, 2,
+     "Internal length. With the diameter this sets tank volume, which sets "
+     "how much N2O you are carrying."),
+    ("Fill fraction (%)", "fill_frac", 100.0, 1,
+     "Fraction of tank volume filled with LIQUID at ignition. The rest is "
+     "ullage vapour. Above ~95% there is no room for thermal expansion."),
+    ("Initial tank temp (K)", "T_tank_0", 1.0, 1,
+     "N2O is self-pressurizing: tank pressure IS its saturation pressure at "
+     "this temperature. 293 K gives about 5.0 MPa (730 psi). A hot pad day "
+     "raises pressure and thrust; a cold one drops both."),
+    ("Vent orifice diameter (mm)", "d_vent", 1000.0, 2,
+     "Vent bleeding vapour overboard during the burn. 0 = vent closed. "
+     "Venting costs oxidizer and Isp but keeps tank pressure in check."),
+    ("Vent Cd", "Cd_vent", 1.0, 2,
+     "Discharge coefficient of the vent orifice."),
+    ("Tank cooling coefficient", "cooling_coeff", 1.0, 4,
+     "How much of the boil-off latent heat comes out of the LIQUID rather "
+     "than being fed back by the tank walls and the air around them. It sets "
+     "how fast the tank cools, and so how steeply thrust decays: high values "
+     "give a peaky curve, low values a flat one. Small tanks have more wall "
+     "area per kg of liquid and hold pressure up better, so they want a "
+     "lower number. 0 = use the solver default (0.16)."),
 ]
 _INJ_FIELDS = [
-    ("Number of holes", "n_holes", 1.0, 0),
-    ("Hole diameter (mm)", "d_hole", 1000.0, 3),
-    ("Injector Cd", "Cd_inj", 1.0, 2),
+    ("Number of holes", "n_holes", 1.0, 0,
+     "Orifices in the injector. HyperTEK-style injector bells use ONE "
+     "interchangeable orifice; showerhead plates use many."),
+    ("Hole diameter (mm)", "d_hole", 1000.0, 3,
+     "Diameter of each orifice. Total injector area is what sets oxidizer "
+     "flow, and therefore burn time."),
+    ("Injector Cd", "Cd_inj", 1.0, 4,
+     "Discharge coefficient. Sharp-edged drilled holes ~0.6-0.7, "
+     "well-rounded ~0.8, swirl injectors much lower."),
 ]
 _GRAIN_FIELDS = [
-    ("Grain length (mm)", "L_grain", 1000.0, 1),
-    ("Grain outer diameter (mm)", "d_grain_outer", 1000.0, 1),
-    ("Initial port diameter (mm)", "d_port_0", 1000.0, 1),
+    ("Grain length (mm)", "L_grain", 1000.0, 1,
+     "Length of the fuel grain. Sets burn area, and with it fuel flow."),
+    ("Grain outer diameter (mm)", "d_grain_outer", 1000.0, 1,
+     "Outer diameter of the fuel. The burn ends when the port reaches this."),
+    ("Initial port diameter (mm)", "d_port_0", 1000.0, 1,
+     "Starting bore. Small ports give high oxidizer flux and fast regression "
+     "(low O/F); large ports start fuel-lean."),
+    ("Regression coeff a (0 = fuel default)", "fuel_a", 1.0, 8,
+     "Fuel regression law: rdot = a * G_ox^n, SI units. The tabulated value "
+     "for a named fuel is a literature average; a real grain's coefficient "
+     "depends on the formulation, binder, additives and how it was made, and "
+     "manufacturers do not publish it for proprietary fuels. 0 = use the "
+     "selected fuel's own value."),
+    ("Regression exponent n (0 = fuel default)", "fuel_n", 1.0, 4,
+     "Flux exponent in rdot = a * G_ox^n. Typically 0.5-0.7. Higher means "
+     "the grain is more sensitive to oxidizer flux, so regression falls off "
+     "faster as the port opens up."),
+    ("Number of ports", "n_ports", 1.0, 0,
+     "Ports burning in parallel. Multi-port grains buy burn area in a short "
+     "package, at the cost of lower flux per port and leftover slivers."),
+    ("Pre-combustion chamber (mm)", "L_pre", 1000.0, 1,
+     "Empty volume ahead of the grain. Lets the spray break up and burn "
+     "before it reaches the fuel wall."),
+    ("Post-combustion chamber (mm)", "L_post", 1000.0, 1,
+     "Mixing volume aft of the grain. Hybrids run fuel-rich streaks; this is "
+     "where they finish burning. Skimping on it costs c* efficiency."),
 ]
 _NOZZLE_FIELDS = [
-    ("Throat diameter (mm)", "d_throat", 1000.0, 2),
-    ("Expansion ratio (Ae/At)", "eps_exp", 1.0, 2),
-    ("Half angle (deg)", "alpha_deg", 1.0, 1),
-    ("c* efficiency", "eta_cstar", 1.0, 2),
-    ("Nozzle efficiency", "eta_nozzle", 1.0, 2),
-    ("Gas gamma (Cp/Cv)", "gamma", 1.0, 2),
-    ("Molar mass (g/mol)", "MW", 1.0, 1),
+    ("Throat diameter (mm)", "d_throat", 1000.0, 3,
+     "The single most sensitive dimension in the motor. Chamber pressure "
+     "scales roughly as 1/A_throat."),
+    ("Expansion ratio (Ae/At)", "eps_exp", 1.0, 2,
+     "Exit area over throat area. Higher is better high up and worse at sea "
+     "level; too high and the flow separates in the bell."),
+    ("Divergence half angle (deg)", "alpha_deg", 1.0, 1,
+     "Cone half angle of the diverging section. 15 deg is the classic "
+     "compromise; the model applies the matching divergence loss."),
+    ("Convergence half angle (deg)", "beta_conv_deg", 1.0, 1,
+     "Half angle of the converging section. Geometry and packaging only - it "
+     "does not change performance in this model."),
+    ("Throat erosion rate (mm/s)", "erosion_rate", 1000.0, 4,
+     "Radial erosion of the throat during the burn. 0 = none. Graphite and "
+     "phenolic throats DO erode, which bleeds off chamber pressure and "
+     "thrust as the burn goes on."),
+    ("c* efficiency", "eta_cstar", 1.0, 3,
+     "How much of the theoretical characteristic velocity combustion "
+     "actually delivers. Hybrids typically 0.85-0.95; poor mixing is why."),
+    ("Nozzle efficiency", "eta_nozzle", 1.0, 3,
+     "Losses in the nozzle beyond the divergence angle."),
 ]
+_GAS_FIELDS = [
+    ("Gas gamma (Cp/Cv)", "gamma", 1.0, 3,
+     "Ratio of specific heats of the combustion products."),
+    ("Molar mass (g/mol)", "MW", 1.0, 1,
+     "Mean molar mass of the exhaust."),
+]
+
+_ALL_FIELDS = (_TANK_FIELDS + _INJ_FIELDS + _GRAIN_FIELDS
+               + _NOZZLE_FIELDS + _GAS_FIELDS)
+_INT_FIELDS = {"n_holes", "n_ports"}
+
+# Defaults for the fields added after the original four-group form. Old saved
+# profiles and presets predate them, so a missing value means "use this"
+# rather than an error - and every one of these reproduces the previous
+# behaviour exactly.
+_ENGINE_DEFAULTS = {
+    "d_vent": 0.0, "Cd_vent": 0.65, "n_ports": 1, "cooling_coeff": 0.0,
+    "fuel_a": 0.0, "fuel_n": 0.0,
+    "L_pre": 0.0, "L_post": 0.0, "beta_conv_deg": 30.0, "erosion_rate": 0.0,
+}
+
 
 def _hypertek_presets():
     """Engine Lab entries for the real HyperTEK motors.
@@ -121,22 +208,6 @@ _PRESETS = {
         eta_cstar=0.90, eta_nozzle=0.95, gamma=1.22, MW=26.0,
         rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
     ),
-    "HyperTEK I260": dict(
-        d_tank=0.050, L_tank=0.224, fill_frac=0.85, T_tank_0=293,
-        n_holes=1, d_hole=0.00437, Cd_inj=0.7, fuel="HTPB",
-        L_grain=0.20, d_grain_outer=0.050, d_port_0=0.044,
-        d_throat=0.0092, eps_exp=3.5, alpha_deg=15.0,
-        eta_cstar=0.85, eta_nozzle=0.85, gamma=1.22, MW=26.0,
-        rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
-    ),
-    "HyperTEK K240": dict(
-        d_tank=0.058, L_tank=0.425, fill_frac=0.80, T_tank_0=293,
-        n_holes=1, d_hole=0.003175, Cd_inj=0.7, fuel="HTPB",
-        L_grain=0.20, d_grain_outer=0.050, d_port_0=0.041,
-        d_throat=0.008, eps_exp=3.5, alpha_deg=15.0,
-        eta_cstar=0.85, eta_nozzle=0.85, gamma=1.22, MW=26.0,
-        rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
-    ),
 }
 _PRESETS.update(_hypertek_presets())
 
@@ -155,6 +226,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._last_metrics = None
         self._last_engine = None      # the Engine dataclass that produced it
         self._fields = {}             # field name -> QLineEdit
+        self._loading = False         # suppress "helpful" edits while loading
         self._build_ui()
         self._apply_preset("Goddard baseline")
 
@@ -194,22 +266,52 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.fuel_combo.addItems(list(FUELS.keys()))
         self.fuel_combo.setStyleSheet(_INPUT_STYLE)
 
+        self.inj_combo = QtWidgets.QComboBox()
+        self.inj_combo.addItems(list(INJECTOR_TYPES.keys()))
+        self.inj_combo.setStyleSheet(_INPUT_STYLE)
+        self.inj_combo.setToolTip("\n".join(
+            "%s - %s" % (k, v[1]) for k, v in INJECTOR_TYPES.items()))
+        self.inj_combo.currentTextChanged.connect(self._injector_type_changed)
+
         for title, fields in (
-            ("Oxidizer Tank (N2O)", _TANK_FIELDS),
+            ("Oxidizer Tank (self-pressurizing N2O)", _TANK_FIELDS),
             ("Injector", _INJ_FIELDS),
-            ("Fuel Grain", _GRAIN_FIELDS),
-            ("Nozzle / Combustion", _NOZZLE_FIELDS),
+            ("Fuel Grain & Combustion Chamber", _GRAIN_FIELDS),
+            ("Nozzle", _NOZZLE_FIELDS),
+            ("Combustion Gas", _GAS_FIELDS),
         ):
             group = QtWidgets.QGroupBox(title)
             gform = QtWidgets.QFormLayout(group)
+            if fields is _TANK_FIELDS:
+                note = QtWidgets.QLabel(
+                    "N2O supplies its own pressure - no pressurant, no "
+                    "regulator. Tank pressure follows the saturation curve, "
+                    "so it falls as the tank cools during the burn.")
+                note.setWordWrap(True)
+                gform.addRow(note)
+            if fields is _INJ_FIELDS:
+                gform.addRow("Injector type:", self.inj_combo)
             if fields is _GRAIN_FIELDS:
                 gform.addRow("Fuel:", self.fuel_combo)
-            for label, key, _factor, _dec in fields:
+            for spec in fields:
+                label, key, _factor, _dec = spec[0], spec[1], spec[2], spec[3]
+                tip = spec[4] if len(spec) > 4 else ""
                 edit = QtWidgets.QLineEdit()
                 edit.setStyleSheet(_INPUT_STYLE)
+                edit.setToolTip(tip)
+                edit.editingFinished.connect(self._update_derived)
                 self._fields[key] = edit
-                gform.addRow(label + ":", edit)
+                row_label = QtWidgets.QLabel(label + ":")
+                row_label.setToolTip(tip)
+                gform.addRow(row_label, edit)
             form_layout.addWidget(group)
+
+        self.derived_label = QtWidgets.QLabel()
+        self.derived_label.setWordWrap(True)
+        derived_group = QtWidgets.QGroupBox("Derived geometry")
+        dlayout = QtWidgets.QVBoxLayout(derived_group)
+        dlayout.addWidget(self.derived_label)
+        form_layout.addWidget(derived_group)
 
         rocket_group = QtWidgets.QGroupBox("Quick Flight Preview (optional)")
         rform = QtWidgets.QFormLayout(rocket_group)
@@ -270,17 +372,30 @@ class EngineLabWidget(QtWidgets.QWidget):
         """The engine design as plain values, for saving into a rocket profile."""
         cfg = {key: edit.text() for key, edit in self._fields.items()}
         cfg["fuel"] = self.fuel_combo.currentText()
+        cfg["inj_type"] = self.inj_combo.currentText()
         return cfg
 
     def apply_config(self, cfg: dict):
         """Restore an engine design saved by get_config()."""
         if not cfg:
             return
+        self._loading = True
+        try:
+            self._apply_config_values(cfg)
+        finally:
+            self._loading = False
+        self._update_derived()
+
+    def _apply_config_values(self, cfg: dict):
         for key, value in cfg.items():
             if key == "fuel":
                 idx = self.fuel_combo.findText(str(value))
                 if idx >= 0:
                     self.fuel_combo.setCurrentIndex(idx)
+            elif key == "inj_type":
+                idx = self.inj_combo.findText(str(value))
+                if idx >= 0:
+                    self.inj_combo.setCurrentIndex(idx)
             elif key in self._fields:
                 self._fields[key].setText(str(value))
 
@@ -299,9 +414,22 @@ class EngineLabWidget(QtWidgets.QWidget):
         preset = _PRESETS.get(name)
         if not preset:
             return
-        for _label, key, factor, dec in _TANK_FIELDS + _INJ_FIELDS + _GRAIN_FIELDS + _NOZZLE_FIELDS:
-            if key in preset:
-                self._fields[key].setText(f"{preset[key] * factor:.{dec}f}")
+        self._loading = True
+        try:
+            self._apply_preset_values(preset)
+        finally:
+            self._loading = False
+        self._update_derived()
+
+    def _apply_preset_values(self, preset):
+        for spec in _ALL_FIELDS:
+            key, factor, dec = spec[1], spec[2], spec[3]
+            value = preset.get(key, _ENGINE_DEFAULTS.get(key))
+            if value is not None:
+                self._fields[key].setText(f"{value * factor:.{dec}f}")
+        idx = self.inj_combo.findText(preset.get("inj_type", "Showerhead"))
+        if idx >= 0:
+            self.inj_combo.setCurrentIndex(idx)
         idx = self.fuel_combo.findText(preset.get("fuel", "HTPB"))
         if idx >= 0:
             self.fuel_combo.setCurrentIndex(idx)
@@ -314,17 +442,75 @@ class EngineLabWidget(QtWidgets.QWidget):
             if key in rocket:
                 self._fields[key].setText(f"{rocket[key] * factor:.{dec}f}")
 
+    def _injector_type_changed(self, name):
+        """Suggest the matching discharge coefficient when the type changes.
+
+        Only when a person picks the type. Loading a preset or a saved profile
+        also moves this combo, and those carry their own fitted Cd that must
+        not be clobbered by a generic suggestion.
+        """
+        info = INJECTOR_TYPES.get(name)
+        if not info or getattr(self, "_loading", False):
+            return
+        edit = self._fields.get("Cd_inj")
+        if edit is not None:
+            edit.setText(f"{info[0]:.2f}")
+        self._update_derived()
+
+    def _update_derived(self):
+        """Show the numbers that fall out of the geometry as it is typed.
+
+        These are the quantities you actually size hardware against - tank
+        volume, injector area, L*, exit diameter - and none of them are things
+        you type in directly, so they are easy to get wrong silently.
+        """
+        if not hasattr(self, "derived_label"):
+            return
+        try:
+            eng = self._read_engine()
+        except Exception:
+            self.derived_label.setText(
+                "<i>Fill in the geometry to see derived values.</i>")
+            return
+        try:
+            import hybrid_sim.n2o as _n2o
+            p_tank = float(_n2o.psat(eng.T_tank_0))
+            rho_l = float(_n2o.rho_l(eng.T_tank_0))
+        except Exception:
+            p_tank, rho_l = 0.0, 0.0
+        m_ox = eng.fill_frac * eng.V_tank * rho_l
+        self.derived_label.setText(
+            f"Tank volume: <b>{eng.V_tank_cc:.0f} cc</b> "
+            f"({eng.V_tank * 1000:.2f} L)<br>"
+            f"Liquid N2O at ignition: <b>{m_ox:.3f} kg</b><br>"
+            f"Tank pressure at {eng.T_tank_0:.0f} K: "
+            f"<b>{p_tank / 1e6:.2f} MPa ({p_tank * 0.000145038:.0f} psi)</b><br>"
+            f"Fuel loaded: <b>{eng.m_fuel_0():.3f} kg</b><br>"
+            f"Fuel web to burn: <b>{eng.web_0 * 1000:.1f} mm</b><br>"
+            f"Injector area: <b>{eng.A_inj * 1e6:.2f} mm²</b> "
+            f"(Cd·A {eng.CdA_inj * 1e6:.2f} mm²)<br>"
+            f"Initial port area: <b>{eng.A_port_0 * 1e6:.1f} mm²</b><br>"
+            f"Throat area: <b>{eng.A_throat * 1e6:.2f} mm²</b><br>"
+            f"Exit diameter: <b>{eng.d_exit * 1000:.1f} mm</b><br>"
+            f"L* at ignition: <b>{eng.L_star():.2f} m</b>")
+
     # ---- build dataclasses from the form -----------------------------------
     def _read_engine(self) -> Engine:
-        factors = {k: f for _l, k, f, _d in _TANK_FIELDS + _INJ_FIELDS + _GRAIN_FIELDS + _NOZZLE_FIELDS}
         kwargs = {}
-        for key, factor in factors.items():
+        for spec in _ALL_FIELDS:
+            key, factor = spec[1], spec[2]
             text = self._fields[key].text().strip()
             if not text:
+                # A blank optional field means "leave it at the default"
+                # rather than an error, so old saved profiles still load.
+                if key in _ENGINE_DEFAULTS:
+                    kwargs[key] = _ENGINE_DEFAULTS[key]
+                    continue
                 raise ValueError(f"Missing value for '{key}'")
             value = float(text) / factor
-            kwargs[key] = int(round(value)) if key == "n_holes" else value
+            kwargs[key] = int(round(value)) if key in _INT_FIELDS else value
         kwargs["fuel"] = FUELS[self.fuel_combo.currentText()]
+        kwargs["inj_type"] = self.inj_combo.currentText()
         return Engine(**kwargs)
 
     def _read_rocket(self) -> Rocket:

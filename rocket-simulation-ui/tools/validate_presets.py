@@ -36,7 +36,7 @@ import atmosphere
 import flight_model
 import recovery as recovery_mod
 import presets as preset_defs
-from hybrid_sim import Engine, EngineModel, FUELS, metrics as hsm
+from hybrid_sim import Engine, EngineModel, FUELS, metrics as hsm, n2o
 
 G0 = 9.80665
 PASS, FAIL = "PASS", "FAIL"
@@ -59,6 +59,84 @@ def banner(text):
 # 1. engines vs published performance
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 0. published hardware self-consistency
+# ---------------------------------------------------------------------------
+
+def build_engine(fit):
+    """An Engine from a preset fit dict, honouring its fuel choice.
+
+    Presets name their fuel; anything not naming one predates the field and
+    gets HTPB, which is what it was fitted with.
+    """
+    skip = ("n_holes", "fill_frac", "fuel")
+    return Engine(fill_frac=fit.get("fill_frac", 0.85), T_tank_0=293,
+                  n_holes=fit.get("n_holes", 1),
+                  fuel=FUELS[fit.get("fuel", "HTPB")],
+                  **{k: v for k, v in fit.items() if k not in skip})
+
+
+
+def validate_hardware():
+    """Check the published numbers against each other, before any modelling.
+
+    None of this involves the simulation. It asks whether the vendor's own
+    figures - tank volumes, orifice sizes, propellant masses, burn times -
+    tell a consistent story. If they do, the geometry we locked into the fit
+    is the real geometry; if they do not, the fit is built on sand.
+    """
+    banner("0. PUBLISHED HARDWARE SELF-CONSISTENCY (no modelling involved)")
+
+    print("  Tank geometry reproduces the volume in the motor designation:\n")
+    for name, hw in preset_defs.ENGINE_HARDWARE.items():
+        g = preset_defs.hardware_geometry(name)
+        V_cc = math.pi * (g["d_tank"] / 2) ** 2 * g["L_tank"] * 1e6
+        err = (V_cc - hw["tank_cc"]) / hw["tank_cc"] * 100
+        check(f"    {name}: {V_cc:.0f} cc vs {hw['tank_cc']:.0f} cc "
+              f"({hw['designation']})", abs(err) < 0.5, f"{err:+.2f}%")
+
+        # The tank has to physically fit inside the case it ships in.
+        check(f"    {name}: tank fits the {hw['case_od']*1000:.0f} mm case",
+              g["d_tank"] < hw["case_od"],
+              f"tank ID {g['d_tank']*1000:.1f} mm inside "
+              f"{hw['case_od']*1000:.0f} mm OD")
+
+    print("\n  Same hardware, different orifice - the strongest check available.")
+    print("  The J317 and K240 are the SAME 835 cc motor; only the injector")
+    print("  orifice differs (.172 in vs .125 in). If those numbers really are")
+    print("  the orifice diameters, and oxidiser flow really scales with")
+    print("  injector area, then burn time must scale as the inverse area")
+    print("  ratio. Nothing here is fitted - both sides are published.\n")
+    j, k = preset_defs.ENGINE_HARDWARE["HyperTEK J317"], preset_defs.ENGINE_HARDWARE["HyperTEK K240"]
+    area_ratio = (j["orifice_in"] / k["orifice_in"]) ** 2
+    burn_ratio = (preset_defs.ENGINE_REFERENCE["HyperTEK K240"]["burn"]
+                  / preset_defs.ENGINE_REFERENCE["HyperTEK J317"]["burn"])
+    err = (burn_ratio - area_ratio) / area_ratio * 100
+    check(f"    injector area ratio {area_ratio:.4f} vs measured burn-time "
+          f"ratio {burn_ratio:.4f}", abs(err) < 5.0, f"{err:+.2f}%")
+
+    print("\n  Vendor-stated pressures:\n")
+    lo, hi = preset_defs.N2O_TANK_PSI
+    p_tank = float(n2o.psat(293.0)) / preset_defs.PSI
+    check(f"    N2O at 293 K self-pressurizes to {p_tank:.0f} psi",
+          lo <= p_tank <= hi, f"vendor states {lo:.0f}-{hi:.0f} psi")
+
+    print("\n  Published propellant mass fits the published tank:\n")
+    for name, hw in preset_defs.ENGINE_HARDWARE.items():
+        ref = preset_defs.ENGINE_REFERENCE[name]
+        V = hw["tank_cc"] * 1e-6
+        rho = float(n2o.rho_l(293.0))
+        # Oxidiser alone, at a plausible fill, must not exceed the total
+        # propellant the motor is certified to burn - and must be most of it.
+        ox_full = V * rho
+        frac = ref["prop"] / ox_full
+        check(f"    {name}: {ref['prop']:.3f} kg propellant vs "
+              f"{ox_full:.3f} kg tank capacity",
+              0.55 <= frac <= 1.35,
+              f"ratio {frac:.2f} (ox is most of the propellant, plus fuel)")
+    print()
+
+
 def validate_engines():
     banner("1. ENGINE MODEL vs PUBLISHED MOTOR PERFORMANCE")
     print("   Tolerance: 12% on impulse/propellant/peak, 20% on burn time.")
@@ -67,11 +145,7 @@ def validate_engines():
     print("   long and shallow - a small threshold difference moves it a lot.\n")
     for name, fit in preset_defs.ENGINE_FITS.items():
         ref = preset_defs.ENGINE_REFERENCE[name]
-        eng = Engine(fill_frac=fit.get("fill_frac", 0.85), T_tank_0=293,
-                     n_holes=fit.get("n_holes", 1), Cd_inj=0.7,
-                     fuel=FUELS["HTPB"],
-                     **{k: v for k, v in fit.items()
-                        if k not in ("n_holes", "fill_frac")})
+        eng = build_engine(fit)
         m = hsm(EngineModel(eng).run())
         got = dict(impulse=m["total_impulse"], burn=m["burn_time"],
                    peak=m["peak_thrust"], prop=m["prop_mass"])
@@ -220,6 +294,7 @@ def validate_bounds(name, rows, summary, airframe, site, mass, system, points):
 
 
 def main():
+    validate_hardware()
     validate_engines()
 
     banner("3. PRESET FLIGHTS")

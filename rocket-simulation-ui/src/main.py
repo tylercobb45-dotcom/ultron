@@ -22,6 +22,7 @@ from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery ta
 import theme as app_theme
 import flight_model
 import aero
+import datasheet  # Flight + engine spreadsheet views
 
 
 def user_settings_path():
@@ -1318,13 +1319,19 @@ class RocketSimulationUI(QtWidgets.QWidget):
         graph_layout.addWidget(self.toolbar)
         self.graph_tab_widget.addTab(graph_tab, "Graph")
 
-        # Spreadsheet tab
-        spreadsheet_tab = QtWidgets.QWidget()
-        spreadsheet_layout = QtWidgets.QVBoxLayout(spreadsheet_tab)
-        self.spreadsheet_table = QtWidgets.QTableWidget()
-        self.spreadsheet_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        spreadsheet_layout.addWidget(self.spreadsheet_table)
-        self.graph_tab_widget.addTab(spreadsheet_tab, "Spreadsheet Data")
+        # Spreadsheet tabs: the trajectory and the motor internals are
+        # different datasets on different time bases, so they get a sheet each.
+        self.flight_sheet = datasheet.DataSheet(
+            datasheet.FLIGHT_COLUMNS, title="flight_data")
+        self.graph_tab_widget.addTab(self.flight_sheet, "Flight Data")
+
+        self.engine_sheet = datasheet.DataSheet(
+            datasheet.ENGINE_COLUMNS, title="engine_data")
+        self.engine_sheet.info.setText(
+            "No engine data. Design a motor on the Engine Lab tab and press "
+            "\"Send to Simulation\" - the internal ballistics of that run "
+            "appear here alongside the trajectory.")
+        self.graph_tab_widget.addTab(self.engine_sheet, "Engine Data")
 
         right_layout.addWidget(self.graph_tab_widget)
 
@@ -4049,27 +4056,45 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             return 343.0
 
+    def populate_datasheets(self, results):
+        """Fill the Flight Data and Engine Data sheets from the latest run."""
+        try:
+            rows = []
+            for r in results:
+                row = dict(r)
+                # Two conveniences that belong in the sheet rather than in the
+                # physics: feet, because that is what altitude gets argued
+                # about in, and g, because that is what airframes are rated in.
+                row['altitude_ft'] = row.get('altitude', 0.0) * 3.28084
+                accel = row.get('accel_total', row.get('acceleration', 0.0))
+                row['accel_g'] = accel / 9.80665
+                rows.append(row)
+            self.flight_sheet.set_rows(rows)
+        except Exception:
+            traceback.print_exc()
+
+        # The engine sheet is only meaningful when the flight was actually
+        # flown on a curve this app generated, so we know what was inside it.
+        try:
+            engine_run = None
+            if (getattr(self, 'engine_lab_curve_path', None)
+                    and self.thrust_curve_path == self.engine_lab_curve_path):
+                engine_run = self.engine_lab.get_last_run()
+            if engine_run:
+                self.engine_sheet.set_rows(datasheet.engine_rows(engine_run[1]))
+            else:
+                self.engine_sheet.set_rows([])
+                self.engine_sheet.info.setText(
+                    "This flight used an imported thrust curve, so there are "
+                    "no motor internals to show. Design the motor on the "
+                    "Engine Lab tab and press \"Send to Simulation\" to get "
+                    "chamber pressure, O/F, regression rate and the rest.")
+        except Exception:
+            traceback.print_exc()
+
     def display_results(self, results):
         if results:
-         # --- Populate spreadsheet table ---
-            headers = list(results[0].keys()) if results else []
-            # Rendering every sample of a long flight means tens of thousands
-            # of cells and a window that locks up for a minute; show a strided
-            # view instead. The full dataset still drives the plots and report.
-            max_rows = 600
-            stride = max(1, len(results) // max_rows)
-            shown = results[::stride]
-            self.spreadsheet_table.setColumnCount(len(headers))
-            self.spreadsheet_table.setRowCount(len(shown))
-            self.spreadsheet_table.setHorizontalHeaderLabels([h.capitalize() for h in headers])
-            for row_idx, row in enumerate(shown):
-                for col_idx, key in enumerate(headers):
-                    val = row[key]
-                    # Format floats for readability
-                    if isinstance(val, float):
-                        val = f"{val:.4f}"
-                    self.spreadsheet_table.setItem(row_idx, col_idx, QtWidgets.QTableWidgetItem(str(val)))
-            self.spreadsheet_table.resizeColumnsToContents()
+            self.populate_datasheets(results)
             # Find max values and their times
             max_alt = max(r['altitude'] for r in results)
             max_alt_idx = next(i for i, r in enumerate(results) if r['altitude'] == max_alt)

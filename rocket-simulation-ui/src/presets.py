@@ -1,21 +1,29 @@
 """Preset engines and rockets that ship with JARVIS.
 
-Provenance matters here, so it is stated per item.
+Provenance matters here, so it is stated per item, and the line between
+"published by the manufacturer" and "fitted by us" is drawn explicitly.
 
 ENGINES
-    The four HyperTEK entries are Engine Lab configurations *fitted* to
-    reproduce published performance of real motors - total impulse, burn
-    time, peak thrust and propellant mass. HyperTEK does not publish the
-    internal geometry of its motors, so these are not the manufacturer's
-    dimensions; they are a set of parameters that makes this model behave
-    like the real motor did on a test stand. Reference data:
+    The four HyperTEK entries are Engine Lab configurations built around the
+    manufacturer's own published hardware. Tank volume, tank internal
+    diameter and length, injector orifice diameter, orifice count, case
+    diameter and overall motor length are LOCKED to published values (see
+    ENGINE_HARDWARE below for each number and where it comes from). Only the
+    internals HyperTEK does not publish were fitted - injector discharge
+    coefficient, tank cooling, fuel regression coefficient, throat, expansion
+    ratio, grain port and efficiencies.
+
+    Reference performance:
       I260  - certification figures carried in hybrid_sim/validation.py
       J317, K240, L550 - measured from the thrustcurve.org curves that ship
       in thrust_curves/csv (contributed by John Coker), whose headers also
       carry the propellant masses.
-    The Goddard baseline is the SystemsGo configuration the vendored
-    hybrid_sim package is validated against, with an independent spreadsheet
-    reference for the whole flight.
+
+    The published numbers cross-check each other before any modelling
+    happens: the J317 and K240 are the same 835 cc motor differing only in
+    orifice (.172 in vs .125 in), and their measured burn times scale as the
+    inverse injector-area ratio to within 1.5%. tools/validate_presets.py
+    checks that, and the tank/pressure consistency, as section 0.
 
 ROCKETS
     Airframes are representative of what each motor class is normally flown
@@ -27,35 +35,153 @@ ROCKETS
     Every preset except Goddard flies a real measured thrust curve rather
     than a modelled one, so a flight comparison tests the flight model
     against a motor that actually existed.
+
+See docs/VALIDATION.md for the residuals and the disagreements.
 """
 from __future__ import annotations
+
+import math
+
+# ---------------------------------------------------------------------------
+# Published HyperTEK hardware.
+#
+# These are NOT fitted. Each number below is either stated by the vendor or
+# encoded in the motor designation itself, and the fitter treats them as fixed
+# constraints - only the genuinely unpublished internals are free to move.
+#
+# How the designation works:  440CC172J-I260
+#                             ^^^        tank volume in cc
+#                                ^^^     injector orifice, thousandths of an inch
+#                                   ^    fuel grain type
+#                                     ^^^^ impulse class and average thrust
+#
+# The injector is a bell holding ONE field-interchangeable orifice insert (the
+# kit ships five sizes; swapping the insert is what turns an 835 cc tank from a
+# J317 into a K240). So n_holes = 1, and the orifice diameter is published to
+# the thousandth of an inch.
+#
+# Tank internal diameter: the 835 cc 54 mm tank takes a 17.5 in vent tube that
+# runs its length, so L = 0.4445 m; 835 cc at that length gives ID 48.9 mm,
+# which is exactly right for a 54 mm tube with a ~2.5 mm wall. The same ID is
+# used for the 440 cc tank (same 54 mm system), and the 75 mm L tank is scaled
+# by the same OD/ID ratio.
+#
+# Sources: thrustcurve.org motor designations; HyperTEK product listings and
+# vendor descriptions (Sunward Rockets, jcrocket.com HyperTEK system page);
+# HyperTEK manual introduction. See docs/VALIDATION.md.
+# ---------------------------------------------------------------------------
+IN = 0.0254
+
+ENGINE_HARDWARE = {
+    "HyperTEK I260": dict(
+        designation="440CC172J-I260", tank_cc=440.0, case_od=0.054,
+        tank_id=0.04890, orifice_in=0.172, n_holes=1, motor_length=0.533,
+        note="54 mm system, small tank. Vendor states ~21 in overall length."),
+    "HyperTEK J317": dict(
+        designation="835CC172J-J317", tank_cc=835.0, case_od=0.054,
+        tank_id=0.04890, orifice_in=0.172, n_holes=1, motor_length=0.762,
+        note="54 mm system, large tank. Vendor states 30 in overall length; "
+             "same .172 orifice as the I260, bigger tank."),
+    "HyperTEK K240": dict(
+        designation="835CC125J-K240", tank_cc=835.0, case_od=0.054,
+        tank_id=0.04890, orifice_in=0.125, n_holes=1, motor_length=0.762,
+        note="Same 835 cc hardware as the J317 with the smaller .125 orifice: "
+             "less flow, longer burn, K impulse instead of J."),
+    "HyperTEK L550": dict(
+        designation="1685CCRGL-L550", tank_cc=1685.0, case_od=0.075,
+        tank_id=0.06792, orifice_in=None, n_holes=1, motor_length=None,
+        note="75 mm system. 'RGL' is not a numbered orifice, so the injector "
+             "area is fitted rather than published."),
+}
+
+# Vendor-stated operating pressures, used as fit constraints and as a check
+# that the model is running the motor the way the motor actually runs.
+#   "the nitrous oxide is self-pressurized to between 650 and 750 psi, which
+#    allows the motor to operate at initial chamber pressures of up to about
+#    550 psi"
+N2O_TANK_PSI = (650.0, 750.0)      # 4.48 - 5.17 MPa
+PC_MAX_PSI = 550.0                 # 3.79 MPa
+PSI = 6894.757
+
+
+def hardware_geometry(name):
+    """Published tank geometry and injector for a motor, in SI.
+
+    Returns the subset of Engine fields that are fixed by published data.
+    """
+    hw = ENGINE_HARDWARE.get(name)
+    if not hw:
+        return {}
+    d = hw["tank_id"]
+    out = dict(d_tank=d,
+               L_tank=(hw["tank_cc"] * 1e-6) / (math.pi * (d / 2.0) ** 2),
+               n_holes=hw["n_holes"])
+    if hw.get("orifice_in"):
+        out["d_hole"] = hw["orifice_in"] * IN
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Engine Lab configurations fitted to published motor performance.
 # Produced by tools/fit_engines.py; see that script for the fit residuals.
 # ---------------------------------------------------------------------------
 ENGINE_FITS = {
-    # Fitted by tools/fit_engines.py against the published performance below.
-    # Peak chamber pressure is constrained to the 2.5-4.5 MPa band real hybrids
-    # run at: a thrust curve alone does not pin down internal geometry, and an
-    # unconstrained fit reaches the right thrust with a 20 mm throat at 1 MPa,
-    # which would make the report's chamber-pressure safety check meaningless.
+    # Produced by tools/fit_engines.py. Everything HyperTEK publishes is LOCKED
+    # here and was not adjusted to improve the match:
+    #
+    #   d_tank / L_tank   the tank volume in the designation (440/835/1685 cc),
+    #                     with the internal diameter derived from the 17.5 in
+    #                     vent tube that runs the length of the 835 cc tank
+    #   d_hole, n_holes   the orifice in the designation (.172 / .125 inch),
+    #                     one field-interchangeable insert
+    #   d_grain_outer     bounded by the 54 mm / 75 mm case it ships in
+    #   L_grain           bounded so tank + grain fits the vendor's stated
+    #                     overall motor length
+    #
+    # What is fitted is the physics HyperTEK does NOT publish:
+    #
+    #   Cd_inj            how well the orifice actually flows. Not the textbook
+    #                     0.7 of a water orifice: N2O flashes to vapour across
+    #                     the hole and the two-phase choking that follows cuts
+    #                     the effective discharge coefficient a long way.
+    #   cooling_coeff     how much boil-off latent heat comes out of the liquid
+    #                     rather than the tank walls, which sets how steeply
+    #                     the blowdown decays
+    #   fuel_a            regression coefficient of HyperTEK's proprietary
+    #                     moulded thermoplastic grain, over an ABS base
+    #   d_throat, eps_exp, grain port, eta_cstar, fill_frac
+    #
+    # Chamber pressure lands at 435-536 psi against the vendor's stated "up to
+    # about 550 psi", and tank pressure at 730 psi against their stated
+    # 650-750 psi - neither was targeted directly.
     "HyperTEK I260": dict(
-        d_tank=0.0500, L_tank=0.2382, d_hole=0.00276, d_throat=0.01298,
-        L_grain=0.1862, d_grain_outer=0.0500, d_port_0=0.0440,
-        eps_exp=3.50, eta_cstar=0.825, eta_nozzle=0.825, fill_frac=0.950),
+        d_tank=0.04890, L_tank=0.23429, d_hole=0.00437, n_holes=1,
+        d_throat=0.01023, eps_exp=5.555, L_grain=0.1963,
+        d_grain_outer=0.0467, d_port_0=0.0257,
+        eta_cstar=0.860, eta_nozzle=0.860, fill_frac=0.950,
+        cooling_coeff=0.1290, Cd_inj=0.3207,
+        fuel="ABS", fuel_a=1.343e-04),
     "HyperTEK J317": dict(
-        d_tank=0.0580, L_tank=0.5800, d_hole=0.00276, d_throat=0.01336,
-        L_grain=0.4971, d_grain_outer=0.0500, d_port_0=0.0440,
-        eps_exp=3.50, eta_cstar=0.860, eta_nozzle=0.860, fill_frac=0.600),
+        d_tank=0.04890, L_tank=0.44461, d_hole=0.00437, n_holes=1,
+        d_throat=0.01184, eps_exp=3.421, L_grain=0.2267,
+        d_grain_outer=0.0500, d_port_0=0.0381,
+        eta_cstar=0.817, eta_nozzle=0.817, fill_frac=0.950,
+        cooling_coeff=0.1388, Cd_inj=0.4451,
+        fuel="ABS", fuel_a=1.173e-04),
     "HyperTEK K240": dict(
-        d_tank=0.0580, L_tank=0.3406, d_hole=0.00222, d_throat=0.01097,
-        L_grain=0.3050, d_grain_outer=0.0500, d_port_0=0.0410,
-        eps_exp=3.50, eta_cstar=0.935, eta_nozzle=0.935, fill_frac=0.950),
+        d_tank=0.04890, L_tank=0.44461, d_hole=0.00317, n_holes=1,
+        d_throat=0.01013, eps_exp=4.226, L_grain=0.2574,
+        d_grain_outer=0.0500, d_port_0=0.0392,
+        eta_cstar=0.970, eta_nozzle=0.970, fill_frac=0.950,
+        cooling_coeff=0.1485, Cd_inj=0.3600,
+        fuel="ABS", fuel_a=8.987e-05),
     "HyperTEK L550": dict(
-        d_tank=0.0700, L_tank=0.4558, d_hole=0.00335, d_throat=0.01767,
-        L_grain=0.3599, d_grain_outer=0.0620, d_port_0=0.0480,
-        eps_exp=3.50, eta_cstar=0.959, eta_nozzle=0.959, fill_frac=0.950),
+        d_tank=0.06792, L_tank=0.46507, d_hole=0.00366, n_holes=1,
+        d_throat=0.01407, eps_exp=4.140, L_grain=0.4804,
+        d_grain_outer=0.0554, d_port_0=0.0441,
+        eta_cstar=0.970, eta_nozzle=0.970, fill_frac=0.950,
+        cooling_coeff=0.1498, Cd_inj=0.8004,
+        fuel="ABS", fuel_a=6.909e-05),
 }
 
 # Published reference performance, for the validation script.
