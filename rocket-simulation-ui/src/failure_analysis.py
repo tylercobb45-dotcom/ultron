@@ -184,13 +184,18 @@ def _arg_max(values):
 # ---------------------------------------------------------------------------
 
 def analyze(flight, vehicle: VehicleConfig | None = None,
-            engine_result=None, engine=None) -> Report:
+            engine_result=None, engine=None, cd_source=None,
+            mass_props=None) -> Report:
     """Grade a completed flight against every failure mode we can evaluate.
 
     flight        : list of per-timestep dicts from simulation.run_simulation
     vehicle       : VehicleConfig (materials, geometry, operational limits)
     engine_result : optional hybrid_sim EngineModel.run() output dict
     engine        : optional hybrid_sim Engine dataclass that produced it
+    cd_source     : whatever drove drag - an aero.CdMachTable, a constant, or
+                    None for the computed buildup. Graded by A-01.
+    mass_props    : optional flight_model.MassProperties, for the mass buildup
+                    check. Graded by M-03.
     """
     v = vehicle or VehicleConfig()
     rep = Report(target_ft=v.target_altitude_ft,
@@ -226,8 +231,11 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach)
     _thermal_checks(rep, v, t, alt, mach)
     _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g)
-    _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight)
+    _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
+                   cd_source)
     _engine_checks(rep, v, engine_result, engine)
+    _drag_source_check(rep, flight, cd_source)
+    _mass_buildup_check(rep, v, flight, mass_props)
 
     _trajectory_checks(rep, v, flight, t, alt, vel)
 
@@ -343,6 +351,134 @@ def _finalize(rep: Report) -> Report:
 # ---------------------------------------------------------------------------
 # mission
 # ---------------------------------------------------------------------------
+
+def _drag_source_check(rep, flight, cd_source):
+    """A-01: does the drag curve actually cover the flight that was flown?
+
+    An imported Cd(Mach) table is held FLAT outside its range rather than
+    extrapolated - that is the safe choice, but it means a table that stops at
+    Mach 2 flown to Mach 3 silently reuses its last value for the whole
+    supersonic leg. Nothing else in the report would catch that, and the
+    answer looks perfectly reasonable.
+    """
+    mach_max = max((r.get("Mach", 0.0) or 0.0) for r in flight) if flight else 0.0
+
+    if cd_source is None:
+        rep.checks.append(Check(
+            "A-01", "Fidelity", "Drag source coverage", OK,
+            f"computed buildup, to Mach {mach_max:,.2f}", "covers the flight",
+            "Drag came from the component buildup, which is evaluated at "
+            "whatever Mach and Reynolds the vehicle actually reached, so it "
+            "has no range to fall off the end of. W-04 grades how far that "
+            "model can be trusted.", ""))
+        return
+
+    rng = getattr(cd_source, "mach_range", None)
+    if rng is None:
+        rep.checks.append(Check(
+            "A-01", "Fidelity", "Drag source coverage", CAUTION,
+            f"single fixed Cd, flight reached Mach {mach_max:,.2f}",
+            "a Cd(Mach) curve",
+            "Drag was a single constant. It cannot represent the transonic "
+            "rise at all, which is worth tens of percent of apogee on "
+            "anything that goes near Mach 1.",
+            "Import a Cd(Mach) table on the Aerodynamics tab, or clear the "
+            "override to use the computed buildup."))
+        return
+
+    lo, hi = rng
+    name = getattr(cd_source, "name", "imported table")
+    if mach_max <= hi + 1e-9:
+        rep.checks.append(Check(
+            "A-01", "Fidelity", "Drag source coverage", OK,
+            f"{name}: Mach {lo:,.2f}-{hi:,.2f}, flight reached {mach_max:,.2f}",
+            "table must span the flight",
+            f"The imported drag curve covers the whole Mach range this "
+            f"vehicle flew.", "",
+            margin=(hi - mach_max)))
+    else:
+        over = mach_max - hi
+        rep.checks.append(Check(
+            "A-01", "Fidelity", "Drag source coverage",
+            CRITICAL if over > 0.5 else CAUTION,
+            f"{name} ends at Mach {hi:,.2f}, flight reached {mach_max:,.2f}",
+            "table must span the flight",
+            f"The flight went {over:,.2f} Mach past the end of the imported "
+            f"drag curve. Outside its range the table holds its last value "
+            f"flat rather than extrapolating, so the whole leg above Mach "
+            f"{hi:,.2f} was flown on a single frozen Cd. Real Cd is still "
+            f"changing there, so this apogee is not trustworthy.",
+            f"Extend the table past Mach {mach_max:,.2f}, or clear it and use "
+            f"the computed buildup, which has no range limit.",
+            margin=-over))
+
+
+def _mass_buildup_check(rep, v, flight, mass_props):
+    """M-03: what the mass model was, and whether it disagrees with itself."""
+    cg = [r.get("cg_m") for r in flight if r.get("cg_m") is not None]
+    inertia = [r.get("pitch_inertia") for r in flight
+               if r.get("pitch_inertia") is not None]
+    dry = flight[0].get("dry_mass") if flight else None
+
+    if not cg:
+        rep.checks.append(Check(
+            "M-03", "Mass", "Mass buildup and CG migration", NO_DATA, "-", "-",
+            "This run carries no CG history.", ""))
+        return
+
+    walk = cg[0] - min(cg)
+    detail_bits = [f"CG {cg[0]*1000:,.0f} -> {min(cg)*1000:,.0f} mm "
+                   f"({walk*1000:+,.0f} mm forward)"]
+    if inertia:
+        detail_bits.append(f"pitch inertia {inertia[0]:,.3f} -> "
+                           f"{min(inertia):,.3f} kg·m²")
+
+    used_components = bool(mass_props and getattr(mass_props, "_has_components", None)
+                           and mass_props._has_components())
+    if used_components:
+        typed = getattr(mass_props, "dry_mass_kg", None)
+        summed = mass_props.effective_dry_mass()
+        # Components override the typed dry mass. If the two disagree badly
+        # the number on the Airframe page is not what flew, and someone will
+        # eventually trust the wrong one.
+        if typed and abs(summed - typed) > 0.05 * max(typed, 1e-9):
+            rep.checks.append(Check(
+                "M-03", "Mass", "Mass buildup and CG migration", CAUTION,
+                f"components {summed:,.3f} kg vs typed {typed:,.3f} kg",
+                "the two should agree",
+                f"Dry mass came from the {len(mass_props.buildup.active())} "
+                f"mass components ({summed:,.3f} kg), which override the "
+                f"Dry mass field on the Airframe page ({typed:,.3f} kg). "
+                f"They disagree by {abs(summed-typed):,.3f} kg. The "
+                f"components are what flew. " + "; ".join(detail_bits),
+                "Update the Dry mass field to match the components, or fix "
+                "whichever list is wrong - right now the page shows a number "
+                "the simulation ignored."))
+            return
+        rep.checks.append(Check(
+            "M-03", "Mass", "Mass buildup and CG migration", OK,
+            f"{len(mass_props.buildup.active())} components, "
+            f"{summed:,.3f} kg dry", "CG must move forward as it burns",
+            f"Dry mass, CG and pitch inertia all came from the placed "
+            f"components rather than typed figures. " + "; ".join(detail_bits),
+            "" if walk >= 0 else
+            "CG moved AFT through the burn, which makes the vehicle less "
+            "stable as it flies - check the propellant station is behind the "
+            "dry CG.",
+            margin=walk))
+        return
+
+    rep.checks.append(Check(
+        "M-03", "Mass", "Mass buildup and CG migration", CAUTION,
+        f"dry mass {dry:,.3f} kg typed, no components" if dry else "no components",
+        "place the mass components",
+        f"This flight used the typed Dry mass and Dry CG rather than placed "
+        f"components, so pitch inertia fell back to a uniform-rod estimate - "
+        f"and inertia is what sets how hard the vehicle weathercocks. "
+        + "; ".join(detail_bits),
+        "Fill in the Mass & Ballast table on the Aerodynamics tab to get a "
+        "real inertia and to try moving weight around."))
+
 
 def _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap):
     target_ft = v.target_altitude_ft
@@ -643,7 +779,8 @@ def _mach_aware_drag(flight) -> bool:
 
 
 
-def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight):
+def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
+                   cd_source=None):
     # R-01 rail exit velocity
     rail_i = next((i for i, h in enumerate(alt) if h >= v.rail_length_m), None)
     if rail_i is None:
@@ -689,13 +826,23 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight):
     # of what ran is what made R-02 contradict W-04 in the same report.
     mach_varying = _mach_aware_drag(flight)
     if mach_varying:
+        # Say which Mach-aware source it was: the computed buildup and an
+        # imported measured curve are both fine here, but they are not the
+        # same thing and W-04/A-01 grade them differently.
+        if getattr(cd_source, "mach_range", None) is not None:
+            what = f"imported curve '{getattr(cd_source, 'name', 'table')}'"
+            note = ("Drag came from an imported Cd(Mach) curve, so the "
+                    "transonic rise is whatever that curve says it is. A-01 "
+                    "checks the curve actually spans the flight.")
+        else:
+            what = "Cd rebuilt every step"
+            note = ("Drag was recomputed at each step from Reynolds and Mach "
+                    "rather than held fixed, so the transonic rise is "
+                    "represented. W-04 grades how far that model can be "
+                    "trusted.")
         rep.checks.append(Check(
             "R-02", "Fidelity", "Transonic drag model validity", OK,
-            f"Mach {rep.max_mach:.2f}", "Cd rebuilt every step",
-            "Drag was recomputed at each step from Reynolds and Mach rather "
-            "than held fixed, so the transonic rise is represented. W-04 "
-            "grades how far that model can be trusted.",
-            ""))
+            f"Mach {rep.max_mach:.2f}", what, note, ""))
     elif rep.max_mach >= 0.8:
         status = CAUTION if rep.max_mach < 1.2 else CRITICAL
         rep.checks.append(Check(
@@ -796,7 +943,91 @@ _ENGINE_CODES = [
     ("P-10", "Nozzle flow separation"),
     ("P-11", "Tank pressure vs tank wall"),
     ("P-12", "Tank thermal collapse"),
+    ("P-13", "Nozzle throat erosion"),
+    ("P-14", "Oxidizer vented overboard"),
 ]
+
+
+def _throat_and_vent_checks(rep, res, eng):
+    """Grade the two engine features that quietly cost you performance.
+
+    A throat that opens up drops chamber pressure and thrust through the burn,
+    and anything bled out the vent is oxidizer you paid for and did not burn.
+    Both default to off, so both report as clean when they are not in use.
+    """
+    import numpy as _np
+
+    # --- P-13 throat erosion ---
+    d = res.get("d_throat")
+    if d is None or len(d) < 2:
+        rep.checks.append(Check(
+            "P-13", "Propulsion", "Nozzle throat erosion", NO_DATA, "-", "-",
+            "This run carries no throat history.", ""))
+    else:
+        d0, d1 = float(d[0]), float(d[-1])
+        growth = (d1 / d0 - 1.0) if d0 > 0 else 0.0
+        pc = res.get("Pc")
+        pc_drop = 0.0
+        if pc is not None and len(pc) > 1 and float(_np.max(pc)) > 0:
+            # How much of the chamber-pressure decay the throat is responsible
+            # for: Pc scales as 1/At, so a given area growth costs that much.
+            area_growth = (d1 / d0) ** 2 if d0 > 0 else 1.0
+            pc_drop = 1.0 - 1.0 / area_growth
+        if growth <= 1e-9:
+            rep.checks.append(Check(
+                "P-13", "Propulsion", "Nozzle throat erosion", OK,
+                f"{d0*1000:,.2f} mm, no erosion modelled",
+                "under 5% diameter growth",
+                "Throat erosion is switched off for this motor (erosion rate "
+                "0). Graphite and phenolic throats do erode in reality; set a "
+                "rate on the Engine tab to see what it costs.",
+                "Worth modelling before you trust a long burn on a phenolic "
+                "throat."))
+        else:
+            status = _band_status(growth, None, None, 0.05, 0.15)
+            rep.checks.append(Check(
+                "P-13", "Propulsion", "Nozzle throat erosion", status,
+                f"{d0*1000:,.2f} -> {d1*1000:,.2f} mm ({growth*100:,.1f}%)",
+                "under 5% diameter growth",
+                f"The throat opened {growth*100:,.1f}% over the burn. Chamber "
+                f"pressure scales as 1/A_throat, so that alone costs about "
+                f"{pc_drop*100:,.1f}% of chamber pressure by burnout, and "
+                f"thrust with it. This is why a motor can start on the nose "
+                f"and finish soft.",
+                "Use a harder throat insert (graphite or a refractory) or "
+                "accept the tail-off in the impulse budget."
+                if growth > 0.05 else "Erosion stays small enough to ignore.",
+                margin=0.05 / growth - 1.0 if growth > 0 else 1.0))
+
+    # --- P-14 vented oxidizer ---
+    mv = res.get("mdot_vent")
+    t = res.get("t")
+    if mv is None or t is None or len(t) < 2:
+        rep.checks.append(Check(
+            "P-14", "Propulsion", "Oxidizer vented overboard", NO_DATA,
+            "-", "-", "This run carries no vent history.", ""))
+        return
+    vented = float(_np.trapezoid(mv, t))
+    loaded = float(res.get("m_l0", 0.0)) + float(res.get("m_v0", 0.0))
+    frac = vented / loaded if loaded > 0 else 0.0
+    if eng.d_vent <= 0 or vented <= 1e-9:
+        rep.checks.append(Check(
+            "P-14", "Propulsion", "Oxidizer vented overboard", OK,
+            "vent closed", "under 3% of the load",
+            "No vent orifice is set, so nothing is bled overboard during the "
+            "burn and the whole oxidizer load is available to the chamber.",
+            ""))
+    else:
+        rep.checks.append(Check(
+            "P-14", "Propulsion", "Oxidizer vented overboard",
+            _band_status(frac, None, None, 0.03, 0.10),
+            f"{vented*1000:,.0f} g ({frac*100:,.1f}% of the load)",
+            "under 3% of the load",
+            f"A {eng.d_vent*1000:,.2f} mm vent bled {vented*1000:,.0f} g of "
+            f"N2O overboard during the burn. That is oxidizer you filled and "
+            f"did not burn, so it comes straight off total impulse and Isp.",
+            "Shrink the vent, or close it at ignition and vent only on the "
+            "pad." if frac > 0.03 else "Vent losses stay small."))
 
 
 def _engine_checks(rep, v, res, eng):
@@ -1034,6 +1265,9 @@ def _engine_checks(rep, v, res, eng):
         "larger ullage, a warmer fill, or a pressurant system flattens the curve."
         if t_min < 250 else "Tank stays warm enough to hold useful pressure through the burn.",
         margin=(t_min - 182.3) / 182.3))
+
+    # P-13 / P-14: the component features that quietly cost performance.
+    _throat_and_vent_checks(rep, res, eng)
 
 
 def _burn_window(res):

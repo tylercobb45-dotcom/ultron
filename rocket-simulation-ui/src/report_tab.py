@@ -294,13 +294,18 @@ class FlightReportWidget(QtWidgets.QWidget):
 
     # ---- data in -----------------------------------------------------------
     def update_from_simulation(self, flight, engine_result=None, engine=None,
-                               geometry_hints=None):
+                               geometry_hints=None, cd_source=None,
+                               mass_props=None):
         """Called after a simulation run completes."""
         if geometry_hints:
             self.apply_geometry_hints(geometry_hints)
         self._flight = flight
         self._engine_result = engine_result
         self._engine = engine
+        # What drove drag, and how mass was described. Both change what the
+        # report can honestly say, so both are graded rather than assumed.
+        self._cd_source = cd_source
+        self._mass_props = mass_props
         self._reanalyze()
 
     def _reanalyze(self):
@@ -308,7 +313,9 @@ class FlightReportWidget(QtWidgets.QWidget):
             self.banner.setText("Run a simulation first - the report is built from its data.")
             return
         self._report = fa.analyze(self._flight, self.vehicle_config(),
-                                  self._engine_result, self._engine)
+                                  self._engine_result, self._engine,
+                                  cd_source=getattr(self, "_cd_source", None),
+                                  mass_props=getattr(self, "_mass_props", None))
         self._render(self._report)
         self.export_button.setEnabled(True)
 

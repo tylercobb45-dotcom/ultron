@@ -4195,7 +4195,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 pass
 
             self.flight_report.update_from_simulation(
-                results, engine_result=engine_result, engine=engine, geometry_hints=hints)
+                results, engine_result=engine_result, engine=engine,
+                geometry_hints=hints,
+                cd_source=self.cd_source(),
+                mass_props=(self.vehicle_tab.mass_properties()
+                            if hasattr(self, 'vehicle_tab') else None))
         except Exception:
             traceback.print_exc()
 

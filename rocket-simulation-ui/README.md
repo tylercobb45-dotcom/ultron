@@ -184,8 +184,24 @@ the airframe, the run says so rather than silently picking a side.
   on an Engine Lab motor it also grades the motor internals: chamber and tank
   hoop stress, injector stiffness, O/F band, oxidizer-rich burn tail, grain
   burn-through, oxidizer mass flux, port-to-throat ratio, flame temperature vs
-  the throat material, nozzle separation, and tank thermal collapse. Exports a
-  self-contained HTML report with the graphs embedded.
+  the throat material, nozzle separation, and tank thermal collapse. It also grades what the newer sections added,
+  which is where silent wrong answers hide:
+
+  - **A-01 drag source coverage** - an imported Cd(Mach) curve is held *flat*
+    outside its range rather than extrapolated. That is the safe choice, but a
+    table that stops at Mach 0.8 flown to Mach 1.3 quietly reuses its last
+    value for the whole supersonic leg, and the apogee still looks plausible.
+    A-01 catches exactly that and says how far past the end you went.
+  - **M-03 mass buildup** - reports CG migration and pitch inertia, warns when
+    you are still on typed masses (so inertia is only a uniform-rod estimate),
+    and flags it when the placed components disagree with the Dry mass field
+    by more than 5%, since the components are what actually flew.
+  - **P-13 throat erosion** - how far the throat opened and what that cost in
+    chamber pressure, since Pc scales as 1/A_throat.
+  - **P-14 vented oxidizer** - how much N2O went overboard through the vent,
+    as a fraction of the load. That is propellant you filled and did not burn.
+
+  Exports a self-contained HTML report with the graphs embedded.
 - **Engine Lab** — design a custom hybrid rocket engine on the "Engine Lab"
   tab and run a physics-based internal-ballistics simulation (tank blowdown,
   Dyer NHNE injector, Marxman fuel regression, CEA c* table, isentropic
