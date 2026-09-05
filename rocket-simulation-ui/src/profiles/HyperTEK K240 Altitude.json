@@ -2,7 +2,7 @@
   "version": "2.0",
   "name": "HyperTEK K240 Altitude",
   "description": "98 mm airframe on a real K240. Long 6 s burn, modest thrust-to-weight, still comfortably subsonic.",
-  "created": "Fri Sep 04 05:38:00 2026",
+  "created": "Sat Sep 05 13:09:18 2026",
   "reference": "Motor: thrustcurve.org Hypertek_835CC125J-K240 (measured)",
   "rocket_parameters": {
     "mass": "5.789",
@@ -63,8 +63,16 @@
     "eta_nozzle": "0.970",
     "gamma": "1.22",
     "MW": "26.0",
+    "d_vent": "0.00",
+    "Cd_vent": "0.65",
     "cooling_coeff": "0.1485",
+    "n_ports": "1",
+    "L_pre": "0.00",
+    "L_post": "0.00",
+    "beta_conv_deg": "30.0",
+    "erosion_rate": "0.0000",
     "fuel_a": "0.00008987",
+    "fuel_n": "0.0000",
     "fuel": "ABS"
   },
   "airframe": {
@@ -115,7 +123,9 @@
           "reef_ratio": 0.25,
           "reef_duration_s": 3.0,
           "disreef_time_s": 1.0,
-          "enabled": true
+          "enabled": true,
+          "mass_kg": 0.0,
+          "position_m": 0.0
         },
         {
           "name": "Main",
@@ -130,7 +140,9 @@
           "reef_ratio": 0.25,
           "reef_duration_s": 3.0,
           "disreef_time_s": 1.0,
-          "enabled": true
+          "enabled": true,
+          "mass_kg": 0.0,
+          "position_m": 0.0
         }
       ]
     }

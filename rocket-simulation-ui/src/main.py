@@ -3767,8 +3767,41 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Animation removed
         return
 
+    def _sync_unit_indices(self):
+        """Record the current unit selections without converting anything.
+
+        update_conversions decides whether to convert by comparing against the
+        last index it saw; after a programmatic load those have to be brought
+        up to date, or the next genuine user change converts from a unit that
+        was never actually displayed.
+        """
+        if not hasattr(self, '_last_unit_indices'):
+            self._last_unit_indices = {}
+        for field, combo in (
+            ('mass', getattr(self, 'mass_unit', None)),
+            ('area', getattr(self, 'area_unit', None)),
+            ('rho', getattr(self, 'rho_unit', None)),
+            ('timestep', getattr(self, 'timestep_unit', None)),
+            ('fin_thickness', getattr(self, 'fin_thickness_unit', None)),
+            ('fin_length', getattr(self, 'fin_length_unit', None)),
+            ('body_diameter', getattr(self, 'body_diameter_unit', None)),
+            ('chute_height', getattr(self, 'chute_height_unit', None)),
+            ('chute_size', getattr(self, 'chute_size_unit', None)),
+        ):
+            if combo is not None:
+                self._last_unit_indices[field] = combo.currentIndex()
+
     def update_conversions(self, field):
-        # Only convert value if the user changes the unit, not on load
+        # Only convert value if the user changes the unit, not on load.
+        #
+        # Loading a profile sets the unit combo too, and this slot then
+        # "converted" a number that was already stored in the new unit. On the
+        # shipped L550 profile that turned 76 mm into 1.93 mm, 4 mm fin
+        # thickness into 101.6 mm and a 0.0045 m2 area into 0.000003 m2, and
+        # the corrupted geometry flowed straight into the Flight Report.
+        if getattr(self, '_loading_profile', False):
+            self._sync_unit_indices()
+            return
         if not hasattr(self, '_last_unit_indices'):
             self._last_unit_indices = {}
         unit_defs = {
@@ -4111,12 +4144,23 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     recovery_system = self.vehicle_tab.recovery_system()
                     mass_props = self.vehicle_tab.mass_properties()
                     # The Simulation tab's masses win if they were entered:
-                    # liftoff mass there is dry + propellant.
+                    # liftoff mass there is dry + propellant. But when mass
+                    # components exist THEY are the dry mass and
+                    # effective_dry_mass() ignores dry_mass_kg entirely, so
+                    # setting it here was a no-op that let a 26 kg liftoff mass
+                    # fly as 4.9 kg. Say so rather than quietly disagreeing.
                     prop = sim_kwargs.get('propellant_mass') or curve_prop or 0.0
                     if prop > 0:
                         mass_props.propellant_mass_kg = prop
+                    self._mass_conflict = None
                     if m > prop > 0:
-                        mass_props.dry_mass_kg = m - prop
+                        wanted_dry = m - prop
+                        if mass_props._has_components():
+                            summed = mass_props.effective_dry_mass()
+                            if abs(summed - wanted_dry) > 0.05 * max(wanted_dry, 1e-9):
+                                self._mass_conflict = (m, wanted_dry, summed)
+                        else:
+                            mass_props.dry_mass_kg = wanted_dry
                     # An imported Cd(Mach) curve beats a single number,
                     # which in turn beats the estimate.
                     cd_over = self.cd_source()
@@ -4180,6 +4224,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
                      f"{airframe.body_diameter_m*1000:.1f} mm on the "
                      f"Aerodynamics tab. The Aerodynamics value was flown. "
                      f"Check the unit selector on this tab.")
+        conflict = getattr(self, '_mass_conflict', None)
+        if conflict:
+            liftoff, wanted_dry, summed = conflict
+            text += (f"<br><b>Liftoff mass on this tab was not used:</b> "
+                     f"{liftoff:,.2f} kg implies {wanted_dry:,.2f} kg dry, but "
+                     f"the Mass &amp; Ballast components sum to "
+                     f"{summed:,.2f} kg and components take precedence. The "
+                     f"flight used {summed:,.2f} kg.")
         self.model_note_label.setText(text)
 
     def _note_fallback_model(self):
@@ -5009,33 +5061,41 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 self.assembly.refresh()
                 self.assembly.set_selection(asm.get('engine'),
                                             asm.get('aerodynamics'))
-            # Rocket parameters
+            # Rocket parameters. The unit goes in FIRST and the value second,
+            # with the conversion slot held off for the whole load: the stored
+            # number is already expressed in the stored unit, so there is
+            # nothing to convert.
             rp = config.get('rocket_parameters', {})
-            self.mass_input.setText(rp.get('mass', ''))
-            self.mass_unit.setCurrentIndex(rp.get('mass_unit', 0))
-            self.prop_mass_input.setText(rp.get('prop_mass', ''))
-            self.prop_mass_unit.setCurrentIndex(rp.get('prop_mass_unit', 0))
-            self.cd_input.setText(rp.get('cd', ''))
-            self.area_input.setText(rp.get('area', ''))
-            self.area_unit.setCurrentIndex(rp.get('area_unit', 0))
-            self.rho_input.setText(rp.get('rho', ''))
-            self.rho_unit.setCurrentIndex(rp.get('rho_unit', 0))
-            self.timestep_input.setText(rp.get('timestep', ''))
-            self.timestep_unit.setCurrentIndex(rp.get('timestep_unit', 0))
-            self.fin_count_input.setText(rp.get('fin_count', ''))
-            self.fin_thickness_input.setText(rp.get('fin_thickness', ''))
-            self.fin_thickness_unit.setCurrentIndex(rp.get('fin_thickness_unit', 0))
-            self.fin_length_input.setText(rp.get('fin_length', ''))
-            self.fin_length_unit.setCurrentIndex(rp.get('fin_length_unit', 0))
-            self.body_diameter_input.setText(rp.get('body_diameter', ''))
-            self.body_diameter_unit.setCurrentIndex(
-                rp.get('body_diameter_unit', 0))
-            self.body_diameter_unit.setCurrentIndex(rp.get('body_diameter_unit', 0))
-            self.chute_height_input.setText(rp.get('chute_height', ''))
-            self.chute_height_unit.setCurrentIndex(rp.get('chute_height_unit', 0))
-            self.chute_size_input.setText(rp.get('chute_size', ''))
-            self.chute_size_unit.setCurrentIndex(rp.get('chute_size_unit', 0))
-            self.chute_cd_input.setText(rp.get('chute_cd', ''))
+            self._loading_profile = True
+            try:
+                for edit, combo, key, unit_key in (
+                    (self.mass_input, self.mass_unit, 'mass', 'mass_unit'),
+                    (self.prop_mass_input, self.prop_mass_unit,
+                     'prop_mass', 'prop_mass_unit'),
+                    (self.area_input, self.area_unit, 'area', 'area_unit'),
+                    (self.rho_input, self.rho_unit, 'rho', 'rho_unit'),
+                    (self.timestep_input, self.timestep_unit,
+                     'timestep', 'timestep_unit'),
+                    (self.fin_thickness_input, self.fin_thickness_unit,
+                     'fin_thickness', 'fin_thickness_unit'),
+                    (self.fin_length_input, self.fin_length_unit,
+                     'fin_length', 'fin_length_unit'),
+                    (self.body_diameter_input, self.body_diameter_unit,
+                     'body_diameter', 'body_diameter_unit'),
+                    (self.chute_height_input, self.chute_height_unit,
+                     'chute_height', 'chute_height_unit'),
+                    (self.chute_size_input, self.chute_size_unit,
+                     'chute_size', 'chute_size_unit'),
+                ):
+                    if combo is not None:
+                        combo.setCurrentIndex(rp.get(unit_key, 0))
+                    edit.setText(str(rp.get(key, '')))
+                self.cd_input.setText(rp.get('cd', ''))
+                self.fin_count_input.setText(rp.get('fin_count', ''))
+                self.chute_cd_input.setText(rp.get('chute_cd', ''))
+            finally:
+                self._loading_profile = False
+                self._sync_unit_indices()
 
             # Launch conditions
             lc = config.get('launch_conditions', {})
@@ -5067,10 +5127,26 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Thrust curve. Shipped presets store a project-relative path so
             # they work on any machine; anything the user picked themselves is
             # absolute and resolves directly.
-            thrust_path = self.resolve_thrust_curve(config.get('thrust_curve_path'))
+            stored_curve = config.get('thrust_curve_path')
+            thrust_path = self.resolve_thrust_curve(stored_curve)
             if thrust_path and os.path.exists(thrust_path):
                 self.thrust_curve_path = thrust_path
                 self.result_label.setText(f"Loaded profile thrust curve: {os.path.basename(thrust_path)}")
+            else:
+                # Clear it. Leaving the previous rocket's motor loaded meant a
+                # profile with no curve - or one whose file has moved - flew
+                # somebody else's engine and reported success.
+                self.thrust_curve_path = None
+                self.engine_lab_curve_path = None
+                if stored_curve:
+                    self.error_label.setText(
+                        f"This rocket's thrust curve is missing "
+                        f"({os.path.basename(str(stored_curve))}). No motor is "
+                        f"loaded - pick a curve before running.")
+                else:
+                    self.result_label.setText(
+                        "This rocket has no thrust curve saved. Load one, or "
+                        "send a motor across from the Engine tab.")
 
             return True
         except Exception as e:
@@ -5186,9 +5262,30 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if reply == QtWidgets.QMessageBox.Yes:
             filename = self.profile_select.currentData()
             if filename:
-                profiles_dir = self.get_profiles_dir()
-                filepath = os.path.join(profiles_dir, filename)
-                
+                # The dropdown lists every search directory, but only the
+                # user's own is writable. Resolving against get_profiles_dir()
+                # alone raised FileNotFoundError on a bundled preset in a
+                # frozen build instead of refusing cleanly.
+                writable = self.get_profiles_dir()
+                filepath = os.path.join(writable, filename)
+                if not os.path.exists(filepath):
+                    found = next(
+                        (os.path.join(d, filename)
+                         for d in self.get_profile_search_dirs()
+                         if os.path.exists(os.path.join(d, filename))), None)
+                    if found:
+                        QtWidgets.QMessageBox.information(
+                            self, "Bundled profile",
+                            f"'{current_profile}' ships with JARVIS and cannot "
+                            f"be deleted. Save a copy under your own name if "
+                            f"you want a version to change or remove.")
+                        return
+                    QtWidgets.QMessageBox.warning(
+                        self, "Not found",
+                        f"'{current_profile}' is no longer on disk.")
+                    self.load_available_profiles()
+                    return
+
                 try:
                     os.remove(filepath)
                     self.load_available_profiles()

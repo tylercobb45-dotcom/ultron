@@ -390,6 +390,17 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._update_derived()
 
     def _apply_config_values(self, cfg: dict):
+        # Reset anything the config does not mention back to its default first.
+        # Leaving absent fields untouched meant loading a preset motor kept the
+        # user's previous multi-port grain, eroding throat or open vent, so the
+        # "validated" fit was not what actually ran.
+        for key, default in _ENGINE_DEFAULTS.items():
+            if key in cfg or key not in self._fields:
+                continue
+            spec = next((f for f in _ALL_FIELDS if f[1] == key), None)
+            if spec:
+                self._fields[key].setText(
+                    f"{default * spec[2]:.{spec[3]}f}")
         for key, value in cfg.items():
             if key == "fuel":
                 idx = self.fuel_combo.findText(str(value))

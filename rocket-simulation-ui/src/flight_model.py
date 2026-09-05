@@ -117,20 +117,48 @@ def _load_csv(path):
     points, prop_mass = [], None
     with open(path, newline="") as f:
         rows = [r for r in csv.reader(f) if any((c or "").strip() for c in r)]
-    header_idx = None
-    for i, row in enumerate(rows):
+    # Finding the header used to mean "the first row mentioning thrust", which
+    # any comment line can satisfy - a `details:,https://www.thrustcurve.org/...`
+    # line does, and the shipped presets only parsed correctly because the
+    # columns happened to line up anyway. A file whose comment reads
+    # "Thrust curve exported by ..." parsed thrust as time and lost the
+    # propellant mass, silently.
+    #
+    # A real header has BOTH a time-like and a thrust-like column, and its
+    # cells are labels rather than numbers.
+    def _looks_like_header(row):
         low = [(c or "").strip().lower() for c in row]
-        if any("thrust" in c for c in low):
-            header_idx = i
+        if len(low) < 2:
+            return None
+        if all(_is_number(c) for c in low if c):
+            return None            # a data row, not a header
+        t_j = next((j for j, c in enumerate(low)
+                    if c == "t" or c.startswith("t (") or "time" in c), None)
+        f_j = next((j for j, c in enumerate(low)
+                    if "thrust" in c or c in ("f", "force")
+                    or c.startswith("f (")), None)
+        if t_j is None or f_j is None or t_j == f_j:
+            return None
+        return t_j, f_j
+
+    header_idx, t_col, f_col = None, 0, 1
+    for i, row in enumerate(rows):
+        cols = _looks_like_header(row)
+        if cols:
+            header_idx, (t_col, f_col) = i, cols
             break
+
     if header_idx is None:
-        return [], None
-    header = [(c or "").strip().lower() for c in rows[header_idx]]
-    t_col = next((j for j, c in enumerate(header)
-                  if "time" in c or c.startswith("t (") or c == "t"), 0)
-    f_col = next((j for j, c in enumerate(header) if "thrust" in c), 1)
+        # No header at all: accept a bare two-column time,thrust file by
+        # starting at the first row that parses as numbers.
+        for i, row in enumerate(rows):
+            if len(row) >= 2 and _is_number(row[0]) and _is_number(row[1]):
+                header_idx = i - 1
+                break
+        if header_idx is None:
+            return [], None
     # Propellant mass is often recorded in the metadata above the header.
-    for row in rows[:header_idx]:
+    for row in rows[:max(0, header_idx)]:
         line = ",".join(row).lower()
         if "propellant" in line or "prop mass" in line:
             nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
@@ -312,7 +340,11 @@ def run_flight(thrust_points,
         if on_rail:
             theta = rail_angle
         elif speed_rel > 1e-6:
-            theta_rel = math.atan2(rvx, max(1e-9, rvz))
+            # atan2 must see the real sign of vertical velocity. Clamping it
+            # to +1e-9 made every descending sample read as ~90 deg from
+            # vertical, so tilt and angle of attack were meaningless for the
+            # whole descent in the Flight Data sheet.
+            theta_rel = math.atan2(rvx, rvz if abs(rvz) > 1e-9 else 1e-9)
             cg_now = mass_props.cg(prop_left)
             cp_now = airframe.center_of_pressure(mach)
             margin_cal = (cp_now - cg_now) / diameter
@@ -337,7 +369,7 @@ def run_flight(thrust_points,
         # Angle of attack: between where the vehicle points and where the air
         # is actually coming from.
         if speed_rel > 1e-6:
-            theta_rel_now = math.atan2(rvx, max(1e-9, rvz))
+            theta_rel_now = math.atan2(rvx, rvz if abs(rvz) > 1e-9 else 1e-9)
             alpha = abs(math.degrees(theta - theta_rel_now))
         else:
             alpha = 0.0

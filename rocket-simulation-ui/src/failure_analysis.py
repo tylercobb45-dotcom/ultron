@@ -233,8 +233,8 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     rep.max_g = max_a / G0
 
     _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap)
-    _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach)
-    _thermal_checks(rep, v, t, alt, mach)
+    _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach, summary)
+    _thermal_checks(rep, v, t, alt, mach, flight)
     _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g)
     _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
                    cd_source, summary)
@@ -418,6 +418,27 @@ def _drag_source_check(rep, flight, cd_source):
             margin=-over))
 
 
+def _main_deployment(flight, t, vel, first_i):
+    """(index, speed, label) of the LAST recovery stage to fire.
+
+    recovery_deployed lists everything out at each sample, so the last time
+    that list grows is the final stage - the main - going out. Falls back to
+    the first deployment when there is only one stage.
+    """
+    seen = set()
+    idx, label = first_i, "main"
+    for i, row in enumerate(flight):
+        deployed = row.get("recovery_deployed") or ""
+        current = {n.strip() for n in deployed.split(",") if n.strip()}
+        added = current - seen
+        if added:
+            idx = i
+            label = sorted(added)[-1]
+            seen |= current
+    idx = max(0, min(idx, len(vel) - 1))
+    return idx, abs(vel[idx]), (label or "main").lower()
+
+
 def _mass_buildup_check(rep, v, flight, mass_props):
     """M-03: what the mass model was, and whether it disagrees with itself."""
     cg = [r.get("cg_m") for r in flight if r.get("cg_m") is not None]
@@ -431,9 +452,15 @@ def _mass_buildup_check(rep, v, flight, mass_props):
             "This run carries no CG history.", ""))
         return
 
-    walk = cg[0] - min(cg)
-    detail_bits = [f"CG {cg[0]*1000:,.0f} -> {min(cg)*1000:,.0f} mm "
-                   f"({walk*1000:+,.0f} mm forward)"]
+    # cg[0] - min(cg) can never be negative, so the "moved aft" branch below
+    # was unreachable. Compare the ends of the burn instead: that is the
+    # direction that actually matters, and a forward-mounted propellant load
+    # really does walk the CG aft and make the vehicle less stable as it goes.
+    cg_end = cg[-1]
+    walk = cg[0] - cg_end
+    detail_bits = [f"CG {cg[0]*1000:,.0f} -> {cg_end*1000:,.0f} mm "
+                   f"({abs(walk)*1000:,.0f} mm "
+                   f"{'forward' if walk >= 0 else 'AFT'})"]
     if inertia:
         detail_bits.append(f"pitch inertia {inertia[0]:,.3f} -> "
                            f"{min(inertia):,.3f} kg·m²")
@@ -461,15 +488,16 @@ def _mass_buildup_check(rep, v, flight, mass_props):
                 "the simulation ignored."))
             return
         rep.checks.append(Check(
-            "M-03", "Mass", "Mass buildup and CG migration", OK,
+            "M-03", "Mass", "Mass buildup and CG migration",
+            OK if walk >= 0 else CAUTION,
             f"{len(mass_props.buildup.active())} components, "
             f"{summed:,.3f} kg dry", "CG must move forward as it burns",
             f"Dry mass, CG and pitch inertia all came from the placed "
             f"components rather than typed figures. " + "; ".join(detail_bits),
             "" if walk >= 0 else
-            "CG moved AFT through the burn, which makes the vehicle less "
-            "stable as it flies - check the propellant station is behind the "
-            "dry CG.",
+            "CG moved AFT through the burn, so the vehicle gets LESS stable as "
+            "it flies - the opposite of the usual aft-motor case. Check the "
+            "propellant station is behind the dry CG.",
             margin=walk))
         return
 
@@ -575,7 +603,8 @@ def _touchdown_speed(alt, vel):
 # timeline
 # ---------------------------------------------------------------------------
 
-def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach):
+def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach,
+            summary=None):
     peak = max(thrust) if thrust else 0.0
     if peak > 0:
         burning = [i for i, F in enumerate(thrust) if F > 0.05 * peak]
@@ -595,21 +624,53 @@ def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach):
             rep.events.append(Event("Chute deploy", t[i],
                                     f"At {alt[i]*FT_PER_M:,.0f} ft, {abs(vel[i]):,.1f} m/s."))
             break
-    rep.events.append(Event("Landing", t[-1],
-                            f"Descent rate {_touchdown_speed(alt, vel):,.1f} m/s."))
+    # Only mark a landing if there was one. A truncated run ends mid-descent,
+    # and R-04 already refuses to grade it - the timeline must not contradict
+    # that by planting a "Landing" marker on the last airborne sample.
+    if _flight_landed(summary, alt):
+        rep.events.append(Event("Landing", t[-1],
+                                f"Descent rate {_touchdown_speed(alt, vel):,.1f} m/s."))
+    else:
+        rep.events.append(Event(
+            "Run ended (still airborne)", t[-1],
+            f"Time limit reached at {alt[-1]*FT_PER_M:,.0f} ft, "
+            f"{abs(vel[-1]):,.1f} m/s. No touchdown."))
 
 
 # ---------------------------------------------------------------------------
 # aero-thermal
 # ---------------------------------------------------------------------------
 
-def _thermal_checks(rep, v, t, alt, mach):
+def _flight_landed(summary, alt) -> bool:
+    """Did the vehicle actually reach the ground?
+
+    The run summary knows outright. Without one, fall back to a relative test:
+    a clean touchdown leaves the last sample about a metre up, a truncated
+    descent leaves it a good fraction of apogee up.
+    """
+    if summary is not None:
+        return bool(summary.get("landed", True)) and not summary.get("truncated")
+    if not alt:
+        return True
+    apogee = max(alt)
+    return alt[-1] <= max(5.0, 0.02 * apogee)
+
+
+def _thermal_checks(rep, v, t, alt, mach, flight=None):
     skin = mat_lib.get(v.airframe_material)
     nose = mat_lib.get(v.nose_material)
 
+    # Each row already carries the ambient temperature the 2-DOF model used,
+    # which includes the launch site's elevation and pad temperature.
+    # Recomputing it from a sea-level standard day threw that away and graded
+    # heating against the wrong air - a hot high-desert pad is exactly where
+    # the margin is thinnest.
+    amb = [r.get("temperature_k") for r in flight] if flight else []
+    use_row_temps = (len(amb) == len(alt)
+                     and all(isinstance(x, (int, float)) and x > 0 for x in amb))
     t_rec, i_hot = 0.0, 0
     for i, (h, M) in enumerate(zip(alt, mach)):
-        T_amb, _, _, _ = isa(h)
+        T_amb = amb[i] if use_row_temps else isa(h)[0]
         T = T_amb * (1 + _RECOVERY_FACTOR * (_GAMMA - 1) / 2 * M * M)
         if T > t_rec:
             t_rec, i_hot = T, i
@@ -909,15 +970,23 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
          if sf < 1.5 else "Harness has margin over the modelled snatch load."),
         t_event=t[deploy_i], margin=sf - 1.0))
 
-    # R-05 deployment speed
+    # R-05 deployment speed.
+    #
+    # This has to grade the MAIN, not the first thing out of the airframe. On a
+    # dual deploy the first deployment is the drogue at apogee, where the speed
+    # is near zero by definition - grading that made the check unfailable and
+    # hid exactly the case it exists for, a main opening fast and low.
+    main_i, main_v, main_label = _main_deployment(flight, t, vel, deploy_i)
     rep.checks.append(Check(
-        "R-05", "Recovery", "Velocity at deployment", _band_status(deploy_v, None, None, 30.0, 60.0),
-        f"{deploy_v:,.1f} m/s", "30 m/s caution / 60 m/s critical",
-        f"Main deployment at {deploy_v:,.1f} m/s. Deploying a large main much above "
-        f"~30 m/s is how canopies get shredded and airframes get zippered.",
+        "R-05", "Recovery", "Velocity at deployment",
+        _band_status(main_v, None, None, 30.0, 60.0),
+        f"{main_v:,.1f} m/s at {main_label}", "30 m/s caution / 60 m/s critical",
+        f"{main_label.capitalize()} deployment at {main_v:,.1f} m/s. Deploying a "
+        f"large main much above ~30 m/s is how canopies get shredded and "
+        f"airframes get zippered.",
         "Deploy a drogue at apogee and hold the main to low altitude."
-        if deploy_v > 30 else "Deployment speed is in a survivable range.",
-        t_event=t[deploy_i]))
+        if main_v > 30 else "Deployment speed is in a survivable range.",
+        t_event=t[main_i]))
 
     # R-04 landing velocity. The simulator zeroes velocity on touchdown, so read
     # the last sample that was still airborne.
@@ -927,16 +996,7 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
     # that as a touchdown speed is a number that never happened, so say so
     # instead of grading it.
     final_alt = alt[-1] if alt else 0.0
-    if summary is not None:
-        # The run told us directly.
-        cut_short = bool(summary.get("truncated")) or not summary.get("landed", True)
-    else:
-        # No summary: fall back to a relative test. A clean touchdown leaves
-        # the last sample within a metre or two of the ground, while a
-        # truncated descent leaves it a good fraction of apogee up.
-        apogee = max(alt) if alt else 0.0
-        cut_short = final_alt > max(5.0, 0.02 * apogee)
-    if cut_short:
+    if not _flight_landed(summary, alt):
         rep.checks.append(Check(
             "R-04", "Recovery", "Landing descent rate", NO_DATA,
             f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
@@ -1214,7 +1274,11 @@ def _engine_checks(rep, v, res, eng):
         margin=500.0 / g_max - 1.0 if g_max > 0 else None))
 
     # P-08 port-to-throat area ratio
-    a_port0 = math.pi * eng.r_port_0 ** 2
+    # Engine.A_port includes n_ports; a bare pi*r^2 under-reports the ratio by
+    # n_ports on a multi-port grain and raises a false CRITICAL. This is the
+    # same mistake P-07 above was fixed for.
+    a_port0 = (eng.A_port(eng.r_port_0) if hasattr(eng, "A_port")
+               else math.pi * eng.r_port_0 ** 2)
     ratio = a_port0 / eng.A_throat if eng.A_throat > 0 else 0.0
     rep.checks.append(Check(
         "P-08", "Propulsion", "Port-to-throat area ratio", _band_status(ratio, 1.5, 2.0, None, None),

@@ -82,6 +82,13 @@ def engine_section(spec):
     base.pop("rocket", None)
     base.update(spec)
     fuel = base.pop("fuel", "HTPB")
+    # Fill anything the baseline and spec do not mention from the Engine
+    # tab's own defaults. Omitting a field meant the preset silently inherited
+    # whatever multi-port / eroding / vented setting was last on the tab, and
+    # the motor was then no longer the validated fit.
+    from engine_lab import _ENGINE_DEFAULTS
+    for key, default in _ENGINE_DEFAULTS.items():
+        base.setdefault(key, default)
     out = {}
     for key, factor in ENGINE_FACTORS.items():
         if key in base:
@@ -136,9 +143,12 @@ def dual_deploy(drogue_d, main_d, main_alt, main_cd=1.5, drogue_cd=1.5):
     return system.to_dict()
 
 
-def single_deploy(main_d, main_cd=1.5):
+def single_deploy(main_d, main_cd=1.5, main_alt=0.0):
     import recovery as rec
-    return rec.RecoverySystem.single_deploy(diameter_m=main_d, cd=main_cd).to_dict()
+    # main_alt has to be passed through: a preset declaring main_alt=250 was
+    # shipping a main-at-apogee recovery, which drifts many times further.
+    return rec.RecoverySystem.single_deploy(
+        diameter_m=main_d, cd=main_cd, altitude_m=main_alt).to_dict()
 
 
 def resolve_recovery(preset):
@@ -146,7 +156,8 @@ def resolve_recovery(preset):
     spec = preset.get("recovery_spec") or {}
     kind = spec.get("kind", "dual")
     if kind == "single":
-        return single_deploy(spec.get("main_d", 2.0), spec.get("main_cd", 1.5))
+        return single_deploy(spec.get("main_d", 2.0), spec.get("main_cd", 1.5),
+                             spec.get("main_alt", preset.get("main_alt", 0.0)))
     return dual_deploy(spec.get("drogue_d", 0.9), spec.get("main_d", 2.6),
                        spec.get("main_alt", 300), spec.get("main_cd", 1.5),
                        spec.get("drogue_cd", 1.5))
