@@ -59,10 +59,14 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
     """Cd(Mach) sweep, plot, table, and table import/export."""
 
     def __init__(self, get_airframe=None, get_cg=None, on_table_changed=None,
-                 parent=None):
+                 get_site=None, parent=None):
         super().__init__(parent)
         self._get_airframe = get_airframe
         self._get_cg = get_cg
+        # The launch site sets air density and viscosity, and friction drag is
+        # Reynolds-dependent, so a sweep run against a default sea-level ISA
+        # is not the vehicle's drag at the field it is flying from.
+        self._get_site = get_site
         self._on_table_changed = on_table_changed
         self._rows = []
         self._imported = None          # aero.CdMachTable or None
@@ -215,7 +219,12 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
             return
         try:
             airframe = self._get_airframe()
-            site = getattr(self, "_site", None)
+            site = None
+            if self._get_site:
+                try:
+                    site = self._get_site()
+                except Exception:
+                    site = None
             if site is None:
                 import atmosphere as atmos_mod
                 site = atmos_mod.LaunchSite()

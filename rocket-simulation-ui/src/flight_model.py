@@ -220,7 +220,10 @@ def run_flight(thrust_points,
                mass_props: MassProperties,
                dt: float = 0.01,
                output_dt: float = 0.05,
-               max_time: float = 900.0,
+               # 900 s truncated any high, slow descent without saying so: a
+               # 15 km flight under a main at 6 m/s needs ~2,500 s, and a
+               # single deploy at apogee from 27 km needs well over an hour.
+               max_time: float = 5400.0,
                cd_override=None):
     """Integrate a flight. Returns a list of per-sample dicts.
 
@@ -501,6 +504,13 @@ def run_flight(thrust_points,
         'burn_time': burn_end,
         'drift_m': x,
         'landed': launched and z <= 0.0,
+        # The run hit its wall clock with the vehicle still in the air. The
+        # last sample is then mid-descent, and anything reading it as a
+        # touchdown - descent rate, landing speed - is reading a number that
+        # never happened.
+        'truncated': launched and z > 0.0 and steps >= max_steps,
+        'final_altitude_m': z,
+        'duration_s': t,
     }
     return results, summary
 

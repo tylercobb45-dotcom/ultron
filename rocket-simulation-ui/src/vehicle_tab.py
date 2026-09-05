@@ -513,7 +513,12 @@ class VehicleTabWidget(QtWidgets.QWidget):
             self.summary.setText(f"Configuration error: {exc}")
             return
 
-        wet = mp.dry_mass_kg + mp.propellant_mass_kg
+        # effective_dry_mass(), not the typed field. CG and margin on this
+        # same line already come from the components; taking mass from the
+        # field mixed the two and put the landing speed ~29% out when they
+        # disagreed.
+        dry = mp.effective_dry_mass()
+        wet = dry + mp.propellant_mass_kg
         cg_wet, cg_dry = mp.cg(mp.propellant_mass_kg), mp.cg(0.0)
         cp = af.center_of_pressure(0.3)
         d = max(1e-6, af.body_diameter_m)
@@ -524,9 +529,9 @@ class VehicleTabWidget(QtWidgets.QWidget):
         cd_max, _ = aero.drag_coefficient(1.1, 3000.0, 1.1 * 320, af, site)
         cd_hi, _ = aero.drag_coefficient(3.0, 15000.0, 3.0 * 300, af, site)
 
-        rate_all = recovery_system.descent_rate(mp.dry_mass_kg, rho)
+        rate_all = recovery_system.descent_rate(dry, rho)
         stages = recovery_system.active_stages()
-        first = (recovery_system.descent_rate_stage(0, mp.dry_mass_kg, rho)
+        first = (recovery_system.descent_rate_stage(0, dry, rho)
                  if stages else float('inf'))
 
         def cal(v):
@@ -546,7 +551,7 @@ class VehicleTabWidget(QtWidgets.QWidget):
             f"<b>{af.total_length:.2f} m</b> long, <b>{af.body_diameter_m*1000:.0f} mm</b> "
             f"across, {af.nose_shape} nose (fineness {af.nose_fineness:.1f}), "
             f"{af.fin_count} fins &nbsp;|&nbsp; wet <b>{wet:.1f} kg</b>, dry "
-            f"{mp.dry_mass_kg:.1f} kg<br>"
+            f"{dry:.1f} kg<br>"
             f"CP {cp:.2f} m &nbsp; CG {cg_wet:.2f} m wet / {cg_dry:.2f} m dry "
             f"&nbsp; margin <b>{cal(marg_wet)}</b> wet, <b>{cal(marg_dry)}</b> burnout<br>"
             f"Cd: <b>{cd_sub:.2f}</b> subsonic, <b>{cd_max:.2f}</b> transonic peak, "

@@ -185,7 +185,7 @@ def _arg_max(values):
 
 def analyze(flight, vehicle: VehicleConfig | None = None,
             engine_result=None, engine=None, cd_source=None,
-            mass_props=None) -> Report:
+            mass_props=None, summary=None) -> Report:
     """Grade a completed flight against every failure mode we can evaluate.
 
     flight        : list of per-timestep dicts from simulation.run_simulation
@@ -196,6 +196,11 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
                     None for the computed buildup. Graded by A-01.
     mass_props    : optional flight_model.MassProperties, for the mass buildup
                     check. Graded by M-03.
+    summary       : optional run summary from flight_model.run_flight. Carries
+                    whether the vehicle actually landed, which R-04 needs -
+                    the last sampled altitude is a metre or so above zero on a
+                    perfectly clean touchdown, so it cannot be inferred from
+                    the rows alone.
     """
     v = vehicle or VehicleConfig()
     rep = Report(target_ft=v.target_altitude_ft,
@@ -232,7 +237,7 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     _thermal_checks(rep, v, t, alt, mach)
     _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g)
     _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
-                   cd_source)
+                   cd_source, summary)
     _engine_checks(rep, v, engine_result, engine)
     _drag_source_check(rep, flight, cd_source)
     _mass_buildup_check(rep, v, flight, mass_props)
@@ -780,7 +785,7 @@ def _mach_aware_drag(flight) -> bool:
 
 
 def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
-                   cd_source=None):
+                   cd_source=None, summary=None):
     # R-01 rail exit velocity
     rail_i = next((i for i, h in enumerate(alt) if h >= v.rail_length_m), None)
     if rail_i is None:
@@ -916,6 +921,36 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
 
     # R-04 landing velocity. The simulator zeroes velocity on touchdown, so read
     # the last sample that was still airborne.
+    #
+    # First: did it land at all? A run can hit its time limit with the vehicle
+    # still kilometres up, and the last sample is then mid-descent. Reporting
+    # that as a touchdown speed is a number that never happened, so say so
+    # instead of grading it.
+    final_alt = alt[-1] if alt else 0.0
+    if summary is not None:
+        # The run told us directly.
+        cut_short = bool(summary.get("truncated")) or not summary.get("landed", True)
+    else:
+        # No summary: fall back to a relative test. A clean touchdown leaves
+        # the last sample within a metre or two of the ground, while a
+        # truncated descent leaves it a good fraction of apogee up.
+        apogee = max(alt) if alt else 0.0
+        cut_short = final_alt > max(5.0, 0.02 * apogee)
+    if cut_short:
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate", NO_DATA,
+            f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
+            "6 m/s caution / 9 m/s critical",
+            f"The simulation reached its time limit with the vehicle still "
+            f"{final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up and "
+            f"descending at {abs(vel[-1]):,.1f} m/s, so there is no touchdown "
+            f"to grade. A canopy this large on a flight this high simply "
+            f"takes longer to come down than the run allows.",
+            "Deploy the main lower (dual deploy), use a smaller canopy, or "
+            "raise the simulation time limit.",
+            t_event=t[-1]))
+        return
+
     v_land = _touchdown_speed(alt, vel)
     rep.checks.append(Check(
         "R-04", "Recovery", "Landing descent rate", _band_status(v_land, None, None, 6.0, 9.0),

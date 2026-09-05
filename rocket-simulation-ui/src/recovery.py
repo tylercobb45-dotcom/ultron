@@ -128,7 +128,21 @@ class RecoverySystem:
     @staticmethod
     def single_deploy(diameter_m=2.0, cd=1.5, altitude_m=0.0,
                       canopy="Round parachute"):
-        """One canopy, out at apogee. Simple, and it drifts for miles."""
+        """One canopy. At apogee by default, or at a set altitude if given.
+
+        altitude_m > 0 holds the canopy until the vehicle has descended
+        through that height, which is the whole point of a single deploy on a
+        high flight: falling ballistic to low altitude before opening is what
+        keeps the drift down. It used to be accepted and ignored.
+        """
+        if altitude_m and altitude_m > 0:
+            return RecoverySystem("Single deploy (main at altitude)", [
+                RecoveryStage(name="Main", canopy_type=canopy,
+                              diameter_m=diameter_m, cd=cd,
+                              trigger=TRIGGER_ALTITUDE,
+                              trigger_altitude_m=altitude_m,
+                              inflation_time_s=2.0),
+            ])
         return RecoverySystem("Single deploy (main at apogee)", [
             RecoveryStage(name="Main", canopy_type=canopy, diameter_m=diameter_m,
                           cd=cd, trigger=TRIGGER_APOGEE, inflation_time_s=2.0),

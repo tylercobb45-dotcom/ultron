@@ -290,9 +290,17 @@ class RocketLibraryWidget(QtWidgets.QWidget):
         # install and it does not come back. Update already refuses to write
         # over them for the same reason - delete has to match.
         user_copy = os.path.join(self._writable_dir(), f"{name}.json")
+        # Is there a copy of this rocket somewhere the user cannot write - a
+        # bundled preset that will reappear once their own copy is gone? That
+        # is what decides the message, and it has to be answered BEFORE the
+        # delete, while both files still exist.
+        shadowed_preset = self._has_readonly_copy(name)
+
         if not self._is_writable_path(path):
             if os.path.exists(user_copy):
-                path = user_copy       # only ever remove the user's own copy
+                # Only ever remove the user's own copy; the bundled preset
+                # underneath survives and reappears on refresh.
+                path = user_copy
             else:
                 QtWidgets.QMessageBox.information(
                     self, "Bundled rocket",
@@ -311,12 +319,26 @@ class RocketLibraryWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Could not delete", str(exc))
             return
         self.refresh()
-        bundled_back = os.path.exists(path) or not self._is_writable_path(path)
+        # Decided BEFORE the removal: afterwards the file is gone and `path`
+        # has already been redirected to the user copy, so both halves of the
+        # old test were always false and it never said the preset came back.
         self.status.setText(
             f"Deleted your copy of '{name}'; the bundled preset is back."
-            if bundled_back else f"Deleted '{name}'.")
+            if shadowed_preset else f"Deleted '{name}'.")
         if self._on_changed:
             self._on_changed()
+
+    def _has_readonly_copy(self, name) -> bool:
+        """Does this rocket also exist outside the user's own directory?
+
+        If so, deleting their copy uncovers it again rather than removing the
+        rocket, and the status line should say which of the two happened.
+        """
+        for directory in self._search_dirs():
+            candidate = os.path.join(directory, f"{name}.json")
+            if os.path.exists(candidate) and not self._is_writable_path(candidate):
+                return True
+        return False
 
     def _is_writable_path(self, path) -> bool:
         """Is this file in the user's own rocket directory rather than bundled?"""

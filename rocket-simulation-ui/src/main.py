@@ -314,10 +314,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 return pal["border"]
             if "button_bg" in k or "gauge_bg" in k or "header_bg" in k:
                 return pal["raised"]
-            if "secondary_bg" in k or k.endswith("_bg") or k == "bg":
-                return pal["panel"]
+            # primary_bg has to be tested BEFORE the generic _bg catch-all,
+            # or the base ground silently takes the panel colour.
             if "primary_bg" in k:
                 return pal["bg"]
+            if "secondary_bg" in k or k.endswith("_bg") or k == "bg":
+                return pal["panel"]
             if "text" in k:
                 return pal["text"]
             return value
@@ -1386,7 +1388,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.vehicle_tab = VehicleTabWidget()
         self.aero_tab = AeroAnalysisWidget(
             get_airframe=lambda: self.vehicle_tab.airframe(),
-            get_cg=lambda: self.vehicle_tab.mass_properties().dry_cg_m,
+            # effective_dry_cg(), not the typed field: when mass components
+            # exist they are what the flight uses, so the sweep's static
+            # margin has to be computed against the same CG.
+            get_cg=lambda: self.vehicle_tab.mass_properties().effective_dry_cg(),
+            get_site=lambda: self.vehicle_tab.launch_site(),
             on_table_changed=self._cd_table_changed)
         self.aero_section = AerodynamicsSection(
             self.vehicle_tab, self.aero_tab, self.get_profiles_dir)
@@ -3993,6 +3999,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             results, self.last_flight_summary = self.run_flight_simulation(
                 m, Cd, A, rho, sim_kwargs, time_step,
                 body_diameter=body_diameter)
+            self._warn_if_truncated(self.last_flight_summary)
             # Error handling for simulation results
             if isinstance(results, dict) and 'error' in results:
                 self.error_label.setText(results['error'])
@@ -4050,6 +4057,25 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 f"Drag will come from the imported curve <b>{table.name}</b> "
                 f"(Mach {lo:.2f}-{hi:.2f}) instead of the computed buildup. "
                 f"Run a simulation to fly it.")
+
+    def _warn_if_truncated(self, summary):
+        """Say so when the run ended with the vehicle still in the air.
+
+        A big canopy deployed high can take longer to come down than the
+        integrator is allowed to run. Everything up to and including apogee is
+        still valid; the descent simply stops early, and nothing downstream
+        should be read as a landing.
+        """
+        if not summary or not summary.get('truncated'):
+            return
+        alt = summary.get('final_altitude_m', 0.0)
+        dur = summary.get('duration_s', 0.0)
+        self.error_label.setText(
+            f"Simulation hit its time limit after {dur:,.0f} s with the "
+            f"vehicle still {alt:,.0f} m ({alt*3.28084:,.0f} ft) up. Apogee "
+            f"and the ascent are valid; the descent is cut short, so landing "
+            f"speed and drift are not final. Deploy the main lower or use a "
+            f"smaller canopy.")
 
     def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step,
                               body_diameter=None):
@@ -4199,7 +4225,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 geometry_hints=hints,
                 cd_source=self.cd_source(),
                 mass_props=(self.vehicle_tab.mass_properties()
-                            if hasattr(self, 'vehicle_tab') else None))
+                            if hasattr(self, 'vehicle_tab') else None),
+                summary=getattr(self, 'last_flight_summary', None))
         except Exception:
             traceback.print_exc()
 
