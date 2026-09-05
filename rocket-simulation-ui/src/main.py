@@ -4255,22 +4255,31 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 engine_run = self.engine_lab.get_last_run()
             engine, engine_result = (engine_run[0], engine_run[1]) if engine_run else (None, None)
 
+            # Everything the report grades geometry against should be the
+            # geometry that actually flew. Passing only diameter, fin count and
+            # fin thickness left flutter, buckling and rail-exit graded against
+            # VehicleConfig defaults - a 5.18 m rail and a 300 mm root chord -
+            # regardless of the airframe on the Aerodynamics tab.
             hints = {}
-            if body_diameter:
+            try:
+                af = self.vehicle_tab.airframe()
+                hints.update({
+                    'body_od_m': af.body_diameter_m,
+                    'body_length_m': af.total_length,
+                    'fin_count': int(af.fin_count),
+                    'fin_root_chord_m': af.fin_root_chord_m,
+                    'fin_tip_chord_m': af.fin_tip_chord_m,
+                    'fin_span_m': af.fin_span_m,
+                    'fin_thickness_m': af.fin_thickness_m,
+                })
+                hints['rail_length_m'] = self.vehicle_tab.launch_site().rail_length_m
+            except Exception:
+                traceback.print_exc()
+            # The Simulation tab's own body diameter still wins if it was typed
+            # and the Aerodynamics tab has nothing useful.
+            if body_diameter and not hints.get('body_od_m'):
                 hints['body_od_m'] = body_diameter
-            try:
-                fin_thickness = self.get_value_in_base_unit(
-                    self.fin_thickness_input.text(), self.fin_thickness_unit.currentIndex(),
-                    [1, 0.001, 0.0254])
-                if fin_thickness:
-                    hints['fin_thickness_m'] = fin_thickness
-            except Exception:
-                pass
-            try:
-                if self.fin_count_input.text():
-                    hints['fin_count'] = int(float(self.fin_count_input.text()))
-            except Exception:
-                pass
+            hints = {k: v for k, v in hints.items() if v}
 
             self.flight_report.update_from_simulation(
                 results, engine_result=engine_result, engine=engine,
@@ -5127,6 +5136,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Thrust curve. Shipped presets store a project-relative path so
             # they work on any machine; anything the user picked themselves is
             # absolute and resolves directly.
+            # An imported drag curve belongs to the rocket it was imported
+            # for. It was surviving every rocket load and is saved with none
+            # of them, so a stale flat Cd=1.90 table silently dropped the L550
+            # preset from 15,955 ft to 7,097 ft.
+            if hasattr(self, 'aero_tab') and self.aero_tab.current_table():
+                self.aero_tab.clear_table()
+
             stored_curve = config.get('thrust_curve_path')
             thrust_path = self.resolve_thrust_curve(stored_curve)
             if thrust_path and os.path.exists(thrust_path):

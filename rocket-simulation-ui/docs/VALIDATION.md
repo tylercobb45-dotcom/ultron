@@ -211,15 +211,22 @@ own drag buildup.
 
 | Preset | Apogee | Max Mach | Peak g | Rail exit | Drift |
 |---|---|---|---|---|---|
-| HyperTEK J317 Sport | 3,346 ft | 0.40 | 6.8 | 19.8 m/s | 702 m |
-| HyperTEK K240 Altitude | 5,805 ft | 0.56 | 5.0 | 16.1 m/s | 340 m |
+| HyperTEK J317 Sport | 3,336 ft | 0.40 | 6.8 | 19.8 m/s | 699 m |
+| HyperTEK K240 Altitude | 5,792 ft | 0.56 | 5.0 | 16.1 m/s | 339 m |
 | SystemsGo Goddard Baseline | 9,172 ft | 0.57 | 4.2 | 20.7 m/s | 0 m |
-| HyperTEK L550 Supersonic | 15,953 ft | **1.27** | 13.3 | 31.3 m/s | 1,520 m |
+| HyperTEK L550 Supersonic | 15,917 ft | **1.27** | 13.3 | 31.3 m/s | 1,516 m |
 
 Three subsonic cases and one supersonic, spanning 3,000 to 16,000 ft and
 4 to 13 g.
 
-These rose 3-4% against the previous release: skin friction on the fins was
+These moved twice. They rose 3-4% when double-counted fin friction was fixed,
+then fell about 0.2% when `total_impulse` started counting the lead-in segment
+the model was already flying - the derived Isp had been 3.4% low, so
+propellant ran out at 4.90 s while thrust continued to 6.41 s. The Goddard
+figure is unaffected by the second change because its curve starts at t = 0
+and so has no lead-in.
+
+On the first of those: skin friction on the fins was
 being charged twice, once in the body's wetted area and again in the fin term,
 inflating the friction component by about 17%. The Goddard figure is unchanged
 because it flies on a measured-Cd override rather than the buildup, which is
@@ -350,9 +357,9 @@ trajectory:
 
 | Nose ballast | Apogee | Margin | Pitch inertia | Drift |
 |---|---|---|---|---|
-| 0.0 kg | 15,950 ft | 2.47 cal | 1.151 kg·m² | 1,512 m |
-| 0.5 kg | 15,708 ft | 3.70 cal | 1.796 kg·m² | 1,322 m |
-| 1.5 kg | 15,102 ft | 5.65 cal | 2.823 kg·m² | 984 m |
+| 0.0 kg | 15,915 ft | 2.47 cal | 1.151 kg·m² | 1,509 m |
+| 0.5 kg | 15,673 ft | 3.70 cal | 1.796 kg·m² | 1,319 m |
+| 1.5 kg | 15,068 ft | 5.65 cal | 2.823 kg·m² | 981 m |
 
 Ballast costs altitude, buys margin, raises inertia, and — because a
 higher-inertia vehicle turns into a crosswind more slowly — cuts drift by a
@@ -360,7 +367,7 @@ third. All four checked as monotonic.
 
 Recovery stages contribute to the same buildup (2 components, 0.900 kg on a
 dual-deploy train), and a profile with no components flies **exactly** as it
-did before: 15,952.7 ft against the recorded 15,952.7.
+did before: 15,917.2 ft against the recorded 15,917.2.
 
 ### One bug this found
 

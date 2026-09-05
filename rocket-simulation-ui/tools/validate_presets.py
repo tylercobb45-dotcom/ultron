@@ -634,9 +634,13 @@ def validate_mass_components():
     system.reset()
     r_leg, s_leg = flight_model.run_flight(points, airframe, site, system,
                                            mass, output_dt=0.05)
+    # Regression baseline for the legacy typed-mass path. Moved from 15,952.7
+    # when total_impulse started counting the curve's lead-in segment, which
+    # the model was already flying: the derived Isp had been 3.4% low, so the
+    # propellant ran out at 4.90 s while thrust continued to 6.41 s.
     check("  a profile with no components is unchanged",
-          abs(s_leg["apogee_ft"] - 15952.66) < 1.0,
-          f"{s_leg['apogee_ft']:,.1f} ft against the recorded 15,952.7")
+          abs(s_leg["apogee_ft"] - 15917.2) < 1.0,
+          f"{s_leg['apogee_ft']:,.1f} ft against the recorded 15,917.2")
     print()
 
 

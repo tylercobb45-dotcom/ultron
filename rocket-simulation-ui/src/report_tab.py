@@ -440,9 +440,15 @@ class FlightReportWidget(QtWidgets.QWidget):
         # --- thermal margin against the chosen material ---
         a3 = ax[1, 1]
         skin = mat_lib.get(self.vehicle_config().airframe_material)
+        # Use each row's own ambient temperature, exactly as _thermal_checks
+        # does. Recomputing from a sea-level standard day here made the graph
+        # disagree with the T-01/T-02 rows printed beside it in the same
+        # exported report whenever the pad was hot or high.
         temps = []
         for r in flight:
-            T_amb, _, _, _ = fa.isa(r["altitude"])
+            T_amb = r.get("temperature_k")
+            if not isinstance(T_amb, (int, float)) or T_amb <= 0:
+                T_amb = fa.isa(r["altitude"])[0]
             M = r.get("Mach", 0.0)
             temps.append(T_amb * (1 + 0.9 * 0.2 * M * M))
         a3.plot(t, temps, color="#e67e22", lw=1.6, label="recovery temp")

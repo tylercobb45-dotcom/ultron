@@ -630,6 +630,9 @@ def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach,
     if _flight_landed(summary, alt):
         rep.events.append(Event("Landing", t[-1],
                                 f"Descent rate {_touchdown_speed(alt, vel):,.1f} m/s."))
+    elif _never_launched(alt):
+        rep.events.append(Event("Never left the pad", t[-1],
+                                "No flight to time."))
     else:
         rep.events.append(Event(
             "Run ended (still airborne)", t[-1],
@@ -641,6 +644,15 @@ def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach,
 # aero-thermal
 # ---------------------------------------------------------------------------
 
+def _never_launched(alt) -> bool:
+    """Did the vehicle simply never leave the pad?
+
+    An underpowered motor produces a flight that never rises, and calling that
+    "still airborne at 0 m" is nonsense. It needs its own answer.
+    """
+    return bool(alt) and max(alt) <= 1.0
+
+
 def _flight_landed(summary, alt) -> bool:
     """Did the vehicle actually reach the ground?
 
@@ -648,6 +660,8 @@ def _flight_landed(summary, alt) -> bool:
     a clean touchdown leaves the last sample about a metre up, a truncated
     descent leaves it a good fraction of apogee up.
     """
+    if _never_launched(alt):
+        return True          # it is on the ground; it never left it
     if summary is not None:
         return bool(summary.get("landed", True)) and not summary.get("truncated")
     if not alt:
@@ -996,6 +1010,17 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
     # that as a touchdown speed is a number that never happened, so say so
     # instead of grading it.
     final_alt = alt[-1] if alt else 0.0
+    if _never_launched(alt):
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate", NO_DATA,
+            "never left the pad", "6 m/s caution / 9 m/s critical",
+            f"The vehicle never rose above {max(alt) if alt else 0.0:,.1f} m, "
+            f"so there is no descent to grade. M-01 and P-01 explain why - "
+            f"almost always thrust-to-weight below 1.",
+            "Fix the thrust-to-weight before reading anything else in this "
+            "report.", t_event=t[-1] if t else None))
+        return
+
     if not _flight_landed(summary, alt):
         rep.checks.append(Check(
             "R-04", "Recovery", "Landing descent rate", NO_DATA,

@@ -233,8 +233,20 @@ def _thrust_at(points, t):
 
 
 def total_impulse(points):
-    return sum((points[i][1] + points[i - 1][1]) / 2.0 *
-               (points[i][0] - points[i - 1][0]) for i in range(1, len(points)))
+    """Impulse of the curve AS FLOWN, including the lead-in segment.
+
+    _thrust_at holds the first point's thrust flat from t=0 back to that
+    point, because a curve whose first sample is at t=0.124 s did not start
+    from nothing. The integral has to count that rectangle too - leaving it
+    out made the derived Isp 3.5% low on the L550 preset, so the propellant
+    ran out at 4.90 s while thrust was still being produced to 6.408 s.
+    """
+    if not points:
+        return 0.0
+    lead_in = points[0][0] * points[0][1] if points[0][0] > 0 else 0.0
+    return lead_in + sum((points[i][1] + points[i - 1][1]) / 2.0 *
+                         (points[i][0] - points[i - 1][0])
+                         for i in range(1, len(points)))
 
 
 # ---------------------------------------------------------------------------
