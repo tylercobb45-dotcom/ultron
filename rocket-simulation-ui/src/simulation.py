@@ -506,7 +506,18 @@ def plot_table_and_stats(results):
 # Function to calculate total impulse from thrust curve
 def calculate_total_impulse(thrust_data):
     # thrust_data: list of (time, thrust) tuples
-    total_impulse = 0.0
+    #
+    # thrust_func_fixed above holds the FIRST point's thrust flat back to
+    # t=0 for any curve whose first sample isn't at t=0 - a curve starting
+    # at t=0.124s did not fire from nothing. Trapezoidal integration from
+    # the first point onward skipped that rectangle, so the derived Isp
+    # came out low and mass depletion (thrust/(Isp*g0)) ran the propellant
+    # out before thrust actually stopped. This is the same fix already made
+    # in flight_model.total_impulse() for the 2-DOF model.
+    if not thrust_data:
+        return 0.0
+    t0, F0 = thrust_data[0]
+    total_impulse = t0 * F0 if t0 > 0 else 0.0
     for i in range(1, len(thrust_data)):
         t0, F0 = thrust_data[i-1]
         t1, F1 = thrust_data[i]

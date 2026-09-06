@@ -4846,8 +4846,6 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.fin_length_input.setText(str(data.get('fin_length', '')))
             self.fin_length_unit.setCurrentIndex(data.get('fin_length_unit', 0))
             self.body_diameter_input.setText(str(data.get('body_diameter', '')))
-            self.body_diameter_unit.setCurrentIndex(
-                data.get('body_diameter_unit', 0))
             self.body_diameter_unit.setCurrentIndex(data.get('body_diameter_unit', 0))
             self.chute_height_input.setText(str(data.get('chute_height', '')))
             self.chute_height_unit.setCurrentIndex(data.get('chute_height_unit', 0))
@@ -5016,7 +5014,6 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'fin_length': self.fin_length_input.text(),
                 'fin_length_unit': self.fin_length_unit.currentIndex(),
                 'body_diameter': self.body_diameter_input.text(),
-                'body_diameter_unit': self.body_diameter_unit.currentIndex(),
                 'body_diameter_unit': self.body_diameter_unit.currentIndex(),
                 'chute_height': self.chute_height_input.text(),
                 'chute_height_unit': self.chute_height_unit.currentIndex(),

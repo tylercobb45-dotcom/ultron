@@ -358,8 +358,8 @@ trajectory:
 | Nose ballast | Apogee | Margin | Pitch inertia | Drift |
 |---|---|---|---|---|
 | 0.0 kg | 15,915 ft | 2.47 cal | 1.151 kg·m² | 1,509 m |
-| 0.5 kg | 15,673 ft | 3.70 cal | 1.796 kg·m² | 1,319 m |
-| 1.5 kg | 15,068 ft | 5.65 cal | 2.823 kg·m² | 981 m |
+| 0.5 kg | 15,675 ft | 3.70 cal | 1.796 kg·m² | 1,319 m |
+| 1.5 kg | 15,066 ft | 5.65 cal | 2.823 kg·m² | 981 m |
 
 Ballast costs altitude, buys margin, raises inertia, and — because a
 higher-inertia vehicle turns into a crosswind more slowly — cuts drift by a

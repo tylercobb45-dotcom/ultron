@@ -142,23 +142,31 @@ def _load_csv(path):
         return t_j, f_j
 
     header_idx, t_col, f_col = None, 0, 1
+    meta_end = None       # first index NOT to scan for metadata
     for i, row in enumerate(rows):
         cols = _looks_like_header(row)
         if cols:
             header_idx, (t_col, f_col) = i, cols
+            meta_end = header_idx        # the header row itself isn't metadata
             break
 
     if header_idx is None:
         # No header at all: accept a bare two-column time,thrust file by
-        # starting at the first row that parses as numbers.
+        # starting at the first row that parses as numbers. header_idx is set
+        # to i-1 so the DATA loop below (rows[header_idx+1:]) starts at row i,
+        # but that leaves no row "consumed" as a header - a metadata line
+        # sitting directly above the data (index i-1) is real content, not a
+        # header, so the metadata scan has to include it: meta_end = i, one
+        # past what header_idx alone would give.
         for i, row in enumerate(rows):
             if len(row) >= 2 and _is_number(row[0]) and _is_number(row[1]):
                 header_idx = i - 1
+                meta_end = i
                 break
         if header_idx is None:
             return [], None
     # Propellant mass is often recorded in the metadata above the header.
-    for row in rows[:max(0, header_idx)]:
+    for row in rows[:max(0, meta_end)]:
         line = ",".join(row).lower()
         if "propellant" in line or "prop mass" in line:
             nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)

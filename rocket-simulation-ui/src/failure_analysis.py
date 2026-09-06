@@ -235,7 +235,7 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap)
     _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach, summary)
     _thermal_checks(rep, v, t, alt, mach, flight)
-    _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g)
+    _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g, flight)
     _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
                    cd_source, summary)
     _engine_checks(rep, v, engine_result, engine)
@@ -627,12 +627,12 @@ def _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach,
     # Only mark a landing if there was one. A truncated run ends mid-descent,
     # and R-04 already refuses to grade it - the timeline must not contradict
     # that by planting a "Landing" marker on the last airborne sample.
-    if _flight_landed(summary, alt):
-        rep.events.append(Event("Landing", t[-1],
-                                f"Descent rate {_touchdown_speed(alt, vel):,.1f} m/s."))
-    elif _never_launched(alt):
+    if _never_launched(alt):
         rep.events.append(Event("Never left the pad", t[-1],
                                 "No flight to time."))
+    elif _flight_landed(summary, alt):
+        rep.events.append(Event("Landing", t[-1],
+                                f"Descent rate {_touchdown_speed(alt, vel):,.1f} m/s."))
     else:
         rep.events.append(Event(
             "Run ended (still airborne)", t[-1],
@@ -720,7 +720,8 @@ def _thermal_checks(rep, v, t, alt, mach, flight=None):
 # structures
 # ---------------------------------------------------------------------------
 
-def _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g):
+def _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g,
+                       flight=None):
     skin = mat_lib.get(v.airframe_material)
     fin = mat_lib.get(v.fin_material)
 
@@ -785,10 +786,10 @@ def _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g):
         t_event=t[i_g]))
 
     # S-05 fin flutter
-    _fin_flutter_check(rep, v, fin, t, alt, vel)
+    _fin_flutter_check(rep, v, fin, t, alt, vel, flight)
 
 
-def _fin_flutter_check(rep, v, fin, t, alt, vel):
+def _fin_flutter_check(rep, v, fin, t, alt, vel, flight=None):
     cr, ct, b, th = v.fin_root_chord_m, v.fin_tip_chord_m, v.fin_span_m, v.fin_thickness_m
     if min(cr, b, th) <= 0:
         rep.checks.append(Check(
@@ -796,12 +797,26 @@ def _fin_flutter_check(rep, v, fin, t, alt, vel):
             "Fin geometry is incomplete, so flutter speed cannot be computed."))
         return
 
+    # Flutter speed scales with ambient pressure, and isa(h) on an AGL height
+    # assumes a sea-level pad. Each row already carries the real pressure the
+    # 2-DOF model computed - launch-site elevation included - which is the
+    # same fix already made for thermal (T-01/T-02); reusing sea-level ISA
+    # here under-states flutter speed by ~12% at a 2,000 m site.
+    pres = ([r.get("pressure_pa") for r in flight] if flight else [])
+    temp = ([r.get("temperature_k") for r in flight] if flight else [])
+    use_row_p = (len(pres) == len(alt)
+                and all(isinstance(x, (int, float)) and x > 0 for x in pres))
+    use_row_t = (len(temp) == len(alt)
+                and all(isinstance(x, (int, float)) and x > 0 for x in temp))
+
     ar = 2 * b / (cr + ct) if (cr + ct) > 0 else 0.0
     lam = ct / cr
     tc = th / cr
     worst_ratio, worst_i, worst_vf = 0.0, 0, float("inf")
     for i, (h, vv) in enumerate(zip(alt, vel)):
-        _, P, _, a = isa(h)
+        T_isa, P_isa, _, a_isa = isa(h)
+        P = pres[i] if use_row_p else P_isa
+        a = math.sqrt(_GAMMA * _R_AIR * temp[i]) if use_row_t else a_isa
         denom = 2 * (ar + 2) * (tc ** 3)
         num = 1.337 * (ar ** 3) * P * (lam + 1)
         if num <= 0 or denom <= 0:
@@ -951,11 +966,40 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
             "R-03", "Recovery", "Deployment shock load", NO_DATA, "-",
             f"{v.harness_rating_n:,.0f} N harness",
             "No parachute deployment occurred in this run."))
-        rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate", CAUTION,
-            f"{abs(vel[-1]):,.1f} m/s", "<= 6 m/s",
-            "No recovery deployment was modelled, so the vehicle arrived ballistic.",
-            "Configure parachute deploy height and size on the Simulation tab."))
+        # A recovery trigger needs launched/past_apogee, so a vehicle that
+        # never left the pad or a run that got truncated before apogee can
+        # never reach deploy_i != None - which is exactly the path that used
+        # to fall straight through to "arrived ballistic" regardless. Grade
+        # what actually happened instead of assuming a real ballistic impact.
+        if _never_launched(alt):
+            rep.checks.append(Check(
+                "R-04", "Recovery", "Landing descent rate", NO_DATA,
+                "never left the pad", "6 m/s caution / 9 m/s critical",
+                f"The vehicle never rose above {max(alt) if alt else 0.0:,.1f} m, "
+                f"so there is no descent to grade. M-01 and P-01 explain why - "
+                f"almost always thrust-to-weight below 1.",
+                "Fix the thrust-to-weight before reading anything else in this "
+                "report.", t_event=t[-1] if t else None))
+        elif not _flight_landed(summary, alt):
+            final_alt = alt[-1] if alt else 0.0
+            rep.checks.append(Check(
+                "R-04", "Recovery", "Landing descent rate", NO_DATA,
+                f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
+                "6 m/s caution / 9 m/s critical",
+                f"The simulation reached its time limit with the vehicle "
+                f"still {final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up "
+                f"with no recovery deployed, so there is no touchdown to "
+                f"grade.",
+                "Configure a recovery system, or raise the simulation time "
+                "limit.", t_event=t[-1]))
+        else:
+            rep.checks.append(Check(
+                "R-04", "Recovery", "Landing descent rate", CAUTION,
+                f"{abs(vel[-1]):,.1f} m/s", "<= 6 m/s",
+                "No recovery deployment was modelled, so the vehicle arrived "
+                "ballistic.",
+                "Configure parachute deploy height and size on the "
+                "Simulation tab."))
         return
 
     # Read the *uncapped* canopy load: the flight model applies a drag limiter
