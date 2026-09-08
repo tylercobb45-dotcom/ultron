@@ -653,6 +653,77 @@ def _never_launched(alt) -> bool:
     return bool(alt) and max(alt) <= 1.0
 
 
+def _r04_landing_check(rep, t, alt, vel, summary, deployed: bool):
+    """R-04: did it land, and how fast - the one true version of this check.
+
+    Used from two call sites (no recovery ever deployed, and the normal
+    post-deployment path), which used to carry independent copies of the
+    never-launched / still-airborne / touchdown logic. They had already
+    drifted - the no-deployment copy used abs(vel[-1]) for the "landing"
+    speed instead of _touchdown_speed(alt, vel), so a real ballistic impact
+    at over 100 m/s was reported as "0.0 m/s" (the simulator zeroes velocity
+    on the row it detects touchdown). `deployed` only changes the wording of
+    the final, landed-for-real message: under canopy vs. ballistic.
+    """
+    if _never_launched(alt):
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate", NO_DATA,
+            "never left the pad", "6 m/s caution / 9 m/s critical",
+            f"The vehicle never rose above {max(alt) if alt else 0.0:,.1f} m, "
+            f"so there is no descent to grade. M-01 and P-01 explain why - "
+            f"almost always thrust-to-weight below 1.",
+            "Fix the thrust-to-weight before reading anything else in this "
+            "report.", t_event=t[-1] if t else None))
+        return
+
+    if not _flight_landed(summary, alt):
+        final_alt = alt[-1] if alt else 0.0
+        detail = (
+            f"The simulation reached its time limit with the vehicle still "
+            f"{final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up and "
+            f"descending at {abs(vel[-1]):,.1f} m/s, so there is no touchdown "
+            f"to grade. A canopy this large on a flight this high simply "
+            f"takes longer to come down than the run allows."
+            if deployed else
+            f"The simulation reached its time limit with the vehicle still "
+            f"{final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up with no "
+            f"recovery deployed, so there is no touchdown to grade.")
+        rec = ("Deploy the main lower (dual deploy), use a smaller canopy, or "
+               "raise the simulation time limit." if deployed else
+               "Configure a recovery system, or raise the simulation time "
+               "limit.")
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate", NO_DATA,
+            f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
+            "6 m/s caution / 9 m/s critical", detail, rec, t_event=t[-1]))
+        return
+
+    # It actually reached the ground. _touchdown_speed reads the last sample
+    # before the simulator zeroed altitude/velocity on touchdown - the same
+    # value whether or not a canopy was out, so a ballistic arrival with no
+    # recovery gets its real impact speed rather than the zeroed final row.
+    v_land = _touchdown_speed(alt, vel)
+    if deployed:
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate",
+            _band_status(v_land, None, None, 6.0, 9.0),
+            f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
+            f"Touchdown at {v_land:,.1f} m/s ({v_land*FT_PER_M:,.1f} ft/s). "
+            f"Above about 7.6 m/s (25 ft/s) fibreglass fins and airframes "
+            f"start taking damage.",
+            "Increase main canopy area for a softer landing." if v_land > 6
+            else "Landing speed is in the usual safe band.",
+            t_event=t[-1]))
+    else:
+        rep.checks.append(Check(
+            "R-04", "Recovery", "Landing descent rate", CAUTION,
+            f"{v_land:,.1f} m/s", "<= 6 m/s",
+            "No recovery deployment was modelled, so the vehicle arrived "
+            "ballistic.",
+            "Configure parachute deploy height and size on the Simulation "
+            "tab.", t_event=t[-1]))
+
+
 def _flight_landed(summary, alt) -> bool:
     """Did the vehicle actually reach the ground?
 
@@ -804,15 +875,24 @@ def _fin_flutter_check(rep, v, fin, t, alt, vel, flight=None):
     # here under-states flutter speed by ~12% at a 2,000 m site.
     pres = ([r.get("pressure_pa") for r in flight] if flight else [])
     temp = ([r.get("temperature_k") for r in flight] if flight else [])
+    # And flutter is driven by the speed the AIR moves past the fin, not the
+    # vertical component of ground track: `vel` is vz alone. In wind, on a
+    # tilted rail, or during weathercock, the 2-DOF model's own `airspeed`
+    # (the air-relative speed magnitude) is higher than |vz| - at a 2,000 m
+    # site with 12 m/s wind and a 5 deg rail this under-stated the flutter
+    # ratio by ~21%, enough to read OK where airspeed gives CAUTION.
+    aspd = ([r.get("airspeed") for r in flight] if flight else [])
     use_row_p = (len(pres) == len(alt)
                 and all(isinstance(x, (int, float)) and x > 0 for x in pres))
     use_row_t = (len(temp) == len(alt)
                 and all(isinstance(x, (int, float)) and x > 0 for x in temp))
+    use_row_v = (len(aspd) == len(alt)
+                and all(isinstance(x, (int, float)) for x in aspd))
 
     ar = 2 * b / (cr + ct) if (cr + ct) > 0 else 0.0
     lam = ct / cr
     tc = th / cr
-    worst_ratio, worst_i, worst_vf = 0.0, 0, float("inf")
+    worst_ratio, worst_i, worst_vf, worst_speed = 0.0, 0, float("inf"), 0.0
     for i, (h, vv) in enumerate(zip(alt, vel)):
         T_isa, P_isa, _, a_isa = isa(h)
         P = pres[i] if use_row_p else P_isa
@@ -822,14 +902,14 @@ def _fin_flutter_check(rep, v, fin, t, alt, vel, flight=None):
         if num <= 0 or denom <= 0:
             continue
         vf = a * math.sqrt(fin.shear_pa / (num / denom))
-        speed = abs(vv)
+        speed = abs(aspd[i]) if use_row_v else abs(vv)
         if vf > 0 and speed / vf > worst_ratio:
-            worst_ratio, worst_i, worst_vf = speed / vf, i, vf
+            worst_ratio, worst_i, worst_vf, worst_speed = speed / vf, i, vf, speed
 
     sf = 1.0 / worst_ratio if worst_ratio > 0 else float("inf")
     rep.checks.append(Check(
         "S-05", "Structures", "Fin flutter margin", _sf_status(sf, 1.5),
-        f"{abs(vel[worst_i]):,.0f} m/s flight (SF {sf:,.2f})",
+        f"{worst_speed:,.0f} m/s flight (SF {sf:,.2f})",
         f"{worst_vf:,.0f} m/s flutter speed",
         f"NACA TN-4197 flutter speed for a {th*1000:.1f} mm {fin.name} fin "
         f"(AR {ar:.2f}, taper {lam:.2f}, t/c {tc:.3f}) at "
@@ -968,38 +1048,10 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
             "No parachute deployment occurred in this run."))
         # A recovery trigger needs launched/past_apogee, so a vehicle that
         # never left the pad or a run that got truncated before apogee can
-        # never reach deploy_i != None - which is exactly the path that used
-        # to fall straight through to "arrived ballistic" regardless. Grade
-        # what actually happened instead of assuming a real ballistic impact.
-        if _never_launched(alt):
-            rep.checks.append(Check(
-                "R-04", "Recovery", "Landing descent rate", NO_DATA,
-                "never left the pad", "6 m/s caution / 9 m/s critical",
-                f"The vehicle never rose above {max(alt) if alt else 0.0:,.1f} m, "
-                f"so there is no descent to grade. M-01 and P-01 explain why - "
-                f"almost always thrust-to-weight below 1.",
-                "Fix the thrust-to-weight before reading anything else in this "
-                "report.", t_event=t[-1] if t else None))
-        elif not _flight_landed(summary, alt):
-            final_alt = alt[-1] if alt else 0.0
-            rep.checks.append(Check(
-                "R-04", "Recovery", "Landing descent rate", NO_DATA,
-                f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
-                "6 m/s caution / 9 m/s critical",
-                f"The simulation reached its time limit with the vehicle "
-                f"still {final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up "
-                f"with no recovery deployed, so there is no touchdown to "
-                f"grade.",
-                "Configure a recovery system, or raise the simulation time "
-                "limit.", t_event=t[-1]))
-        else:
-            rep.checks.append(Check(
-                "R-04", "Recovery", "Landing descent rate", CAUTION,
-                f"{abs(vel[-1]):,.1f} m/s", "<= 6 m/s",
-                "No recovery deployment was modelled, so the vehicle arrived "
-                "ballistic.",
-                "Configure parachute deploy height and size on the "
-                "Simulation tab."))
+        # never reach deploy_i != None - which used to fall straight through
+        # to "arrived ballistic" regardless. Same shared check as the normal
+        # path below, just told nothing deployed.
+        _r04_landing_check(rep, t, alt, vel, summary, deployed=False)
         return
 
     # Read the *uncapped* canopy load: the flight model applies a drag limiter
@@ -1046,49 +1098,10 @@ def _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
         if main_v > 30 else "Deployment speed is in a survivable range.",
         t_event=t[main_i]))
 
-    # R-04 landing velocity. The simulator zeroes velocity on touchdown, so read
-    # the last sample that was still airborne.
-    #
-    # First: did it land at all? A run can hit its time limit with the vehicle
-    # still kilometres up, and the last sample is then mid-descent. Reporting
-    # that as a touchdown speed is a number that never happened, so say so
-    # instead of grading it.
-    final_alt = alt[-1] if alt else 0.0
-    if _never_launched(alt):
-        rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate", NO_DATA,
-            "never left the pad", "6 m/s caution / 9 m/s critical",
-            f"The vehicle never rose above {max(alt) if alt else 0.0:,.1f} m, "
-            f"so there is no descent to grade. M-01 and P-01 explain why - "
-            f"almost always thrust-to-weight below 1.",
-            "Fix the thrust-to-weight before reading anything else in this "
-            "report.", t_event=t[-1] if t else None))
-        return
-
-    if not _flight_landed(summary, alt):
-        rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate", NO_DATA,
-            f"still airborne at {final_alt:,.0f} m after {t[-1]:,.0f} s",
-            "6 m/s caution / 9 m/s critical",
-            f"The simulation reached its time limit with the vehicle still "
-            f"{final_alt:,.0f} m ({final_alt*FT_PER_M:,.0f} ft) up and "
-            f"descending at {abs(vel[-1]):,.1f} m/s, so there is no touchdown "
-            f"to grade. A canopy this large on a flight this high simply "
-            f"takes longer to come down than the run allows.",
-            "Deploy the main lower (dual deploy), use a smaller canopy, or "
-            "raise the simulation time limit.",
-            t_event=t[-1]))
-        return
-
-    v_land = _touchdown_speed(alt, vel)
-    rep.checks.append(Check(
-        "R-04", "Recovery", "Landing descent rate", _band_status(v_land, None, None, 6.0, 9.0),
-        f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
-        f"Touchdown at {v_land:,.1f} m/s ({v_land*FT_PER_M:,.1f} ft/s). Above about "
-        f"7.6 m/s (25 ft/s) fibreglass fins and airframes start taking damage.",
-        "Increase main canopy area for a softer landing." if v_land > 6 else
-        "Landing speed is in the usual safe band.",
-        t_event=t[-1]))
+    # R-04 landing velocity: shared with the no-deployment path above, so the
+    # never-launched / still-airborne / touchdown wording cannot drift apart
+    # the way it did before.
+    _r04_landing_check(rep, t, alt, vel, summary, deployed=True)
 
 
 # ---------------------------------------------------------------------------

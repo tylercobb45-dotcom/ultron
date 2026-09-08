@@ -23,7 +23,10 @@ if isinstance(results, dict) and 'error' in results:
 window = [x for x in results if 57.3 <= x['time'] <= 58.2]
 print(f"{len(window)} records in 57.3-58.2s window")
 for x in window:
-    drag_raw = x.get('drag_raw')
+    # simulation.py's row dict names these drag_raw_signed and
+    # drag_cap_applied - drag_raw/drag_limit_applied never existed, so every
+    # line used to print raw=NA and limited=None regardless of what happened.
+    drag_raw = x.get('drag_raw_signed')
     Cd_eff = x.get('Cd_eff')
     A_eff = x.get('A_eff')
     fill = x.get('chute_fill')
@@ -34,7 +37,7 @@ for x in window:
         f"{Cd_eff:.3f}" if isinstance(Cd_eff,(int,float)) else 'NA',
         f"{A_eff:.4f}" if isinstance(A_eff,(int,float)) else 'NA',
         f"{fill:.3f}" if isinstance(fill,(int,float)) else 'NA',
-        x.get('drag_limit_applied')
+        x.get('drag_cap_applied')
     ))
 
 print('Check for any sudden ratio jumps:')
