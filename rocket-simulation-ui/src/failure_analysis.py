@@ -715,11 +715,18 @@ def _r04_landing_check(rep, t, alt, vel, summary, deployed: bool):
             else "Landing speed is in the usual safe band.",
             t_event=t[-1]))
     else:
+        # Grade it against the same 6/9 m/s bands as the deployed path. A
+        # hardcoded CAUTION here said "caution" for a 150 m/s lawn dart, and
+        # that status feeds Report.verdict and the banner - a ballistic
+        # impact has to read CRITICAL. It can legitimately come out OK: a
+        # 1 m hop off the pad lands at well under 6 m/s with no canopy.
         rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate", CAUTION,
-            f"{v_land:,.1f} m/s", "<= 6 m/s",
-            "No recovery deployment was modelled, so the vehicle arrived "
-            "ballistic.",
+            "R-04", "Recovery", "Landing descent rate",
+            _band_status(v_land, None, None, 6.0, 9.0),
+            f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
+            f"No recovery deployment was modelled, so the vehicle arrived "
+            f"ballistic at {v_land:,.1f} m/s "
+            f"({v_land*FT_PER_M:,.1f} ft/s).",
             "Configure parachute deploy height and size on the Simulation "
             "tab.", t_event=t[-1]))
 
