@@ -68,6 +68,45 @@ class CrashImageDialog(QtWidgets.QDialog):
         layout.addWidget(error_box)
         self.setLayout(layout)
 
+
+def _lock_unit_combo(combo):
+    """Stop a unit combo from being squeezed out of existence.
+
+    The theme reserves 22px of every combo for the drop-down arrow, so a combo
+    that loses its width fight with a neighbouring Expanding QLineEdit renders
+    as an arrow and nothing else. Measure the widest entry it actually holds,
+    add room for the arrow and padding, and pin the combo there so the line
+    edit absorbs the panel's width changes instead.
+    """
+    fm = combo.fontMetrics()
+    widest = max((fm.horizontalAdvance(combo.itemText(i))
+                  for i in range(combo.count())), default=0)
+    combo.setMinimumWidth(widest + 46)      # 22px arrow + padding + border
+    combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
+                        QtWidgets.QSizePolicy.Fixed)
+    return combo
+
+
+def _scrollable(page):
+    """Wrap a tab page in a vertical scroll area.
+
+    Qt propagates every child's minimum height up, so a tab holding a long
+    form makes the whole window refuse to be shorter than that form. Four of
+    these tabs pushed the window's minimum height to 1190px - taller than a
+    1080p desktop, and far past a 1366x768 laptop, which left the bottom of
+    those tabs permanently unreachable with no way to scroll to it. Wrapping
+    each page lets the window shrink to fit the screen and scroll instead.
+    """
+    area = QtWidgets.QScrollArea()
+    area.setWidget(page)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QtWidgets.QFrame.NoFrame)
+    # Horizontal room is what these forms are short of; let them keep their
+    # natural width and only ever scroll vertically.
+    area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    return area
+
+
 class RocketSimulationUI(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -91,6 +130,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.init_ui()
         self.load_inputs()  # Load inputs on startup
         self.apply_theme(self.current_theme)  # Apply initial theme
+        # Tab bars measure with their own font but paint at the stylesheet's
+        # weight; line the two up so multi-word tab labels stop losing their
+        # last character. Runs after the whole tree exists.
+        app_theme.apply_tab_fonts(self)
         self.showMaximized()
 
     # ---- THEME-AWARE STYLING HELPERS ----
@@ -1217,11 +1260,18 @@ class RocketSimulationUI(QtWidgets.QWidget):
             widget.setStyleSheet(input_style)
             
         combo_style = ""
-        
+
+        # Unit combos sit next to an Expanding QLineEdit in a QHBoxLayout. With
+        # no width floor of their own they lose every pixel to the line edit as
+        # the panel narrows, and because the theme reserves 22px for the
+        # drop-down arrow they collapse to an unreadable red square - the unit
+        # is then neither legible nor selectable. Size each to its own widest
+        # entry ("kg/m3", "lb/ft3") and hold it there.
         for combo in [self.mass_unit, self.prop_mass_unit, self.area_unit, self.rho_unit, self.timestep_unit,
                        self.fin_thickness_unit, self.fin_length_unit, self.body_diameter_unit,
                        self.chute_height_unit, self.chute_size_unit]:
             combo.setStyleSheet(combo_style)
+            _lock_unit_combo(combo)
             
         for widget in [self.mass_input, self.prop_mass_input, self.cd_input, self.area_input, self.rho_input,
                        self.timestep_input,
@@ -1229,6 +1279,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
                        self.chute_height_input, self.chute_size_input]:
             widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
             widget.setStyleSheet(input_style)
+            # A cross-sectional area reads "0.004560" and an air density
+            # "1.225": eight characters plus padding. Below that the field
+            # scrolls and shows the tail of the number ("04560"), which looks
+            # like a different, wrong value rather than a truncated one.
+            widget.setMinimumWidth(96)
 
         # Add rows to form layout
         form_layout.addRow("Liftoff Mass:", mass_row)
@@ -1329,6 +1384,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
         graph_layout.setContentsMargins(0, 0, 0, 0)  # No margins for max space
         graph_layout.setSpacing(0)  # No spacing
         self.figure = plt.Figure()
+        # Without this the Graph tab opens as a bare rectangle - white under a
+        # stock matplotlib figure - with nothing saying why it is empty.
+        app_theme.placeholder_figure(
+            self.figure,
+            "No flight yet. Set the inputs on the left, pick a thrust curve,\n"
+            "then press Start Simulation.")
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         graph_layout.addWidget(self.canvas)
@@ -1357,13 +1418,26 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         right_widget.setLayout(right_layout)
 
-        # Splitter for resizable panels
+        # Splitter for resizable panels. The left panel is a long form whose
+        # rows are label + value + unit; at the 300px it used to be given, the
+        # unit combos collapsed to their drop-down arrows and the values
+        # clipped mid-number, while the graph beside it sat empty at 1200px.
+        # It now opens wide enough to read and keeps that width as the window
+        # grows (stretch 0), so the extra space goes to the plot instead.
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        splitter.addWidget(left_widget)
+        left_scroll = _scrollable(left_widget)
+        # QFormLayout gives every row the same label column - as wide as the
+        # longest label ("Parachute Drag Coefficient (Cd):"). The widest row is
+        # therefore that column plus a value field plus the roomiest unit combo
+        # ("kg/m3"), which is what this width is measured against; below it the
+        # air-density combo loses its arrow off the right edge.
+        left_scroll.setMinimumWidth(380)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(right_widget)
-        splitter.setSizes([300, 1200])  # Give much more space to visualization
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)  # 4:1 ratio for visualization
+        splitter.setSizes([490, 1010])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setCollapsible(0, False)
 
         main_panel_layout.addWidget(splitter)
         main_panel_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
@@ -1382,7 +1456,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             on_send_to_simulation=self.use_engine_lab_thrust_curve)
         self.engine_section = EngineSection(self.engine_lab,
                                             self.get_profiles_dir)
-        self.tabs.addTab(self.engine_section, "Engine")
+        self.tabs.addTab(_scrollable(self.engine_section), "Engine")
 
         # --- Aerodynamics: airframe shape, recovery, and the drag it makes ---
         self.vehicle_tab = VehicleTabWidget()
@@ -1396,7 +1470,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             on_table_changed=self._cd_table_changed)
         self.aero_section = AerodynamicsSection(
             self.vehicle_tab, self.aero_tab, self.get_profiles_dir)
-        self.tabs.addTab(self.aero_section, "Aerodynamics")
+        self.tabs.addTab(_scrollable(self.aero_section), "Aerodynamics")
 
         # The Simulation tab is where the two halves get combined. Put the
         # pairing at the very top of it, above the numbers it governs.
@@ -1513,7 +1587,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         
         settings_layout.addWidget(profiles_group)
         settings_layout.addStretch()
-        self.tabs.addTab(settings_widget, "Settings")
+        self.tabs.addTab(_scrollable(settings_widget), "Settings")
 
         # Launch Conditions Tab
         launch_tab = QtWidgets.QWidget()
@@ -1533,7 +1607,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.start_altitude_input.textChanged.connect(self.update_air_density)
         self.temperature_input.textChanged.connect(self.update_air_density)
         self.humidity_input.textChanged.connect(self.update_air_density)
-        self.tabs.addTab(launch_tab, "Launch Conditions")
+        self.tabs.addTab(_scrollable(launch_tab), "Launch Conditions")
 
         # Add Launch tab last (to the right)
         launch_anim_tab = QtWidgets.QWidget()
@@ -1893,7 +1967,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Initial animation update
         update_launch_animation()
 
-        self.tabs.addTab(launch_anim_tab, "Launch")
+        self.tabs.addTab(_scrollable(launch_anim_tab), "Launch")
 
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)

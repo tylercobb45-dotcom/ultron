@@ -52,6 +52,9 @@ def main():
         f"--add-data={src_dir / 'crash.jpg'}{sep}.",
         f"--add-data={project_root / 'thrust_curves'}{sep}thrust_curves",
         f"--add-data={src_dir / 'profiles'}{sep}profiles",
+        # Combo/spin drop-down arrows referenced by theme.py's stylesheet;
+        # without them every combo in the frozen build loses its arrow.
+        f"--add-data={src_dir / 'assets'}{sep}assets",
         # The hybrid engine package is imported through a runtime path insert,
         # which PyInstaller's static analysis cannot follow - ship it as data
         # and put it on the analysis path explicitly.

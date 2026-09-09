@@ -9,6 +9,8 @@ red accent that only appears on things that are interactive or important.
 """
 from __future__ import annotations
 
+import os as _os
+
 PALETTE = {
     # grounds, darkest to lightest
     "bg":          "#08080A",
@@ -47,6 +49,39 @@ SERIES = ["#E01E37", "#4FC3F7", "#3DD68C", "#F5A623",
 
 def stylesheet() -> str:
     p = PALETTE
+    # Absolute, forward-slashed so the url() works whatever the
+    # working directory is - and on Windows, where a raw backslash
+    # path is silently dropped by the stylesheet parser.
+    _assets = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                            "assets").replace("\\", "/")
+    ARROW = f"{_assets}/arrow_down.png"
+    ARROW_DIM = f"{_assets}/arrow_down_dim.png"
+    if not _os.path.exists(ARROW):
+        # A frozen build that forgot to bundle assets/ would otherwise get
+        # url() pointing at nothing, and Qt draws no arrow at all. Dropping
+        # the rules instead leaves the native arrow, which is plain but
+        # correct.
+        return _without_arrow_rules(_BASE_SHEET(p, ARROW, ARROW_DIM))
+    return _BASE_SHEET(p, ARROW, ARROW_DIM)
+
+
+def _without_arrow_rules(sheet: str) -> str:
+    keep, skipping = [], False
+    for line in sheet.splitlines(True):
+        if "::down-arrow" in line:
+            skipping = True
+            if line.rstrip().endswith("}"):     # single-line rule
+                skipping = False
+            continue
+        if skipping:
+            if line.strip().startswith("}"):
+                skipping = False
+            continue
+        keep.append(line)
+    return "".join(keep)
+
+
+def _BASE_SHEET(p, ARROW, ARROW_DIM) -> str:
     return f"""
 * {{
     outline: 0;
@@ -70,10 +105,12 @@ QTabBar::tab {{
     color: {p['text_dim']};
     border: 1px solid {p['border_soft']};
     border-bottom: none;
-    /* Generous horizontal padding and a minimum width: with letter-spacing
-       applied, Qt sizes the tab from the unspaced text and then clips the
-       first character off every label. */
-    padding: 8px 20px;
+    /* font-weight below is painted but NOT measured: Qt sizes each tab from
+       the tab bar's own font. Padding cannot cover the difference, because
+       Qt adds the padding to its own measurement too - the bold overrun
+       survives at any padding. apply_tab_fonts() puts the same weight on the
+       bar's font so the two agree; see there. */
+    padding: 8px 22px;
     min-width: 70px;
     margin-right: 2px;
     font-weight: 600;
@@ -127,10 +164,17 @@ QComboBox::drop-down {{
     background: {p['raised']};
 }}
 QComboBox::down-arrow {{
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {p['accent']};
+    /* Qt Style Sheets do not implement the CSS zero-size-plus-borders
+       triangle trick: it paints a solid accent block instead of an arrow,
+       which is what every unit combo in the app used to show. A real image
+       is the only way to get a triangle here. */
+    image: url("{ARROW}");
+    width: 9px;
+    height: 6px;
+}}
+QComboBox::down-arrow:disabled {{ image: url("{ARROW_DIM}"); }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url("{ARROW}"); width: 9px; height: 6px;
 }}
 QComboBox QAbstractItemView {{
     background: {p['raised']};
@@ -270,6 +314,40 @@ def style_figure(figure):
     figure.patch.set_facecolor(p["plot_bg"])
     for ax in figure.get_axes():
         style_axes(ax)
+
+
+def apply_tab_fonts(root):
+    """Match every tab bar's font to the weight the stylesheet paints.
+
+    QTabBar computes each tab's width from the bar's own QFont, but the
+    stylesheet paints the label at font-weight 600. DemiBold runs ~6% wider
+    than regular, so the last character of every multi-word tab was clipped
+    ("Flight Repor", "Launch Condition"). Padding does not help - Qt adds it
+    to its own measurement as well - so the fix is to give the bar the weight
+    it is painted at and let Qt measure what it draws.
+
+    Call after the stylesheet is applied, on any widget owning tab bars.
+    """
+    from PyQt5 import QtGui, QtWidgets as _QtW
+    for bar in root.findChildren(_QtW.QTabBar):
+        f = QtGui.QFont(bar.font())
+        f.setWeight(QtGui.QFont.DemiBold)
+        bar.setFont(f)
+
+
+def placeholder_figure(figure, message):
+    """Paint an empty figure as a dark panel carrying one dim line of text.
+
+    A matplotlib Figure with no axes renders as a bare white rectangle, which
+    on a black UI reads as a rendering fault rather than "nothing plotted
+    yet". Every plot host calls this at construction so the first thing the
+    user sees is an explanation instead of a white block.
+    """
+    p = PALETTE
+    figure.clear()
+    figure.patch.set_facecolor(p["plot_bg"])
+    figure.text(0.5, 0.5, message, ha="center", va="center",
+                color=p["text_faint"], fontsize=10)
 
 
 def style_axes(ax):

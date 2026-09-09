@@ -186,6 +186,8 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
         pv = QtWidgets.QVBoxLayout(plot_host)
         pv.setContentsMargins(0, 0, 0, 0)
         self.figure = plt.Figure()
+        theme.placeholder_figure(
+            self.figure, "Build the drag curve to plot Cd against Mach.")
         self.canvas = FigureCanvas(self.figure)
         pv.addWidget(self.canvas)
         pv.addWidget(NavigationToolbar(self.canvas, self))

@@ -96,12 +96,16 @@ class FlightReportWidget(QtWidgets.QWidget):
         splitter.addWidget(self._build_report_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([400, 1100])
+        splitter.setSizes([470, 1030])
         layout.addWidget(splitter)
 
     def _build_config_panel(self):
         panel = QtWidgets.QWidget()
-        panel.setMinimumWidth(380)
+        # Widest row here is "Combustion chamber:" against an "Aluminum
+        # 6061-T6" combo, and the panel's own vertical scrollbar eats into
+        # that. At 380 the combos lost their drop-down arrows under the
+        # scrollbar.
+        panel.setMinimumWidth(440)
         outer = QtWidgets.QVBoxLayout(panel)
         outer.setSpacing(6)
         intro = QtWidgets.QLabel(
@@ -215,8 +219,12 @@ class FlightReportWidget(QtWidgets.QWidget):
         splitter.addWidget(table_host)
 
         self.figure = plt.Figure(figsize=(9, 6))
+        theme.placeholder_figure(
+            self.figure, "Run a simulation to plot the flight and its checks.")
         self.canvas = FigureCanvas(self.figure)
-        self.canvas.setMinimumHeight(340)
+        # Keep the plot readable without making it the reason the whole
+        # window refuses to be short enough for a laptop screen.
+        self.canvas.setMinimumHeight(220)
         splitter.addWidget(self.canvas)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
