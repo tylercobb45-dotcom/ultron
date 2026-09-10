@@ -2053,8 +2053,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Default thrust curve with motor info
             self.current_motor_info = {
                 'name': 'Default Motor',
-                'propellant_mass': 50.0,  # grams
-                'total_mass': 150.0       # grams
+                'propellant_mass': 0.050,  # kg
+                'total_mass': 0.150        # kg
             }
             thrust_data = [
                 (0.124, 816.849), (0.375, 796.043), (0.626, 781.861), (0.877, 767.440),
@@ -2095,9 +2095,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if 'name' in info:
                 info_text += f"• Name: {info['name']}<br>"
             if 'propellant_mass' in info:
-                info_text += f"• Propellant Mass: {info['propellant_mass']:.1f}g<br>"
+                info_text += f"• Propellant Mass: {info['propellant_mass']:.3f} kg<br>"
             if 'total_mass' in info:
-                info_text += f"• Total Mass: {info['total_mass']:.1f}g<br>"
+                info_text += f"• Total Mass: {info['total_mass']:.3f} kg<br>"
             if 'burn_time' in info:
                 info_text += f"• Burn Time: {info['burn_time']:.1f}s<br>"
             if 'diameter' in info:
@@ -2107,13 +2107,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if 'isp' in info:
                 info_text += f"• Specific Impulse: {info['isp']:.0f}s<br>"
                 
-            # Update the result label to show motor info
+            # Update the result label to show motor info. This used to bail
+            # out whenever a motor block was already on the label, so loading
+            # a second motor left the FIRST motor's name and masses on screen
+            # while the simulation ran the new one. Strip the block we put
+            # there last time and prepend the fresh one instead.
             current_text = self.result_label.text()
-            if "Motor Information:" not in current_text:
-                if current_text.strip() == "Results will be displayed here.":
-                    self.result_label.setText(info_text)
-                else:
-                    self.result_label.setText(info_text + "<br>" + current_text)
+            previous = getattr(self, '_motor_info_html', None)
+            remainder = current_text
+            if previous and current_text.startswith(previous):
+                remainder = current_text[len(previous):]
+                if remainder.startswith("<br>"):
+                    remainder = remainder[4:]
+            if (not remainder.strip()
+                    or remainder.strip() == "Results will be displayed here."):
+                self.result_label.setText(info_text)
+            else:
+                self.result_label.setText(info_text + "<br>" + remainder)
+            self._motor_info_html = info_text
 
     def parse_csv_thrust(self, path):
         data = []
@@ -2264,8 +2275,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 motor_info['diameter'] = float(parts[1])  # mm
                 motor_info['length'] = float(parts[2])    # mm
                 # Skip delays (parts[3])
-                motor_info['propellant_mass'] = float(parts[4])  # grams
-                motor_info['total_mass'] = float(parts[5])       # grams
+                # RASP .eng specifies both mass fields in KILOGRAMS. They
+                # were read as grams, so every real motor file downloaded
+                # from ThrustCurve.org reported its masses 1000x too small
+                # ("Propellant Mass: 1.6g" for a 1.6 kg reload).
+                motor_info['propellant_mass'] = float(parts[4])  # kg
+                motor_info['total_mass'] = float(parts[5])       # kg
                 if len(parts) >= 7:
                     motor_info['isp'] = float(parts[6])          # seconds
         except (ValueError, IndexError):

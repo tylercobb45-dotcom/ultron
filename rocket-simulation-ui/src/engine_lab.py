@@ -25,6 +25,7 @@ import traceback
 
 from PyQt5 import QtWidgets, QtCore
 import theme
+import rasp
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -215,6 +216,67 @@ _PRESETS.update(_hypertek_presets())
 _INPUT_STYLE = ""
 
 
+class _EngExportDialog(QtWidgets.QDialog):
+    """Asks for the .eng header facts the burn simulation cannot supply.
+
+    Motor envelope and hardware mass are properties of the built motor, not of
+    its internal ballistics, so they are collected here rather than guessed.
+    Diameter and length are pre-filled from the geometry on the form; hardware
+    mass starts empty because there is no honest default for it.
+    """
+
+    def __init__(self, parent, designation, diameter_mm, length_mm):
+        super().__init__(parent)
+        self.setWindowTitle("Export motor as .eng")
+        form = QtWidgets.QFormLayout(self)
+
+        self.designation = QtWidgets.QLineEdit(designation)
+        self.diameter = QtWidgets.QLineEdit(f"{diameter_mm:.1f}")
+        self.length = QtWidgets.QLineEdit(f"{length_mm:.1f}")
+        self.hardware = QtWidgets.QLineEdit("0.0")
+        self.manufacturer = QtWidgets.QLineEdit("JARVIS")
+        self.append = QtWidgets.QComboBox()
+        self.append.addItems(["Overwrite file", "Append to file"])
+
+        form.addRow("Designation:", self.designation)
+        form.addRow("Motor diameter (mm):", self.diameter)
+        form.addRow("Motor length (mm):", self.length)
+        form.addRow("Hardware mass (kg):", self.hardware)
+        form.addRow("Manufacturer:", self.manufacturer)
+        form.addRow("Existing file:", self.append)
+
+        note = QtWidgets.QLabel(
+            "Hardware mass is everything that flies but does not burn - case, "
+            "tank, injector, nozzle, closures. It is added to the propellant "
+            "mass to give the loaded motor mass in the .eng header.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{theme.PALETTE['text_dim']}; font-size:9pt;")
+        form.addRow(note)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    @staticmethod
+    def _num(widget, default=0.0):
+        try:
+            return float(widget.text())
+        except ValueError:
+            return default
+
+    def values(self):
+        return {
+            "designation": self.designation.text().strip() or "UNNAMED",
+            "diameter_mm": self._num(self.diameter),
+            "length_mm": self._num(self.length),
+            "hardware_kg": self._num(self.hardware),
+            "manufacturer": self.manufacturer.text().strip() or "JARVIS",
+            "append": self.append.currentIndex() == 1,
+        }
+
+
 class EngineLabWidget(QtWidgets.QWidget):
     """Design a hybrid engine, run its internal-ballistics model, and (optionally)
     hand the resulting thrust curve off to the main Simulation tab."""
@@ -338,6 +400,14 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.send_button.clicked.connect(self._send_to_simulation)
         self.send_button.setEnabled(False)
         left_layout.addWidget(self.send_button)
+
+        # A motor is only useful to the rest of the team if it can leave the
+        # app. .eng is what OpenRocket, RASAero and ThrustCurve.org read, so
+        # this is the format a flight-readiness package wants.
+        self.export_eng_button = QtWidgets.QPushButton("Export Motor as .eng File")
+        self.export_eng_button.clicked.connect(self._export_eng)
+        self.export_eng_button.setEnabled(False)
+        left_layout.addWidget(self.export_eng_button)
 
         self.results_label = QtWidgets.QLabel("Run the engine to see performance metrics.")
         self.results_label.setWordWrap(True)
@@ -554,6 +624,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._last_metrics = m
         self._last_engine = engine
         self.send_button.setEnabled(True)
+        self.export_eng_button.setEnabled(True)
         self._plot(result)
 
         preview = ""
@@ -578,7 +649,10 @@ class EngineLabWidget(QtWidgets.QWidget):
             f"Peak Pc: {m['peak_Pc']/1e6:.2f} MPa ({m['peak_Pc']*0.000145038:.0f} psi)<br>"
             f"Isp: {m['isp']:.1f} s<br>"
             f"Avg O/F: {m['avg_OF']:.2f}<br>"
-            f"Propellant mass: {m['prop_mass']:.3f} kg"
+            f"Propellant mass: {m['prop_mass']:.3f} kg<br>"
+            f"Designation: <b>{rasp.designation(m['total_impulse'], m['avg_thrust'])}</b> "
+            f"({rasp.class_fraction(m['total_impulse'])*100:.0f}% up the "
+            f"{rasp.impulse_class(m['total_impulse']) or 'sub-A'} class)"
             + preview
         )
 
@@ -624,6 +698,68 @@ class EngineLabWidget(QtWidgets.QWidget):
         dry_mass = float(self._fields["m_dry"].text() or 20.0)
         if self._on_send_to_simulation:
             self._on_send_to_simulation(path, self._last_metrics["prop_mass"], dry_mass)
+
+    def _export_eng(self):
+        """Write the current motor out as a RASP .eng file.
+
+        The .eng header carries facts the burn simulation does not know - the
+        motor's overall envelope and the mass of the hardware that flies with
+        the propellant - so it asks, pre-filling what it can derive from the
+        geometry fields.
+        """
+        if self._last_result is None or self._last_metrics is None:
+            return
+        m = self._last_metrics
+        name = rasp.designation(m["total_impulse"], m["avg_thrust"])
+
+        # Fields on this form are millimetres. A hybrid's envelope is the tank
+        # plus the combustion chamber stack, and its diameter the wider of the
+        # two tubes.
+        dia_mm = max(self._float_field("d_tank"),
+                     self._float_field("d_grain_outer"))
+        len_mm = sum(self._float_field(k) for k in
+                     ("L_tank", "L_pre", "L_grain", "L_post"))
+
+        dialog = _EngExportDialog(self, name, dia_mm, len_mm)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        cfg = dialog.values()
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export motor as .eng", f"{cfg['designation']}.eng",
+            "RASP Motor Files (*.eng);;All Files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".eng"):
+            path += ".eng"
+
+        try:
+            rasp.write_eng(
+                path, self._last_result["t"], self._last_result["thrust"],
+                designation_str=cfg["designation"],
+                diameter_m=cfg["diameter_mm"] / 1000.0,
+                length_m=cfg["length_mm"] / 1000.0,
+                propellant_mass_kg=m["prop_mass"],
+                total_mass_kg=m["prop_mass"] + cfg["hardware_kg"],
+                manufacturer=cfg["manufacturer"],
+                append=cfg["append"])
+        except (ValueError, OSError) as exc:
+            self.error_label.setText(f"Could not export .eng: {exc}")
+            return
+        self.error_label.setText("")
+        self.results_label.setText(
+            self.results_label.text()
+            + f"<br><br><b>Exported</b> {cfg['designation']} to {path}")
+
+    def _float_field(self, key, default=0.0):
+        """Read one of the form fields as a float, tolerating blanks."""
+        widget = self._fields.get(key)
+        if widget is None:
+            return default
+        try:
+            return float(widget.text())
+        except (ValueError, AttributeError, TypeError):
+            return default
 
     @staticmethod
     def _export_csv(path, res, m):
