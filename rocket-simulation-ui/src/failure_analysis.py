@@ -704,31 +704,29 @@ def _r04_landing_check(rep, t, alt, vel, summary, deployed: bool):
     # recovery gets its real impact speed rather than the zeroed final row.
     v_land = _touchdown_speed(alt, vel)
     if deployed:
-        rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate",
-            _band_status(v_land, None, None, 6.0, 9.0),
-            f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
+        detail = (
             f"Touchdown at {v_land:,.1f} m/s ({v_land*FT_PER_M:,.1f} ft/s). "
             f"Above about 7.6 m/s (25 ft/s) fibreglass fins and airframes "
-            f"start taking damage.",
-            "Increase main canopy area for a softer landing." if v_land > 6
-            else "Landing speed is in the usual safe band.",
-            t_event=t[-1]))
+            f"start taking damage.")
+        rec = ("Increase main canopy area for a softer landing." if v_land > 6
+               else "Landing speed is in the usual safe band.")
     else:
-        # Grade it against the same 6/9 m/s bands as the deployed path. A
-        # hardcoded CAUTION here said "caution" for a 150 m/s lawn dart, and
-        # that status feeds Report.verdict and the banner - a ballistic
-        # impact has to read CRITICAL. It can legitimately come out OK: a
-        # 1 m hop off the pad lands at well under 6 m/s with no canopy.
-        rep.checks.append(Check(
-            "R-04", "Recovery", "Landing descent rate",
-            _band_status(v_land, None, None, 6.0, 9.0),
-            f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
+        detail = (
             f"No recovery deployment was modelled, so the vehicle arrived "
-            f"ballistic at {v_land:,.1f} m/s "
-            f"({v_land*FT_PER_M:,.1f} ft/s).",
-            "Configure parachute deploy height and size on the Simulation "
-            "tab.", t_event=t[-1]))
+            f"ballistic at {v_land:,.1f} m/s ({v_land*FT_PER_M:,.1f} ft/s).")
+        # A metre-high hop lands slowly with nothing out, and telling that
+        # flight to fit a bigger parachute is noise - it needs a motor.
+        rec = ("Configure parachute deploy height and size on the Simulation "
+               "tab." if v_land > 6 else
+               "It never got high enough for recovery to matter; fix the "
+               "thrust-to-weight first.")
+    # One Check for both paths. Status, bands and formatting live here once,
+    # so the two cannot drift apart again the way the original copies did.
+    rep.checks.append(Check(
+        "R-04", "Recovery", "Landing descent rate",
+        _band_status(v_land, None, None, 6.0, 9.0),
+        f"{v_land:,.1f} m/s", "6 m/s caution / 9 m/s critical",
+        detail, rec, t_event=t[-1]))
 
 
 def _flight_landed(summary, alt) -> bool:

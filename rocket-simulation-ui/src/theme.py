@@ -54,34 +54,42 @@ def stylesheet() -> str:
     # path is silently dropped by the stylesheet parser.
     _assets = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                             "assets").replace("\\", "/")
-    ARROW = f"{_assets}/arrow_down.png"
-    ARROW_DIM = f"{_assets}/arrow_down_dim.png"
-    if not _os.path.exists(ARROW):
-        # A frozen build that forgot to bundle assets/ would otherwise get
-        # url() pointing at nothing, and Qt draws no arrow at all. Dropping
-        # the rules instead leaves the native arrow, which is plain but
-        # correct.
-        return _without_arrow_rules(_BASE_SHEET(p, ARROW, ARROW_DIM))
-    return _BASE_SHEET(p, ARROW, ARROW_DIM)
+    arrow = f"{_assets}/arrow_down.png"
+    arrow_dim = f"{_assets}/arrow_down_dim.png"
+    # Build the arrow rules as a block to interpolate, rather than generating
+    # the whole sheet and stripping rules back out of it. That stripper was a
+    # hand-rolled brace scanner, and any ::down-arrow rule closing its brace
+    # on a property line made it swallow every rule that followed - so a
+    # frozen build missing assets/ could render completely unstyled rather
+    # than merely arrow-less. Both images are checked, since the disabled
+    # state uses the second.
+    if _os.path.exists(arrow) and _os.path.exists(arrow_dim):
+        arrow_rules = _ARROW_RULES.format(arrow=arrow, arrow_dim=arrow_dim)
+    else:
+        arrow_rules = ""      # Qt's native arrow: plain, but correct
+    return _BASE_SHEET(p, arrow_rules)
 
 
-def _without_arrow_rules(sheet: str) -> str:
-    keep, skipping = [], False
-    for line in sheet.splitlines(True):
-        if "::down-arrow" in line:
-            skipping = True
-            if line.rstrip().endswith("}"):     # single-line rule
-                skipping = False
-            continue
-        if skipping:
-            if line.strip().startswith("}"):
-                skipping = False
-            continue
-        keep.append(line)
-    return "".join(keep)
+# Kept out of the main sheet so it can be omitted wholesale. Plain str.format
+# rather than an f-string, so the CSS braces need no escaping dance.
+_ARROW_RULES = """
+QComboBox::down-arrow {{
+    /* Qt Style Sheets do not implement the CSS zero-size-plus-borders
+       triangle trick: it paints a solid accent block instead of an arrow,
+       which is what every unit combo in the app used to show. A real image
+       is the only way to get a triangle here. */
+    image: url("{arrow}");
+    width: 9px;
+    height: 6px;
+}}
+QComboBox::down-arrow:disabled {{ image: url("{arrow_dim}"); }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url("{arrow}"); width: 9px; height: 6px;
+}}
+"""
 
 
-def _BASE_SHEET(p, ARROW, ARROW_DIM) -> str:
+def _BASE_SHEET(p, ARROW_RULES) -> str:
     return f"""
 * {{
     outline: 0;
@@ -163,19 +171,7 @@ QComboBox::drop-down {{
     width: 22px;
     background: {p['raised']};
 }}
-QComboBox::down-arrow {{
-    /* Qt Style Sheets do not implement the CSS zero-size-plus-borders
-       triangle trick: it paints a solid accent block instead of an arrow,
-       which is what every unit combo in the app used to show. A real image
-       is the only way to get a triangle here. */
-    image: url("{ARROW}");
-    width: 9px;
-    height: 6px;
-}}
-QComboBox::down-arrow:disabled {{ image: url("{ARROW_DIM}"); }}
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-    image: url("{ARROW}"); width: 9px; height: 6px;
-}}
+{ARROW_RULES}
 QComboBox QAbstractItemView {{
     background: {p['raised']};
     color: {p['text']};

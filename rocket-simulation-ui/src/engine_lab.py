@@ -221,8 +221,9 @@ class _EngExportDialog(QtWidgets.QDialog):
 
     Motor envelope and hardware mass are properties of the built motor, not of
     its internal ballistics, so they are collected here rather than guessed.
-    Diameter and length are pre-filled from the geometry on the form; hardware
-    mass starts empty because there is no honest default for it.
+    Diameter and length are pre-filled from the tank and grain geometry, but
+    those are INTERNAL dimensions - the case wall sits outside them - so the
+    prefill is a starting point the user is told to correct, not an answer.
     """
 
     def __init__(self, parent, designation, diameter_mm, length_mm):
@@ -233,38 +234,68 @@ class _EngExportDialog(QtWidgets.QDialog):
         self.designation = QtWidgets.QLineEdit(designation)
         self.diameter = QtWidgets.QLineEdit(f"{diameter_mm:.1f}")
         self.length = QtWidgets.QLineEdit(f"{length_mm:.1f}")
-        self.hardware = QtWidgets.QLineEdit("0.0")
+        self.hardware = QtWidgets.QLineEdit()
+        # No default: a hardware mass of zero declares a motor whose loaded
+        # mass equals its propellant mass, which reads downstream as a motor
+        # with no case, tank, injector or nozzle - and flies kilograms light.
+        self.hardware.setPlaceholderText("required - case + tank + nozzle")
         self.manufacturer = QtWidgets.QLineEdit("JARVIS")
-        self.append = QtWidgets.QComboBox()
-        self.append.addItems(["Overwrite file", "Append to file"])
 
         form.addRow("Designation:", self.designation)
         form.addRow("Motor diameter (mm):", self.diameter)
         form.addRow("Motor length (mm):", self.length)
         form.addRow("Hardware mass (kg):", self.hardware)
         form.addRow("Manufacturer:", self.manufacturer)
-        form.addRow("Existing file:", self.append)
 
         note = QtWidgets.QLabel(
-            "Hardware mass is everything that flies but does not burn - case, "
-            "tank, injector, nozzle, closures. It is added to the propellant "
-            "mass to give the loaded motor mass in the .eng header.")
+            "Diameter and length are pre-filled from the oxidiser tank and "
+            "fuel grain, which are internal dimensions - measure the case "
+            "outside diameter and overall assembled length and correct them. "
+            "Hardware mass is everything that flies but does not burn; it is "
+            "added to the propellant to give the loaded motor mass.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{theme.PALETTE['text_dim']}; font-size:9pt;")
         form.addRow(note)
 
-        buttons = QtWidgets.QDialogButtonBox(
+        self.problem = QtWidgets.QLabel("")
+        self.problem.setWordWrap(True)
+        self.problem.setStyleSheet(
+            f"color:{theme.PALETTE['critical']}; font-weight:bold;")
+        form.addRow(self.problem)
+
+        self.buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.buttons.accepted.connect(self._try_accept)
+        self.buttons.rejected.connect(self.reject)
+        form.addRow(self.buttons)
 
     @staticmethod
-    def _num(widget, default=0.0):
+    def _num(widget):
+        """Parse a field, or None when it is blank or not a number.
+
+        Returning None rather than 0.0 is what lets _try_accept tell "the user
+        typed nothing" apart from "the user meant zero" - a silent 0.0 wrote
+        an .eng with a zero-diameter, zero-hardware motor.
+        """
         try:
-            return float(widget.text())
+            return float(widget.text().strip())
         except ValueError:
-            return default
+            return None
+
+    def _try_accept(self):
+        for label, widget in (("Motor diameter", self.diameter),
+                              ("Motor length", self.length),
+                              ("Hardware mass", self.hardware)):
+            value = self._num(widget)
+            if value is None:
+                self.problem.setText(f"{label} must be a number.")
+                widget.setFocus()
+                return
+            if value <= 0:
+                self.problem.setText(f"{label} must be greater than zero.")
+                widget.setFocus()
+                return
+        self.accept()
 
     def values(self):
         return {
@@ -273,7 +304,6 @@ class _EngExportDialog(QtWidgets.QDialog):
             "length_mm": self._num(self.length),
             "hardware_kg": self._num(self.hardware),
             "manufacturer": self.manufacturer.text().strip() or "JARVIS",
-            "append": self.append.currentIndex() == 1,
         }
 
 
@@ -429,6 +459,8 @@ class EngineLabWidget(QtWidgets.QWidget):
         right.setMinimumWidth(420)
         right_layout = QtWidgets.QVBoxLayout(right)
         self.figure = plt.Figure(figsize=(8, 6))
+        theme.placeholder_figure(
+            self.figure, "Run the engine to plot thrust, pressure and O/F.")
         # Theme it immediately: an unthemed canvas is a white slab in a black
         # window until the first run, which reads as a broken panel.
         theme.style_figure(self.figure)
@@ -615,6 +647,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         except Exception as exc:
             self._last_result = None
             self._last_metrics = None
+            self.export_eng_button.setEnabled(False)
             self.send_button.setEnabled(False)
             self.error_label.setText(f"Engine simulation failed: {exc}")
             traceback.print_exc()
@@ -741,8 +774,7 @@ class EngineLabWidget(QtWidgets.QWidget):
                 length_m=cfg["length_mm"] / 1000.0,
                 propellant_mass_kg=m["prop_mass"],
                 total_mass_kg=m["prop_mass"] + cfg["hardware_kg"],
-                manufacturer=cfg["manufacturer"],
-                append=cfg["append"])
+                manufacturer=cfg["manufacturer"])
         except (ValueError, OSError) as exc:
             self.error_label.setText(f"Could not export .eng: {exc}")
             return

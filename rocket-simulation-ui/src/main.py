@@ -6,6 +6,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from simulation import run_simulation
 import os
+import re
 import json
 import copy
 import numpy as np
@@ -69,6 +70,42 @@ class CrashImageDialog(QtWidgets.QDialog):
         self.setLayout(layout)
 
 
+class _WheelGuard(QtCore.QObject):
+    """Event filter: ignore wheel events on controls that do not have focus.
+
+    Passing the event on lets the enclosing scroll area handle it, so the page
+    scrolls instead of the value changing.
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+
+def _parse_mass_kg(text):
+    """Parse a CSV metadata mass into kilograms, or None.
+
+    These rows carry units inconsistently - JARVIS's own Engine Lab export
+    writes "6.0493 kg", other tools write a bare number or grams. A bare
+    number is read as kilograms, matching the .eng format the rest of the
+    app now reports in.
+    """
+    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", str(text))
+    if not match:
+        return None
+    value = float(match.group())
+    unit = str(text)[match.end():].strip().lower()
+    if unit.startswith("kg"):
+        return value
+    if unit.startswith("g"):
+        return value / 1000.0
+    if unit.startswith("lb"):
+        return value * 0.45359237
+    return value          # bare number: kilograms
+
+
 def _lock_unit_combo(combo):
     """Stop a unit combo from being squeezed out of existence.
 
@@ -127,6 +164,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         
         # Set window and taskbar icon (use .ico for best Windows compatibility)
         self.setWindowIcon(QtGui.QIcon(os.path.join(os.path.dirname(__file__), 'JARVIS.ico')))
+        self._unit_combos = []       # re-measured once the theme is applied
         self.init_ui()
         self.load_inputs()  # Load inputs on startup
         self.apply_theme(self.current_theme)  # Apply initial theme
@@ -134,7 +172,33 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # weight; line the two up so multi-word tab labels stop losing their
         # last character. Runs after the whole tree exists.
         app_theme.apply_tab_fonts(self)
+        # Unit combos were measured during init_ui(), before apply_theme()
+        # installed the stylesheet that sets font-size: 10pt. On a platform
+        # whose default font is smaller (Windows ships 9pt) they were sized
+        # from the wrong metrics and clipped anyway - the exact defect
+        # _lock_unit_combo exists to prevent. Re-measure now that the font
+        # they are painted with is the font they are measured with.
+        for combo in self._unit_combos:
+            _lock_unit_combo(combo)
+        self._install_wheel_guard()
         self.showMaximized()
+
+    def _install_wheel_guard(self):
+        """Stop the mouse wheel from silently editing combos and spin boxes.
+
+        Five tab pages are now inside scroll areas. Rolling the wheel to reach
+        a field lower down sends the event to whatever widget is under the
+        cursor, so passing over a unit combo stepped it - "m" to "ft", "kg" to
+        "lb" - which fires currentIndexChanged and reinterprets the number
+        beside it, all without the page scrolling. Wheel now only edits a
+        control the user has actually focused.
+        """
+        self._wheel_guard = _WheelGuard(self)
+        for widget in self.findChildren((QtWidgets.QComboBox,
+                                         QtWidgets.QSpinBox,
+                                         QtWidgets.QDoubleSpinBox)):
+            widget.setFocusPolicy(QtCore.Qt.StrongFocus)
+            widget.installEventFilter(self._wheel_guard)
 
     # ---- THEME-AWARE STYLING HELPERS ----
     def get_plot_style(self):
@@ -1272,6 +1336,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
                        self.chute_height_unit, self.chute_size_unit]:
             combo.setStyleSheet(combo_style)
             _lock_unit_combo(combo)
+            self._unit_combos.append(combo)
             
         for widget in [self.mass_input, self.prop_mass_input, self.cd_input, self.area_input, self.rho_input,
                        self.timestep_input,
@@ -1715,6 +1780,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.setup_trajectory_header()
         traj_layout.addWidget(traj_header)
         self.launch_fig = plt.Figure(figsize=(6, 5))
+        app_theme.placeholder_figure(
+            self.launch_fig, "Run a simulation to animate the launch.")
         self.setup_plot_background()
         self.launch_canvas = FigureCanvas(self.launch_fig)
         self.launch_canvas.setMinimumSize(300, 250)
@@ -2087,44 +2154,51 @@ class RocketSimulationUI(QtWidgets.QWidget):
         return times_thrust, thrusts, thrust_func, burn_time
 
     def display_motor_info(self):
-        """Display extracted motor information in the results label"""
-        if hasattr(self, 'current_motor_info') and self.current_motor_info:
-            info = self.current_motor_info
-            info_text = "<b>Motor Information:</b><br>"
-            
-            if 'name' in info:
-                info_text += f"• Name: {info['name']}<br>"
-            if 'propellant_mass' in info:
-                info_text += f"• Propellant Mass: {info['propellant_mass']:.3f} kg<br>"
-            if 'total_mass' in info:
-                info_text += f"• Total Mass: {info['total_mass']:.3f} kg<br>"
-            if 'burn_time' in info:
-                info_text += f"• Burn Time: {info['burn_time']:.1f}s<br>"
-            if 'diameter' in info:
-                info_text += f"• Diameter: {info['diameter']:.0f}mm<br>"
-            if 'length' in info:
-                info_text += f"• Length: {info['length']:.0f}mm<br>"
-            if 'isp' in info:
-                info_text += f"• Specific Impulse: {info['isp']:.0f}s<br>"
-                
-            # Update the result label to show motor info. This used to bail
-            # out whenever a motor block was already on the label, so loading
-            # a second motor left the FIRST motor's name and masses on screen
-            # while the simulation ran the new one. Strip the block we put
-            # there last time and prepend the fresh one instead.
-            current_text = self.result_label.text()
-            previous = getattr(self, '_motor_info_html', None)
-            remainder = current_text
-            if previous and current_text.startswith(previous):
-                remainder = current_text[len(previous):]
-                if remainder.startswith("<br>"):
-                    remainder = remainder[4:]
-            if (not remainder.strip()
-                    or remainder.strip() == "Results will be displayed here."):
-                self.result_label.setText(info_text)
-            else:
-                self.result_label.setText(info_text + "<br>" + remainder)
-            self._motor_info_html = info_text
+        """Show the loaded motor's specs above the simulation results."""
+        info = getattr(self, 'current_motor_info', None)
+        if not info:
+            # A curve with no metadata (a bare two-column CSV) used to leave
+            # this function early, so the PREVIOUS motor's name and masses
+            # stayed on screen while the simulation ran the new file. Clear
+            # the stale block instead of returning.
+            self._set_motor_info_html("")
+            return
+
+        rows = [("Name", 'name', "{}"),
+                ("Propellant Mass", 'propellant_mass', "{:.3f} kg"),
+                ("Total Mass", 'total_mass', "{:.3f} kg"),
+                ("Burn Time", 'burn_time', "{:.1f}s"),
+                ("Diameter", 'diameter', "{:.0f}mm"),
+                ("Length", 'length', "{:.0f}mm"),
+                ("Manufacturer", 'manufacturer', "{}")]
+        info_text = "<b>Motor Information:</b><br>" + "".join(
+            f"• {label}: {fmt.format(info[key])}<br>"
+            for label, key, fmt in rows if key in info)
+        self._set_motor_info_html(info_text)
+
+    def _set_motor_info_html(self, info_text):
+        """Replace the motor block on the results label, keeping the results.
+
+        This used to bail out whenever a motor block was already present, so
+        loading a second motor left the FIRST motor's name and masses on
+        screen while the simulation ran the new one. Strip whatever block was
+        put here last time and prepend the fresh one.
+        """
+        current_text = self.result_label.text()
+        previous = getattr(self, '_motor_info_html', None)
+        remainder = current_text
+        if previous and current_text.startswith(previous):
+            remainder = current_text[len(previous):]
+            if remainder.startswith("<br>"):
+                remainder = remainder[4:]
+        placeholder = "Results will be displayed here."
+        if not remainder.strip() or remainder.strip() == placeholder:
+            self.result_label.setText(info_text or placeholder)
+        elif info_text:
+            self.result_label.setText(info_text + "<br>" + remainder)
+        else:
+            self.result_label.setText(remainder)
+        self._motor_info_html = info_text
 
     def parse_csv_thrust(self, path):
         data = []
@@ -2151,7 +2225,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                             try:
                                 total_mass_str = mass_row[0].strip().replace('"', '').replace('g', '').replace('grams', '').strip()
                                 if total_mass_str and total_mass_str.replace('.', '').replace('-', '').isdigit():
-                                    motor_info['total_mass'] = float(total_mass_str)
+                                    # The suffix stripped just above is 'g',
+                                    # so this row is grams. The panel now
+                                    # renders kilograms (the .eng format's
+                                    # unit), so convert rather than leaving
+                                    # the two file types on different units.
+                                    motor_info['total_mass'] = float(total_mass_str) / 1000.0
                             except (ValueError, IndexError):
                                 pass
                             
@@ -2159,7 +2238,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
                             try:
                                 prop_mass_str = mass_row[1].strip().replace('"', '').replace('g', '').replace('grams', '').strip()
                                 if prop_mass_str and prop_mass_str.replace('.', '').replace('-', '').isdigit():
-                                    motor_info['propellant_mass'] = float(prop_mass_str)
+                                    motor_info['propellant_mass'] = float(prop_mass_str) / 1000.0
                             except (ValueError, IndexError):
                                 pass
                     break
@@ -2177,17 +2256,23 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 # Look for propellant mass in various formats
                 if 'propellant' in key and 'mass' in key:
                     try:
-                        motor_info['propellant_mass'] = float(value)
+                        parsed = _parse_mass_kg(value)
+                        if parsed is not None:
+                            motor_info['propellant_mass'] = parsed
                     except ValueError:
                         pass
                 elif 'prop' in key and ('mass' in key or 'weight' in key):
                     try:
-                        motor_info['propellant_mass'] = float(value)
+                        parsed = _parse_mass_kg(value)
+                        if parsed is not None:
+                            motor_info['propellant_mass'] = parsed
                     except ValueError:
                         pass
                 elif key in ['propellant_mass', 'prop_mass', 'fuel_mass']:
                     try:
-                        motor_info['propellant_mass'] = float(value)
+                        parsed = _parse_mass_kg(value)
+                        if parsed is not None:
+                            motor_info['propellant_mass'] = parsed
                     except ValueError:
                         pass
                 # Store other motor info
@@ -2195,7 +2280,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     motor_info['name'] = value
                 elif key in ['total_mass', 'loaded_mass']:
                     try:
-                        motor_info['total_mass'] = float(value)
+                        parsed = _parse_mass_kg(value)
+                        if parsed is not None:
+                            motor_info['total_mass'] = parsed
                     except ValueError:
                         pass
                 elif key in ['burn_time', 'burntime']:
@@ -2250,7 +2337,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     def parse_rasp_eng_thrust(self, path):
         """Parse a RASP/ENG motor file. Extract motor specs from header and time/thrust pairs.
-        RASP format: name dia len delays prop_mass total_mass Isp mass_frac Cd_frac vol_loading
+        RASP format: name dia(mm) len(mm) delays prop_mass(kg) total_mass(kg) manufacturer
         Lines starting with ';' or '#' are comments."""
         data = []
         motor_info = {}
@@ -2282,7 +2369,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 motor_info['propellant_mass'] = float(parts[4])  # kg
                 motor_info['total_mass'] = float(parts[5])       # kg
                 if len(parts) >= 7:
-                    motor_info['isp'] = float(parts[6])          # seconds
+                    # Field 7 is the MANUFACTURER, not Isp. Reading it as a
+                    # float raised on every real file ("AeroTech"), was
+                    # swallowed by the except below, and on the odd file that
+                    # does put a number there printed it as a specific
+                    # impulse. rasp.write_eng documents the same layout.
+                    motor_info['manufacturer'] = parts[6]
         except (ValueError, IndexError):
             # If header parsing fails, continue with just thrust data
             pass

@@ -51,7 +51,8 @@ def impulse_class(total_impulse_ns: float) -> str:
     return letters
 
 
-def designation(total_impulse_ns: float, average_thrust_n: float) -> str:
+def designation(total_impulse_ns: float, average_thrust_n: float,
+                sub_class_a_name: str = "SUB-A") -> str:
     """Standard amateur designation: class letter + average thrust.
 
     A 1,580 N*s motor averaging 240 N is 'K240' - the same shape as the
@@ -60,7 +61,10 @@ def designation(total_impulse_ns: float, average_thrust_n: float) -> str:
     """
     letters = impulse_class(total_impulse_ns)
     if not letters:
-        return "N/A"
+        # Sub-class-A. Returning "N/A" put a path separator into a value the
+        # caller uses as a default filename, so the save dialog opened on a
+        # directory called "N" with the file named "A.eng".
+        return sub_class_a_name
     return f"{letters}{average_thrust_n:.0f}"
 
 
@@ -81,69 +85,92 @@ def class_fraction(total_impulse_ns: float) -> float:
 def _curve_points(times, thrusts):
     """Clean a simulated curve into points a RASP reader will accept.
 
-    Readers are stricter than the simulator: time must increase strictly,
-    the curve may not open with a zero-thrust sample at t=0, and it must
-    close on exactly one zero.
+    Readers are stricter than the simulator: time must increase strictly, the
+    curve may not open with a zero-thrust sample at t=0, and it must close on
+    exactly one zero.
     """
     pts = [(float(t), max(0.0, float(f))) for t, f in zip(times, thrusts)]
     pts.sort(key=lambda p: p[0])
+    if not pts:
+        return []
+
+    # Collapse duplicate timestamps FIRST, keeping the last sample at each
+    # instant. Doing this after inserting the ignition anchor let the anchor
+    # win the tie and delete a real sample: a curve whose ignition spike
+    # shared t=0 with a preceding zero exported with the spike missing.
+    collapsed = []
+    for t, f in pts:
+        if collapsed and t == collapsed[-1][0]:
+            collapsed[-1] = (t, f)
+        else:
+            collapsed.append((t, f))
+    pts = collapsed
 
     # Trim the leading dead time, but anchor the ignition instead of deleting
     # it. Readers dislike a literal "0.0 0.0" opening sample, yet a curve that
     # simply *starts* at full thrust is worse: JARVIS's own impulse routine
     # (and RASAero's) holds the first thrust value back to t=0, inventing a
     # rectangle of impulse that never burned - 4.4% on a curve with 0.4s of
-    # ignition delay. One near-zero sample at the moment thrust begins keeps
-    # the delay honest and costs ~0.003 N*s.
+    # ignition delay. One near-zero sample just before thrust begins keeps the
+    # delay honest and costs ~0.003 N*s.
     first_live = next((i for i, (_, f) in enumerate(pts) if f > 0.0), None)
     if first_live is None:
         return []
     if first_live > 0:
-        anchor_t = pts[first_live - 1][0]
-        pts = [(anchor_t, _IGNITION_ANCHOR_N)] + pts[first_live:]
+        pts = [(pts[first_live - 1][0], _IGNITION_ANCHOR_N)] + pts[first_live:]
     elif pts[0][0] > 0.0:
         # Curve opens mid-thrust with no dead-time sample of its own.
         pts = [(0.0, _IGNITION_ANCHOR_N)] + pts
-
-    # Strictly increasing time; keep the first sample at any timestamp.
-    cleaned = []
-    for t, f in pts:
-        if cleaned and t <= cleaned[-1][0]:
-            continue
-        cleaned.append((t, f))
 
     # Trim the trailing zeros back to a single closing zero. Close it at the
     # time the curve itself went to zero, not an invented instant later: the
     # decay from the last thrusting sample down to zero is real impulse, and
     # collapsing it into 0.01s threw away 0.5% of the total.
-    last_live = max(i for i, (_, f) in enumerate(cleaned) if f > 0.0)
-    tail_t = (cleaned[last_live + 1][0] if last_live + 1 < len(cleaned)
-              else cleaned[last_live][0] + 0.01)
-    return cleaned[:last_live + 1] + [(tail_t, 0.0)]
+    last_live = max(i for i, (_, f) in enumerate(pts) if f > 0.0)
+    tail_t = (pts[last_live + 1][0] if last_live + 1 < len(pts)
+              else pts[last_live][0] + 0.01)
+    return pts[:last_live + 1] + [(tail_t, 0.0)]
 
 
 def write_eng(path, times, thrusts, *, designation_str, diameter_m,
               length_m, propellant_mass_kg, total_mass_kg,
-              manufacturer="JARVIS", append=False):
+              manufacturer="JARVIS"):
     """Write one motor block in RASP .eng format.
 
-    Multiple motors may share a file, which is why append is offered: that is
-    how a team keeps one .eng of every motor they have flown.
+    One motor per file. Multi-motor .eng files are legal in the format, but
+    neither of this app's own readers handles them correctly - one
+    concatenates every block into a single nonsense curve and takes the LAST
+    header's propellant mass, the other silently flies only the first motor -
+    so writing them would produce files JARVIS itself misreads.
     """
-    if propellant_mass_kg > total_mass_kg:
+    if not math.isfinite(diameter_m) or diameter_m <= 0:
+        raise ValueError(f"motor diameter must be positive, got {diameter_m}")
+    if not math.isfinite(length_m) or length_m <= 0:
+        raise ValueError(f"motor length must be positive, got {length_m}")
+    if not math.isfinite(propellant_mass_kg) or propellant_mass_kg <= 0:
         raise ValueError(
-            f"propellant mass ({propellant_mass_kg:.3f} kg) exceeds total mass "
-            f"({total_mass_kg:.3f} kg) - the loaded motor cannot weigh less "
-            f"than its propellant")
+            f"propellant mass must be positive, got {propellant_mass_kg}")
+    if not math.isfinite(total_mass_kg) or total_mass_kg <= propellant_mass_kg:
+        # Equal masses declare a motor with no hardware: a reader computes
+        # dry mass = total - propellant = 0, and the vehicle flies several
+        # kilograms light without any warning.
+        raise ValueError(
+            f"total mass ({total_mass_kg:.3f} kg) must exceed propellant mass "
+            f"({propellant_mass_kg:.3f} kg) - the difference is the motor "
+            f"hardware, which cannot weigh nothing")
 
     points = _curve_points(times, thrusts)
-    if len(points) < 2:
-        raise ValueError("thrust curve has no positive thrust to export")
+    # Two points can be nothing but the ignition anchor and its closing zero,
+    # which would write a plausible-looking header over a curve that never
+    # thrusts. Require real thrust, not just enough rows.
+    if len(points) < 2 or max(f for _, f in points) <= _IGNITION_ANCHOR_N:
+        raise ValueError("thrust curve has no usable thrust to export")
 
     # Spaces separate fields, so a designation carrying one would silently
-    # shift every later field.
-    safe_designation = "_".join(str(designation_str).split()) or "UNNAMED"
-    safe_mfg = "_".join(str(manufacturer).split()) or "JARVIS"
+    # shift every later field; a path separator would break the filename it
+    # is also used for.
+    safe_designation = _sanitise_field(designation_str, "UNNAMED")
+    safe_mfg = _sanitise_field(manufacturer, "JARVIS")
 
     lines = [
         "; RASP .eng motor file written by JARVIS",
@@ -155,8 +182,14 @@ def write_eng(path, times, thrusts, *, designation_str, diameter_m,
     lines += [f"   {t:.4f} {f:.4f}" for t, f in points]
     lines.append(";")
 
-    with open(path, "a" if append else "w", encoding="utf-8") as handle:
-        if append:
-            handle.write("\n")
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
+
+
+def _sanitise_field(value, fallback):
+    """Make a string safe as both a whitespace-delimited field and a filename."""
+    cleaned = "_".join(str(value).split())
+    for bad in "/\\:*?\"<>|":
+        cleaned = cleaned.replace(bad, "-")
+    return cleaned or fallback
