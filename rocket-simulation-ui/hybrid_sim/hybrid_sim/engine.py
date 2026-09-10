@@ -227,5 +227,9 @@ class EngineModel:
 
         out.update(t=t, Pc=Pc, T_tank=T, r_port=r_port, m_ox=m_ox, m_fuel=m_f,
                    mdot_tot=out["mdot_ox"]+out["mdot_fuel"],
-                   m_l0=self.m_l0, m_v0=self.m_v0, m_f0=self.m_f0)
+                   m_l0=self.m_l0, m_v0=self.m_v0, m_f0=self.m_f0,
+                   # Grain length is fixed for the burn, but the data
+                   # sheet needs it to report port length-to-diameter
+                   # as the port opens up.
+                   L_grain=e.L_grain)
         return out

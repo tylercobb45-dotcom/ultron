@@ -16,6 +16,7 @@ export is not.
 from __future__ import annotations
 
 import csv
+import math
 import os
 
 from PyQt5 import QtWidgets, QtCore
@@ -67,6 +68,48 @@ FLIGHT_COLUMNS = [
     ("ballistic_coeff_current", "Ballistic coeff",   "kg/m2",   1.0,    2),
     ("on_rail",                 "On rail",           "",        None,   0),
     ("chute_deployed",          "Chute out",         "",        None,   0),
+
+    # --- derived in flight_rows(): reporting quantities, not model state ---
+    ("downrange_ft",            "Downrange",         "ft",      1.0,    1),
+    ("airspeed_fps",            "Airspeed",          "ft/s",    1.0,    2),
+    ("speed_of_sound",          "Speed of sound",    "m/s",     1.0,    2),
+    ("mach_angle_deg",          "Mach angle",        "deg",     1.0,    2),
+    ("flight_path_angle_deg",   "Flight path angle", "deg",     1.0,    3),
+    ("gravity",                 "Local gravity",     "m/s2",    1.0,    5),
+    ("thrust_to_weight",        "Thrust/weight",     "-",       1.0,    3),
+    ("mass_ratio",              "Mass ratio",        "-",       1.0,    4),
+    ("q_psf",                   "Dynamic pressure",  "lb/ft2",  1.0,    2),
+    ("q_alpha",                 "q-alpha",           "Pa.deg",  1.0,    1),
+    ("stagnation_temp_k",       "Recovery temp",     "K",       1.0,    2),
+    ("kinetic_energy",          "Kinetic energy",    "J",       1.0,    1),
+    ("potential_energy",        "Potential energy",  "J",       1.0,    1),
+    ("total_energy",            "Total energy",      "J",       1.0,    1),
+    ("specific_energy",         "Specific energy",   "J/kg",    1.0,    2),
+    ("drag_power",              "Drag power",        "W",       1.0,    1),
+    ("impulse_ns",              "Impulse to date",   "N.s",     1.0,    2),
+    ("drag_impulse_ns",         "Drag impulse",      "N.s",     1.0,    2),
+    ("dv_ideal",                "Delta-v (ideal)",   "m/s",     1.0,    2),
+    ("dv_drag_loss",            "Delta-v drag loss", "m/s",     1.0,    2),
+    ("dv_gravity_loss",         "Delta-v grav loss", "m/s",     1.0,    2),
+    ("dv_net",                  "Delta-v (net)",     "m/s",     1.0,    2),
+
+    # --- diagnostics: the drag limiter's working, kept last ---
+    ("drag_signed",             "Drag (signed)",     "N",       1.0,    3),
+    ("drag_raw_signed",         "Drag raw",          "N",       1.0,    3),
+    ("drag_signed_uncapped",    "Drag uncapped",     "N",       1.0,    3),
+    ("drag_cap_applied",        "Drag cap hit",      "",        None,   0),
+    ("drag_cap_method",         "Drag cap method",   "",        None,   0),
+    ("rocket_drag_signed_raw",  "Body drag raw",     "N",       1.0,    3),
+    ("rocket_drag_signed_smoothed", "Body drag",     "N",       1.0,    3),
+    ("chute_drag_signed_raw",   "Canopy drag raw",   "N",       1.0,    3),
+    ("chute_drag_signed_smoothed", "Canopy drag",    "N",       1.0,    3),
+    ("chute_drag_signed_smoothed_uncapped", "Canopy drag uncapped", "N", 1.0, 3),
+    ("terminal_v_body",         "Terminal v (body)", "m/s",     1.0,    3),
+    ("ballistic_coeff_body",    "Ballistic coeff (body)", "kg/m2", 1.0, 2),
+    ("dry_mass",                "Dry mass",          "kg",      1.0,    4),
+    ("initial_mass",            "Liftoff mass",      "kg",      1.0,    4),
+    ("propellant_mass",         "Propellant loaded", "kg",      1.0,    4),
+    ("sim_version",             "Sim version",       "",        None,   0),
 ]
 
 ENGINE_COLUMNS = [
@@ -105,9 +148,143 @@ ENGINE_COLUMNS = [
     ("m_vapor",        "Vapour N2O",          "kg",       1.0,    5),
     ("fill_frac",      "Tank fill",           "-",        1.0,    4),
     ("m_fuel",         "Fuel remaining",      "kg",       1.0,    5),
+
+    # --- derived in engine_rows() ---
+    ("A_throat",       "Throat area",         "mm2",      1e6,    3),
+    ("A_exit",         "Exit area",           "mm2",      1e6,    2),
+    ("port_to_throat", "Port / throat area",  "-",        1.0,    3),
+    ("throat_erosion", "Throat erosion",      "mm",       1000.0, 4),
+    ("G_throat",       "Throat mass flux",    "kg/m2s",   1.0,    1),
+    ("Pc_over_Pe",     "Pc / Pexit",          "-",        1.0,    3),
+    ("Pe_over_Pamb",   "Pexit / Pamb (SL)",   "-",        1.0,    4),
+    ("port_LD",        "Port L/D",            "-",        1.0,    3),
+    ("port_growth",    "Port radius growth",  "mm",       1000.0, 4),
+    ("web_burned",     "Web burned",          "mm",       1000.0, 3),
+    ("burn_progress",  "Burn progress",       "-",        1.0,    4),
+    ("ox_consumed",    "Oxidiser used",       "kg",       1.0,    5),
+    ("fuel_consumed",  "Fuel used",           "kg",       1.0,    5),
+    ("prop_consumed",  "Propellant used",     "kg",       1.0,    5),
+    ("ullage_frac",    "Tank ullage",         "-",        1.0,    4),
+    ("cstar_efficiency", "c* efficiency",     "-",        1.0,    4),
+    ("v_exhaust_eff",  "Effective exhaust v", "m/s",      1.0,    1),
+    ("impulse_ns",     "Impulse to date",     "N.s",      1.0,    2),
+    ("Isp_cumulative", "Isp (cumulative)",    "s",        1.0,    2),
+    ("expansion_ratio", "Expansion ratio",    "-",        1.0,    3),
 ]
 
 PSI = 6894.757
+G0 = 9.80665
+FT_PER_M = 3.280839895
+PSF_PER_PA = 0.020885434        # Pa -> lb/ft^2
+GAMMA_AIR, R_AIR = 1.4, 287.058
+P_AMB_SL = 101325.0
+
+
+def flight_rows(rows):
+    """Augment trajectory rows with the derived quantities the sheet reports.
+
+    The 2-DOF model carries the state it needs to integrate; everything a
+    person actually reads a flight sheet FOR - energy, impulse, the delta-v
+    the motor produced and where it went, structural load indicators - is a
+    function of that state and is derived here. Keeping it out of the
+    integrator means adding a reported quantity never risks the trajectory.
+
+    Cumulative columns are trapezoidal integrals over the sample times, so
+    they are only as fine as the output step.
+    """
+    out = []
+    impulse = drag_impulse = dv_ideal = dv_drag = dv_grav = 0.0
+    prev = None
+    for r in rows:
+        row = dict(r)
+        t = row.get("time", 0.0)
+        mass = row.get("mass", 0.0) or 0.0
+        g = row.get("gravity", G0)
+        alt = row.get("altitude", 0.0)
+        thrust = row.get("thrust", 0.0)
+        drag = row.get("drag", 0.0)
+        mach = row.get("Mach", 0.0)
+        # Kinetic energy uses speed over the ground, not airspeed: it is the
+        # vehicle's energy in the launch frame, and wind must not add to it.
+        speed = row.get("ground_speed") or math.hypot(
+            row.get("velocity", 0.0), row.get("horizontal_velocity", 0.0))
+
+        row["altitude_ft"] = alt * FT_PER_M
+        row["downrange_ft"] = row.get("downrange", 0.0) * FT_PER_M
+        row["accel_g"] = row.get(
+            "accel_total", row.get("acceleration", 0.0)) / G0
+        row["airspeed_fps"] = row.get("airspeed", 0.0) * FT_PER_M
+        row["gravity"] = g
+
+        temp = row.get("temperature_k", 0.0)
+        a_sound = math.sqrt(GAMMA_AIR * R_AIR * temp) if temp > 0 else 0.0
+        row["speed_of_sound"] = a_sound
+        # Mach angle only exists supersonically; below Mach 1 there is no cone.
+        row["mach_angle_deg"] = (math.degrees(math.asin(1.0 / mach))
+                                 if mach > 1.0 else 0.0)
+        # Recovery temperature at the skin, same 0.9 turbulent factor the
+        # thermal checks (T-01/T-02) grade against.
+        row["stagnation_temp_k"] = (
+            temp * (1 + 0.9 * (GAMMA_AIR - 1) / 2 * mach * mach)
+            if temp > 0 else 0.0)
+
+        # Flight path angle of the velocity vector: +90 straight up, 0
+        # horizontal, -90 straight down. Distinct from body tilt, which is
+        # where the airframe points. Measured against the MAGNITUDE of the
+        # horizontal component - signing it folds the direction of travel into
+        # the climb angle, which read -179 deg at apogee (level flight going
+        # the other way) instead of the ~0 a flight path angle should show.
+        row["flight_path_angle_deg"] = math.degrees(math.atan2(
+            row.get("velocity", 0.0),
+            abs(row.get("horizontal_velocity", 0.0))))
+
+        weight = mass * g
+        row["thrust_to_weight"] = thrust / weight if weight > 0 else 0.0
+        row["mass_ratio"] = (mass / row["initial_mass"]
+                             if row.get("initial_mass") else 0.0)
+
+        ke = 0.5 * mass * speed * speed
+        pe = mass * g * alt
+        row["kinetic_energy"] = ke
+        row["potential_energy"] = pe
+        row["total_energy"] = ke + pe
+        row["specific_energy"] = (ke + pe) / mass if mass > 0 else 0.0
+        row["drag_power"] = drag * row.get("airspeed", 0.0)
+
+        q = row.get("q", 0.0)
+        row["q_psf"] = q * PSF_PER_PA
+        # q-alpha: dynamic pressure times angle of attack is the standard
+        # proxy for aerodynamic bending load on the airframe.
+        row["q_alpha"] = q * abs(row.get("angle_of_attack_deg", 0.0))
+
+        if prev is not None:
+            dt = t - prev["time"]
+            if dt > 0:
+                impulse += 0.5 * dt * (thrust + prev["thrust"])
+                drag_impulse += 0.5 * dt * (drag + prev["drag"])
+                dv_ideal += 0.5 * dt * (prev["a_thrust"] + (
+                    thrust / mass if mass > 0 else 0.0))
+                dv_drag += 0.5 * dt * (prev["a_drag"] + (
+                    drag / mass if mass > 0 else 0.0))
+                dv_grav += 0.5 * dt * (prev["a_grav"] + g * math.cos(
+                    math.radians(row.get("angle_from_vertical_deg", 0.0))))
+        row["impulse_ns"] = impulse
+        row["drag_impulse_ns"] = drag_impulse
+        # Where the motor's delta-v went. dv_ideal is what the thrust would
+        # have bought in vacuum with no gravity; the two losses are what the
+        # atmosphere and the climb took back.
+        row["dv_ideal"] = dv_ideal
+        row["dv_drag_loss"] = dv_drag
+        row["dv_gravity_loss"] = dv_grav
+        row["dv_net"] = dv_ideal - dv_drag - dv_grav
+
+        prev = {"time": t, "thrust": thrust, "drag": drag,
+                "a_thrust": thrust / mass if mass > 0 else 0.0,
+                "a_drag": drag / mass if mass > 0 else 0.0,
+                "a_grav": g * math.cos(math.radians(
+                    row.get("angle_from_vertical_deg", 0.0)))}
+        out.append(row)
+    return out
 
 
 def engine_rows(result):
@@ -123,11 +300,80 @@ def engine_rows(result):
     keys = [k for k, v in result.items()
             if hasattr(v, "__len__") and len(v) == n]
     rows = []
+    # Initial loads are scalars on the result, not per-sample arrays; they are
+    # what "consumed so far" and "burn progress" are measured against.
+    m_ox0 = float(result.get("m_l0", 0.0)) + float(result.get("m_v0", 0.0))
+    m_f0 = float(result.get("m_f0", 0.0))
+    d_throat_0 = float(result["d_throat"][0]) if "d_throat" in result else 0.0
+    r_port_0 = float(result["r_port"][0]) if "r_port" in result else 0.0
+    web_0 = float(result["web_left"][0]) if "web_left" in result else 0.0
+    # Scalar, not an array: used to derive port_LD below rather
+    # than repeated down a column of identical values.
+    L_grain = float(result.get("L_grain", 0.0))
+
+    impulse = 0.0
+    prev = None
     for i in range(n):
         row = {k: float(result[k][i]) for k in keys}
         row["Pc_psi"] = row.get("Pc", 0.0) / PSI
         row["P_tank_psi"] = row.get("P_tank", 0.0) / PSI
         row["T_tank_c"] = row.get("T_tank", 0.0) - 273.15
+
+        # Areas. The model carries diameters and radii; the ratios that get
+        # designed against are areas.
+        d_th = row.get("d_throat", 0.0)
+        a_throat = math.pi * (d_th / 2.0) ** 2
+        a_port = row.get("A_port", 0.0)
+        row["A_throat"] = a_throat
+        row["A_exit"] = a_throat * row.get("eps", row.get("expansion_ratio", 0.0))
+        # Port-to-throat drives whether the port chokes before the nozzle
+        # does; below about 2 the grain starts behaving like a second throat.
+        row["port_to_throat"] = a_port / a_throat if a_throat > 0 else 0.0
+        row["throat_erosion"] = d_th - d_throat_0
+        # Mass flux through the throat, the number that sets erosion rate.
+        row["G_throat"] = (row.get("mdot_tot", 0.0) / a_throat
+                           if a_throat > 0 else 0.0)
+
+        # Nozzle pressure ratios. Pe/Pamb below ~0.4 is where Summerfield
+        # says the flow separates off the wall (P-10 grades this).
+        p_exit = row.get("P_exit", 0.0)
+        pc = row.get("Pc", 0.0)
+        row["Pc_over_Pe"] = pc / p_exit if p_exit > 0 else 0.0
+        row["Pe_over_Pamb"] = p_exit / P_AMB_SL
+
+        # Propellant consumed, and how far through the web the burn is.
+        row["ox_consumed"] = max(0.0, m_ox0 - row.get("m_ox", 0.0))
+        row["fuel_consumed"] = max(0.0, m_f0 - row.get("m_fuel", 0.0))
+        row["prop_consumed"] = row["ox_consumed"] + row["fuel_consumed"]
+        row["web_burned"] = max(0.0, web_0 - row.get("web_left", 0.0))
+        row["burn_progress"] = (row["web_burned"] / web_0) if web_0 > 0 else 0.0
+        row["port_growth"] = row.get("r_port", 0.0) - r_port_0
+        # Port length-to-diameter: long thin ports run oxidiser-rich at the
+        # head end and fuel-rich at the aft.
+        d_port = 2.0 * row.get("r_port", 0.0)
+        row["port_LD"] = (L_grain / d_port) if d_port > 0 else 0.0
+
+        row["ullage_frac"] = 1.0 - row.get("fill_frac", 0.0)
+        # Delivered vs theoretical c*: the combustion efficiency actually
+        # achieved at this instant.
+        cstar = row.get("cstar", 0.0)
+        row["cstar_efficiency"] = (row.get("c_star_eff", 0.0) / cstar
+                                   if cstar > 0 else 0.0)
+        # Effective exhaust velocity, the c*-Cf product that Isp restates.
+        row["v_exhaust_eff"] = row.get("c_star_eff", 0.0) * row.get("cf", 0.0)
+
+        thrust = row.get("thrust", 0.0)
+        if prev is not None:
+            dt = row.get("t", 0.0) - prev[0]
+            if dt > 0:
+                impulse += 0.5 * dt * (thrust + prev[1])
+        row["impulse_ns"] = impulse
+        # Isp integrated to this point, which is what the motor has actually
+        # delivered so far rather than its instantaneous value.
+        used = row["prop_consumed"]
+        row["Isp_cumulative"] = impulse / (used * G0) if used > 0 else 0.0
+        prev = (row.get("t", 0.0), thrust)
+
         rows.append(row)
     return rows
 

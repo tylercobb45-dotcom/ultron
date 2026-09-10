@@ -4490,17 +4490,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
     def populate_datasheets(self, results):
         """Fill the Flight Data and Engine Data sheets from the latest run."""
         try:
-            rows = []
-            for r in results:
-                row = dict(r)
-                # Two conveniences that belong in the sheet rather than in the
-                # physics: feet, because that is what altitude gets argued
-                # about in, and g, because that is what airframes are rated in.
-                row['altitude_ft'] = row.get('altitude', 0.0) * 3.28084
-                accel = row.get('accel_total', row.get('acceleration', 0.0))
-                row['accel_g'] = accel / 9.80665
-                rows.append(row)
-            self.flight_sheet.set_rows(rows)
+            # Derivation lives in datasheet.flight_rows so the reported
+            # quantities sit next to the column spec that names them, and so
+            # the engine and flight sheets are built the same way.
+            self.flight_sheet.set_rows(datasheet.flight_rows(results))
         except Exception:
             traceback.print_exc()
 

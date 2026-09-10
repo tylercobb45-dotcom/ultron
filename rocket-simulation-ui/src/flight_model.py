@@ -467,6 +467,10 @@ def run_flight(thrust_points,
                 'mass': mass,
                 'mdot': (thrust / (isp * G0)) if (isp > 0 and thrusting) else 0.0,
                 'sim_version': SIM_VERSION,
+                # Local gravity, so the sheet's gravity-loss integral uses the
+                # same latitude- and altitude-corrected value the trajectory
+                # was actually flown with rather than re-deriving g0.
+                'gravity': g,
                 'rho_local': rho,
                 'q': q,
                 'Mach': mach,
