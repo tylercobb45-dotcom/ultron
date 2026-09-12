@@ -2101,6 +2101,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         # Connect unit dropdowns to conversion update
         self.mass_unit.currentIndexChanged.connect(lambda: self.update_conversions('mass'))
+        # Propellant mass had a unit combo but was never connected, so
+        # switching it from kg to lb left the number alone and it was
+        # reinterpreted - a 2.2x change in propellant load, silently.
+        self.prop_mass_unit.currentIndexChanged.connect(lambda: self.update_conversions('prop_mass'))
         self.area_unit.currentIndexChanged.connect(lambda: self.update_conversions('area'))
         self.rho_unit.currentIndexChanged.connect(lambda: self.update_conversions('rho'))
         self.timestep_unit.currentIndexChanged.connect(lambda: self.update_conversions('timestep'))
@@ -2109,6 +2113,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.body_diameter_unit.currentIndexChanged.connect(lambda: self.update_conversions('body_diameter'))
         self.chute_height_unit.currentIndexChanged.connect(lambda: self.update_conversions('chute_height'))
         self.chute_size_unit.currentIndexChanged.connect(lambda: self.update_conversions('chute_size'))
+        # Seed the previous-index map now the combos exist. Without it
+        # update_conversions defaults a missing entry to the NEW index,
+        # so the FIRST change to any unit combo in a session
+        # reinterpreted the number instead of converting it.
+        self._sync_unit_indices()
 
     def load_thrust_curve_data(self):
         """Load thrust curve data from file or use default. Returns (times, thrusts, thrust_func, burn_time)"""
@@ -3453,6 +3462,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         system = self.unit_system()
         for field in self.findChildren(unit_fields.UnitField):
             field.set_system(system)
+        # The Simulation tab keeps its own combos rather than UnitFields,
+        # because a saved profile stores the selected index.
+        self._apply_sim_unit_system(system)
 
     def on_theme_changed(self, theme_name):
         """Handle theme selection change"""
@@ -3996,6 +4008,86 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if combo is not None:
                 self._last_unit_indices[field] = combo.currentIndex()
 
+    # Simulation-tab unit selectors. These predate the units module and keep
+    # their own combos (a profile stores the selected INDEX, so the lists and
+    # their order are part of the saved format), but the conversion factors
+    # now come from the one table in units.py rather than being retyped here -
+    # the old inline copy had lb at 0.453592 and lb/ft3 at 16.0185, both
+    # rounded, so a value round-tripped through them drifted.
+    #
+    # field -> (input attr, combo attr, dimension, [(combo text, unit symbol)],
+    #           metric preference, imperial preference)
+    _SIM_UNITS = {
+        'mass': ('mass_input', 'mass_unit', 'mass',
+                 [('kg', 'kg'), ('g', 'g'), ('lb', 'lb')], 'kg', 'lb'),
+        'prop_mass': ('prop_mass_input', 'prop_mass_unit', 'mass',
+                      [('kg', 'kg'), ('g', 'g'), ('lb', 'lb')], 'kg', 'lb'),
+        'area': ('area_input', 'area_unit', 'area',
+                 [('m\u00b2', 'm2'), ('cm\u00b2', 'cm2'), ('ft\u00b2', 'ft2')],
+                 'm2', 'ft2'),
+        'rho': ('rho_input', 'rho_unit', 'density',
+                [('kg/m\u00b3', 'kg/m3'), ('g/cm\u00b3', 'g/cm3'),
+                 ('lb/ft\u00b3', 'lb/ft3')], 'kg/m3', 'lb/ft3'),
+        'timestep': ('timestep_input', 'timestep_unit', 'time',
+                     [('s', 's'), ('ms', 'ms')], 's', 's'),
+        'fin_thickness': ('fin_thickness_input', 'fin_thickness_unit', 'length',
+                          [('m', 'm'), ('mm', 'mm'), ('in', 'in')], 'mm', 'in'),
+        'fin_length': ('fin_length_input', 'fin_length_unit', 'length',
+                       [('m', 'm'), ('mm', 'mm'), ('in', 'in')], 'mm', 'in'),
+        'body_diameter': ('body_diameter_input', 'body_diameter_unit', 'length',
+                          [('m', 'm'), ('mm', 'mm'), ('in', 'in')], 'mm', 'in'),
+        'chute_height': ('chute_height_input', 'chute_height_unit', 'length',
+                         [('m', 'm'), ('ft', 'ft')], 'm', 'ft'),
+        'chute_size': ('chute_size_input', 'chute_size_unit', 'area',
+                       [('m\u00b2', 'm2'), ('ft\u00b2', 'ft2')], 'm2', 'ft2'),
+    }
+
+    def _sim_unit_defs(self):
+        """(input, combo, labels, factors) per field, factors from units.py."""
+        out = {}
+        for field, (inp, combo, dimension, pairs, _m, _i) in self._SIM_UNITS.items():
+            widget, selector = getattr(self, inp, None), getattr(self, combo, None)
+            if widget is None or selector is None:
+                continue
+            dim = app_units.DIMENSIONS[dimension]
+            out[field] = (widget, selector, [p[0] for p in pairs],
+                          [dim.unit(p[1]).factor for p in pairs])
+        return out
+
+    def _apply_sim_unit_system(self, system):
+        """Point the Simulation tab's combos at the chosen system's units.
+
+        The conversion is done here rather than left to each combo's own
+        signal. Relying on the signal made the result depend on whether that
+        particular combo happened to be connected and on what the
+        previous-index bookkeeping held - propellant mass, whose combo was
+        never connected at all, changed its unit without converting its
+        number. Converting explicitly makes every field behave the same.
+        """
+        for field, (inp, combo, dimension, pairs, metric, imperial) in \
+                self._SIM_UNITS.items():
+            widget, selector = getattr(self, inp, None), getattr(self, combo, None)
+            if widget is None or selector is None:
+                continue
+            want = imperial if system == app_units.IMPERIAL else metric
+            target = next((i for i, (_t, sym) in enumerate(pairs)
+                           if sym == want), None)
+            current = selector.currentIndex()
+            if target is None or target == current:
+                continue
+            dim = app_units.DIMENSIONS[dimension]
+            try:
+                value = float(widget.text().replace(",", "").strip())
+            except ValueError:
+                value = None
+            selector.blockSignals(True)
+            selector.setCurrentIndex(target)
+            selector.blockSignals(False)
+            if value is not None:
+                si = dim.unit(pairs[current][1]).to_si(value)
+                widget.setText(f"{dim.unit(pairs[target][1]).from_si(si):.12g}")
+            self._last_unit_indices[field] = target
+
     def update_conversions(self, field):
         # Only convert value if the user changes the unit, not on load.
         #
@@ -4009,17 +4101,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             return
         if not hasattr(self, '_last_unit_indices'):
             self._last_unit_indices = {}
-        unit_defs = {
-            'mass':    (self.mass_input, self.mass_unit, ['kg', 'g', 'lb'], [1, 0.001, 0.453592]),
-            'area':    (self.area_input, self.area_unit, ['m²', 'cm²', 'ft²'], [1, 0.0001, 0.092903]),
-            'rho':     (self.rho_input, self.rho_unit, ['kg/m³', 'g/cm³', 'lb/ft³'], [1, 1000, 16.0185]),
-            'timestep':(self.timestep_input, self.timestep_unit, ['s', 'ms'], [1, 0.001]),
-            'fin_thickness': (self.fin_thickness_input, self.fin_thickness_unit, ['m', 'mm', 'in'], [1, 0.001, 0.0254]),
-            'fin_length':    (self.fin_length_input, self.fin_length_unit, ['m', 'mm', 'in'], [1, 0.001, 0.0254]),
-            'body_diameter': (self.body_diameter_input, self.body_diameter_unit, ['m', 'mm', 'in'], [1, 0.001, 0.0254]),
-            'chute_height':  (self.chute_height_input, self.chute_height_unit, ['m', 'ft'], [1, 0.3048]),
-            'chute_size':    (self.chute_size_input, self.chute_size_unit, ['m²', 'ft²'], [1, 0.092903]),
-        }
+        unit_defs = self._sim_unit_defs()
         if field in unit_defs:
             input_widget, unit_widget, units, factors = unit_defs[field]
             idx = unit_widget.currentIndex()
@@ -5084,10 +5166,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
     def update_area(self):
         try:
             # Convert all inputs to meters first
+            # Factors from the one table in units.py. The inline copies here
+            # were rounded (ft2 as 0.092903 against the exact 0.09290304), so
+            # every recompute nudged the area by 0.01% - and this runs on any
+            # unit change, so switching the whole app to imperial walked the
+            # value each time.
+            dia_units = self._SIM_UNITS['body_diameter']
             body_diameter_m = self.get_value_in_base_unit(
-                self.body_diameter_input.text(), 
-                self.body_diameter_unit.currentIndex(), 
-                [1, 0.001, 0.0254]
+                self.body_diameter_input.text(),
+                self.body_diameter_unit.currentIndex(),
+                [app_units.DIMENSIONS['length'].unit(sym).factor
+                 for _t, sym in dia_units[3]]
             )
             
             # Area for drag = body tube cross-sectional area
@@ -5096,12 +5185,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
             
             total_area = body_area
 
-            # Set the main area input field (in the current unit)
-            current_area_unit = self.area_unit.currentIndex()
-            factors = [1, 0.0001, 0.092903]
-            area_in_current_unit = total_area / factors[current_area_unit]
-            
-            self.area_input.setText(f"{area_in_current_unit:.6f}")
+            # Set the main area input field (in the current unit). Twelve
+            # significant figures rather than six decimals: at six, a small
+            # area in ft2 lost most of its precision on every rewrite.
+            area_units = self._SIM_UNITS['area']
+            symbol = area_units[3][self.area_unit.currentIndex()][1]
+            area_in_current_unit = app_units.DIMENSIONS['area'].unit(
+                symbol).from_si(total_area)
+            self.area_input.setText(f"{area_in_current_unit:.12g}")
         except (ValueError, ZeroDivisionError):
             self.area_input.setText("0")
 

@@ -77,6 +77,9 @@ FIELDS: dict[str, U.Quantity] = {q.key: q for q in [
     _q("humidity", "Relative humidity"),               # percent, dimensionless
     _q("air_density", "Air density", dimension="density", metric="kg/m3",
        imperial="lb/ft3", decimals=4),
+    _q("station_pressure", "Station pressure", dimension="pressure",
+       metric="kPa", imperial="psi", decimals=2,
+       help="Measured at the pad, not sea-level corrected."),
     # --- recovery ----------------------------------------------------------
     _q("chute_diameter", "Canopy diameter", **_LEN_LONG),
     _q("chute_area", "Canopy area", dimension="area", metric="m2",
@@ -238,3 +241,125 @@ class UnitField(QtWidgets.QWidget):
     def label(self) -> str:
         """Field label. No unit in the text - the selector carries that."""
         return self.quantity.label + ":"
+
+
+# ---------------------------------------------------------------------------
+# Binding form fields to the attributes behind them.
+#
+# The dataclass attribute a field edits is NOT always in SI: surface roughness
+# is stored in microns, launch-site temperature in Celsius, and the report's
+# target altitude in feet. The binder converts between the field's SI value
+# and whatever unit the attribute is actually kept in, so neither side has to
+# know about the other.
+#
+# attribute name -> (catalogue key, unit the attribute is stored in)
+# An entry of None means dimensionless: a plain line edit, no selector.
+# ---------------------------------------------------------------------------
+BINDINGS: dict[str, tuple[str, str] | None] = {
+    # --- airframe (vehicle_tab + report_tab) -------------------------------
+    "nose_length_m": ("nose_length", "m"),
+    "body_diameter_m": ("body_diameter", "m"),
+    "body_od_m": ("body_diameter", "m"),
+    "body_length_m": ("body_length", "m"),
+    "body_wall_m": ("body_wall", "m"),
+    "surface_roughness_um": ("surface_roughness", "um"),
+    "boattail_length_m": ("boattail_length", "m"),
+    "boattail_exit_diameter_m": ("boattail_exit", "m"),
+    "cd_override": None,
+    # --- fins --------------------------------------------------------------
+    "fin_count": None,
+    "fin_root_chord_m": ("fin_root_chord", "m"),
+    "fin_tip_chord_m": ("fin_tip_chord", "m"),
+    "fin_span_m": ("fin_span", "m"),
+    "fin_sweep_m": ("fin_sweep", "m"),
+    "fin_thickness_m": ("fin_thickness", "m"),
+    # --- mass and balance --------------------------------------------------
+    "dry_mass_kg": ("dry_mass", "kg"),
+    "propellant_mass_kg": ("propellant_mass", "kg"),
+    "dry_cg_m": ("dry_cg", "m"),
+    "propellant_cg_m": ("propellant_cg", "m"),
+    # --- launch site -------------------------------------------------------
+    "elevation_m": ("elevation", "m"),
+    "latitude_deg": ("latitude", "deg"),
+    "temperature_c": ("temperature", "C"),
+    "pressure_pa": ("station_pressure", "Pa"),
+    "humidity_pct": None,
+    "wind_speed_ms": ("wind_speed", "m/s"),
+    "wind_ref_height_m": ("wind_ref_height", "m"),
+    "wind_shear_exp": None,
+    "rail_length_m": ("rail_length", "m"),
+    "rail_angle_deg": ("rail_angle", "deg"),
+    # --- motor hardware / mission (report_tab) -----------------------------
+    "chamber_wall_m": ("chamber_wall", "m"),
+    "tank_wall_m": ("tank_wall", "m"),
+    "target_altitude_ft": ("target_altitude", "ft"),
+    "harness_rating_n": ("harness_rating", "N"),
+    "min_pressure_sf": None,
+    "min_structure_sf": None,
+}
+
+
+class FieldBinder:
+    """Builds and reads unit-aware fields for one tab's attributes."""
+
+    def __init__(self, system: str = U.METRIC, on_change=None):
+        self.system = system
+        self._on_change = on_change
+        self.widgets: dict[str, QtWidgets.QWidget] = {}
+
+    def make(self, attr: str, tip: str = "") -> QtWidgets.QWidget:
+        binding = BINDINGS.get(attr, None)
+        if binding:
+            widget = UnitField(FIELDS[binding[0]], self.system)
+            if self._on_change:
+                widget.edit.editingFinished.connect(self._on_change)
+        else:
+            widget = QtWidgets.QLineEdit()
+            if self._on_change:
+                widget.editingFinished.connect(self._on_change)
+        if tip:
+            widget.setToolTip(tip)
+        self.widgets[attr] = widget
+        return widget
+
+    @staticmethod
+    def label_for(attr: str, label: str) -> str:
+        """Drop the unit from a label that now carries a selector."""
+        if BINDINGS.get(attr) and "(" in label:
+            label = label[:label.index("(")].strip()
+        return label
+
+    def get(self, attr: str, default: float = 0.0) -> float:
+        """Value in the unit the underlying attribute is stored in."""
+        widget = self.widgets.get(attr)
+        if widget is None:
+            return default
+        binding = BINDINGS.get(attr)
+        if binding and isinstance(widget, UnitField):
+            quantity, storage = FIELDS[binding[0]], binding[1]
+            return quantity.from_si(widget.value_si(), storage)
+        text = widget.text().strip()
+        if not text:
+            return default
+        try:
+            return float(text)
+        except ValueError:
+            return default
+
+    def set(self, attr: str, stored: float, decimals: int = 3):
+        """Write a value that is in the attribute's own storage unit."""
+        widget = self.widgets.get(attr)
+        if widget is None:
+            return
+        binding = BINDINGS.get(attr)
+        if binding and isinstance(widget, UnitField):
+            quantity, storage = FIELDS[binding[0]], binding[1]
+            widget.set_value_si(quantity.to_si(float(stored), storage))
+        else:
+            widget.setText(f"{stored:.{decimals}f}")
+
+    def set_system(self, system: str):
+        self.system = system
+        for widget in self.widgets.values():
+            if isinstance(widget, UnitField):
+                widget.set_system(system)

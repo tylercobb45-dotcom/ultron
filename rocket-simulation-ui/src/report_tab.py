@@ -22,6 +22,7 @@ from pathlib import Path
 from PyQt5 import QtWidgets, QtGui, QtCore
 import theme
 import graphs_tab
+import unit_fields
 import datasheet
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -83,6 +84,7 @@ class FlightReportWidget(QtWidgets.QWidget):
         self._engine = None
         self._report = None
         self._fields = {}
+        self._binder = unit_fields.FieldBinder()
         self._material_combos = {}
         self._user_edited = set()   # fields a person has typed into
         self._build_ui()
@@ -153,15 +155,19 @@ class FlightReportWidget(QtWidgets.QWidget):
             group = QtWidgets.QGroupBox(title)
             form = QtWidgets.QFormLayout(group)
             for label, attr, factor, dec in fields:
-                edit = QtWidgets.QLineEdit()
-                edit.setStyleSheet(_INPUT_STYLE)
-                edit.setText(f"{getattr(defaults, attr) * factor:.{dec}f}")
+                edit = self._binder.make(attr)
+                self._binder.set(attr, getattr(defaults, attr), dec)
                 # textEdited fires only for typing, never for setText, so this
-                # marks the fields a person has actually taken over.
-                edit.textEdited.connect(
+                # marks the fields a person has actually taken over. On a
+                # UnitField it is the inner line edit that is typed into.
+                typed = (edit.edit if isinstance(edit, unit_fields.UnitField)
+                         else edit)
+                if not isinstance(edit, unit_fields.UnitField):
+                    edit.setStyleSheet(_INPUT_STYLE)
+                typed.textEdited.connect(
                     lambda _t, a=attr: self._user_edited.add(a))
                 self._fields[attr] = (edit, factor, dec)
-                form.addRow(label + ":", edit)
+                form.addRow(self._binder.label_for(attr, label) + ":", edit)
             vbox.addWidget(group)
 
         vbox.addStretch()
@@ -275,13 +281,16 @@ class FlightReportWidget(QtWidgets.QWidget):
     def vehicle_config(self) -> fa.VehicleConfig:
         cfg = fa.VehicleConfig()
         for attr, (edit, factor, _dec) in self._fields.items():
-            text = edit.text().strip()
-            if not text:
-                continue
-            try:
-                value = float(text) / factor
-            except ValueError:
-                continue
+            if isinstance(edit, unit_fields.UnitField):
+                value = self._binder.get(attr, getattr(cfg, attr, 0.0))
+            else:
+                text = edit.text().strip()
+                if not text:
+                    continue
+                try:
+                    value = float(text) / factor
+                except ValueError:
+                    continue
             setattr(cfg, attr, int(round(value)) if attr == "fin_count" else value)
         for _label, attr, _lib in _MATERIAL_FIELDS:
             setattr(cfg, attr, self._material_combos[attr].currentText())
@@ -290,7 +299,14 @@ class FlightReportWidget(QtWidgets.QWidget):
     def get_config(self) -> dict:
         """Vehicle geometry, materials and limits as plain values, for saving
         into a rocket profile."""
-        cfg = {attr: edit.text() for attr, (edit, _f, _d) in self._fields.items()}
+        # Values in each attribute's own storage unit, not display text, so a
+        # saved profile no longer depends on which unit was showing. "_units"
+        # marks the new format; without it values read as the old display text.
+        cfg = {"_units": "storage"}
+        cfg.update({attr: (self._binder.get(attr)
+                           if isinstance(edit, unit_fields.UnitField)
+                           else edit.text())
+                    for attr, (edit, _f, _d) in self._fields.items()})
         for _label, attr, _lib in _MATERIAL_FIELDS:
             cfg[attr] = self._material_combos[attr].currentText()
         return cfg
@@ -299,13 +315,24 @@ class FlightReportWidget(QtWidgets.QWidget):
         """Restore a vehicle configuration saved by get_config()."""
         if not cfg:
             return
+        storage_cfg = str(cfg.get("_units", "")) == "storage"
         for attr, value in cfg.items():
             if attr in self._material_combos:
                 idx = self._material_combos[attr].findText(str(value))
                 if idx >= 0:
                     self._material_combos[attr].setCurrentIndex(idx)
             elif attr in self._fields:
-                self._fields[attr][0].setText(str(value))
+                edit, factor, dec = self._fields[attr]
+                if isinstance(edit, unit_fields.UnitField):
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if not storage_cfg:
+                        number = number / factor   # legacy display text
+                    self._binder.set(attr, number, dec)
+                else:
+                    edit.setText(str(value))
         self._update_material_note()
         if self._flight:
             self._reanalyze()
@@ -327,7 +354,10 @@ class FlightReportWidget(QtWidgets.QWidget):
             if attr in self._user_edited:
                 continue
             edit, factor, dec = entry
-            edit.setText(f"{value * factor:.{dec}f}")
+            if isinstance(edit, unit_fields.UnitField):
+                self._binder.set(attr, value, dec)
+            else:
+                edit.setText(f"{value * factor:.{dec}f}")
 
     # ---- data in -----------------------------------------------------------
     def update_from_simulation(self, flight, engine_result=None, engine=None,

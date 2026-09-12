@@ -23,6 +23,7 @@ import aero
 import atmosphere as atmosphere_mod
 import recovery as recovery_mod
 import flight_model
+import unit_fields
 import mass_tab
 import theme
 
@@ -226,6 +227,8 @@ class VehicleTabWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._on_changed = on_changed
         self._fields = {}
+        self._binder = unit_fields.FieldBinder(
+            on_change=self._refresh_summary)
         self._stage_editors = []
         # Signals fire while the pages are still being assembled, so the
         # summary must stay quiet until every widget it reads actually exists.
@@ -386,14 +389,13 @@ class VehicleTabWidget(QtWidgets.QWidget):
 
     def _add_fields(self, form, spec, defaults):
         for label, attr, factor, dec, tip in spec:
-            edit = QtWidgets.QLineEdit()
+            edit = self._binder.make(attr, tip)
             value = getattr(defaults, attr, 0.0) or 0.0
-            edit.setText(f"{value * factor:.{dec}f}")
-            if tip:
-                edit.setToolTip(tip)
-            edit.editingFinished.connect(self._refresh_summary)
+            # Defaults are in the attribute's own storage unit, which is not
+            # always SI - roughness is microns, site temperature is Celsius.
+            self._binder.set(attr, value, dec)
             self._fields[attr] = (edit, factor, dec)
-            form.addRow(label + ":", edit)
+            form.addRow(self._binder.label_for(attr, label) + ":", edit)
 
     def _nose_changed(self, name):
         _cp, _wave, desc = aero.NOSE_SHAPES.get(name, (0, 0, ""))
@@ -438,10 +440,13 @@ class VehicleTabWidget(QtWidgets.QWidget):
 
     # ---- building the model objects ---------------------------------------
     def _value(self, attr, fallback=0.0):
+        """Value in the unit this attribute is stored in."""
         entry = self._fields.get(attr)
         if not entry:
             return fallback
         edit, factor, _dec = entry
+        if isinstance(edit, unit_fields.UnitField):
+            return self._binder.get(attr, fallback)
         return _f(edit.text(), fallback * factor) / factor
 
     def cd_override(self):
@@ -567,7 +572,15 @@ class VehicleTabWidget(QtWidgets.QWidget):
     # ---- profile save/load -------------------------------------------------
     def get_config(self) -> dict:
         return {
-            "fields": {attr: edit.text() for attr, (edit, _f, _d) in self._fields.items()},
+            # Stored in each attribute's own unit rather than as display
+            # text, so a profile no longer depends on which unit the field
+            # happened to be showing. "_units" marks the new format; without
+            # it the values are read as the display text they used to be.
+            "_units": "storage",
+            "fields": {attr: (self._binder.get(attr)
+                              if isinstance(edit, unit_fields.UnitField)
+                              else edit.text())
+                       for attr, (edit, _f, _d) in self._fields.items()},
             "nose_shape": self.nose_shape.currentText(),
             "fin_profile": self.fin_profile.currentText(),
             "recovery": self.recovery_system().to_dict(),
@@ -578,10 +591,24 @@ class VehicleTabWidget(QtWidgets.QWidget):
     def apply_config(self, cfg: dict):
         if not cfg:
             return
+        storage_cfg = str(cfg.get("_units", "")) == "storage"
         for attr, value in (cfg.get("fields") or {}).items():
             entry = self._fields.get(attr)
-            if entry:
-                entry[0].setText(str(value))
+            if not entry:
+                continue
+            edit, factor, dec = entry
+            if isinstance(edit, unit_fields.UnitField):
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not storage_cfg:
+                    # Legacy profile: the number is display text in the unit
+                    # that used to be baked into this field's label.
+                    number = number / factor
+                self._binder.set(attr, number, dec)
+            else:
+                edit.setText(str(value))
         if hasattr(self, "mass_builder"):
             self.mass_builder.apply_config(cfg.get("mass_components") or [])
         for combo, key in ((self.nose_shape, "nose_shape"),
