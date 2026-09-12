@@ -185,7 +185,8 @@ def _arg_max(values):
 
 def analyze(flight, vehicle: VehicleConfig | None = None,
             engine_result=None, engine=None, cd_source=None,
-            mass_props=None, summary=None) -> Report:
+            mass_props=None, summary=None,
+            engine_is_flown: bool = True) -> Report:
     """Grade a completed flight against every failure mode we can evaluate.
 
     flight        : list of per-timestep dicts from simulation.run_simulation
@@ -238,7 +239,7 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     _structural_checks(rep, v, t, alt, vel, thrust, drag, acc, q, i_q, i_g, flight)
     _flight_checks(rep, v, t, alt, vel, thrust, mass, chute, flight,
                    cd_source, summary)
-    _engine_checks(rep, v, engine_result, engine)
+    _engine_checks(rep, v, engine_result, engine, engine_is_flown)
     _drag_source_check(rep, flight, cd_source)
     _mass_buildup_check(rep, v, flight, mass_props)
 
@@ -1212,7 +1213,27 @@ def _throat_and_vent_checks(rep, res, eng):
             "pad." if frac > 0.03 else "Vent losses stay small."))
 
 
-def _engine_checks(rep, v, res, eng):
+def _engine_checks(rep, v, res, eng, engine_is_flown: bool = True):
+    """Grade the motor's internal ballistics.
+
+    ``engine_is_flown`` False means the numbers describe the motor on the
+    Engine tab while a DIFFERENT thrust curve flew the trajectory. The checks
+    still run - a motor's internals are worth grading either way, and
+    reporting nothing was the old behaviour - but the report has to say which
+    motor it is looking at, so P-00 states it and the detail text does not
+    claim these numbers came from this flight.
+    """
+    if res is not None and eng is not None and not engine_is_flown:
+        rep.checks.append(Check(
+            "P-00", "Propulsion", "Engine source", CAUTION,
+            "modelled, not flown", "flown curve",
+            "The trajectory was flown on an imported thrust curve, so these "
+            "propulsion numbers come from the motor described on the Engine "
+            "tab rather than from the curve that flew. They grade that motor "
+            "correctly; they do not describe this flight's motor unless the "
+            "two are the same design.",
+            "Send this motor to the simulation from the Engine Lab to grade "
+            "the motor that actually flew."))
     if res is None or eng is None:
         for code, name in _ENGINE_CODES:
             rep.checks.append(Check(

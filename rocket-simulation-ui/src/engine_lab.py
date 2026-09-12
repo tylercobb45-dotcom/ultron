@@ -26,6 +26,7 @@ import traceback
 from PyQt5 import QtWidgets, QtCore
 import theme
 import rasp
+import unit_fields
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -162,8 +163,35 @@ _GAS_FIELDS = [
      "Mean molar mass of the exhaust."),
 ]
 
+
+# Which catalogue quantity each form key measures. Keys absent here are
+# dimensionless (efficiencies, discharge coefficients, gamma, counts, the
+# percentage fill fraction) and stay plain line edits with no unit selector -
+# offering one would imply a conversion that does not exist.
+_QUANTITY_FOR = {
+    "d_tank": "tank_diameter", "L_tank": "tank_length",
+    "T_tank_0": "tank_temp", "d_vent": "vent_diameter",
+    "d_hole": "hole_diameter", "L_grain": "grain_length",
+    "d_grain_outer": "grain_outer", "d_port_0": "port_diameter",
+    "L_pre": "pre_chamber", "L_post": "post_chamber",
+    "d_throat": "throat_diameter", "alpha_deg": "div_angle",
+    "beta_conv_deg": "conv_angle", "erosion_rate": "erosion_rate",
+    "MW": "molar_mass", "m_dry": "dry_mass", "d_body": "body_diameter",
+}
+
+
+# Display-unit factors as they were before unit selectors existed, used to
+# read profiles written back then. The Quick Flight Preview fields live in
+# their own list rather than _ALL_FIELDS, and looking them up only in
+# _ALL_FIELDS left body diameter unconverted - a 140 mm tube loading as a
+# 140 m one.
+_LEGACY_PREVIEW_FACTORS = {"m_dry": 1.0, "Cd_body": 1.0, "d_body": 1000.0}
+
 _ALL_FIELDS = (_TANK_FIELDS + _INJ_FIELDS + _GRAIN_FIELDS
                + _NOZZLE_FIELDS + _GAS_FIELDS)
+_LEGACY_DISPLAY_FACTOR = {
+    **{f[1]: f[2] for f in _ALL_FIELDS}, **_LEGACY_PREVIEW_FACTORS}
+
 _INT_FIELDS = {"n_holes", "n_ports"}
 
 # Defaults for the fields added after the original four-group form. Old saved
@@ -388,12 +416,8 @@ class EngineLabWidget(QtWidgets.QWidget):
             for spec in fields:
                 label, key, _factor, _dec = spec[0], spec[1], spec[2], spec[3]
                 tip = spec[4] if len(spec) > 4 else ""
-                edit = QtWidgets.QLineEdit()
-                edit.setStyleSheet(_INPUT_STYLE)
-                edit.setToolTip(tip)
-                edit.editingFinished.connect(self._update_derived)
-                self._fields[key] = edit
-                row_label = QtWidgets.QLabel(label + ":")
+                edit = self._make_field(key, tip)
+                row_label = QtWidgets.QLabel(self._field_label(key, label))
                 row_label.setToolTip(tip)
                 gform.addRow(row_label, edit)
             form_layout.addWidget(group)
@@ -412,10 +436,8 @@ class EngineLabWidget(QtWidgets.QWidget):
             ("Body Cd", "Cd_body", 1.0, 2),
             ("Body diameter (mm)", "d_body", 1000.0, 1),
         ]:
-            edit = QtWidgets.QLineEdit()
-            edit.setStyleSheet(_INPUT_STYLE)
-            self._fields[key] = edit
-            rform.addRow(label + ":", edit)
+            edit = self._make_field(key, "")
+            rform.addRow(self._field_label(key, label), edit)
         form_layout.addWidget(rocket_group)
 
         form_layout.addStretch()
@@ -475,9 +497,20 @@ class EngineLabWidget(QtWidgets.QWidget):
 
     def get_config(self) -> dict:
         """The engine design as plain values, for saving into a rocket profile."""
-        cfg = {key: edit.text() for key, edit in self._fields.items()}
+        cfg = {}
+        for key, widget in self._fields.items():
+            if isinstance(widget, unit_fields.UnitField):
+                cfg[key] = widget.value_si()
+            else:
+                cfg[key] = widget.text()
         cfg["fuel"] = self.fuel_combo.currentText()
         cfg["inj_type"] = self.inj_combo.currentText()
+        # Marks the dimensioned values above as SI. Profiles written before
+        # unit selectors existed stored the display number in whatever unit
+        # was baked into the label (tank diameter in mm, throat in mm), so
+        # without this flag they would be read as metres. _apply_config_values
+        # falls back to the old per-field factor when it is absent.
+        cfg["_units"] = "si"
         return cfg
 
     def apply_config(self, cfg: dict):
@@ -492,6 +525,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._update_derived()
 
     def _apply_config_values(self, cfg: dict):
+        si_config = str(cfg.get("_units", "")) == "si"
         # Reset anything the config does not mention back to its default first.
         # Leaving absent fields untouched meant loading a preset motor kept the
         # user's previous multi-port grain, eroding throat or open vent, so the
@@ -501,8 +535,12 @@ class EngineLabWidget(QtWidgets.QWidget):
                 continue
             spec = next((f for f in _ALL_FIELDS if f[1] == key), None)
             if spec:
-                self._fields[key].setText(
-                    f"{default * spec[2]:.{spec[3]}f}")
+                # Defaults are stored in SI, like everything else.
+                if isinstance(self._fields[key], unit_fields.UnitField):
+                    self._set_field_si(key, default, spec[3])
+                else:
+                    self._fields[key].setText(
+                        f"{default * spec[2]:.{spec[3]}f}")
         for key, value in cfg.items():
             if key == "fuel":
                 idx = self.fuel_combo.findText(str(value))
@@ -513,7 +551,68 @@ class EngineLabWidget(QtWidgets.QWidget):
                 if idx >= 0:
                     self.inj_combo.setCurrentIndex(idx)
             elif key in self._fields:
-                self._fields[key].setText(str(value))
+                widget = self._fields[key]
+                if isinstance(widget, unit_fields.UnitField):
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if not si_config:
+                        # Legacy profile: the number is in the unit that used
+                        # to be baked into this field's label.
+                        factor = _LEGACY_DISPLAY_FACTOR.get(key)
+                        if factor:
+                            number = number / factor
+                    widget.set_value_si(number)
+                else:
+                    widget.setText(str(value))
+
+    # ---- unit-aware field plumbing ---------------------------------------
+    def _make_field(self, key, tip):
+        """A UnitField for a dimensioned key, a plain line edit otherwise."""
+        qkey = _QUANTITY_FOR.get(key)
+        if qkey:
+            widget = unit_fields.UnitField(unit_fields.FIELDS[qkey])
+            widget.setToolTip(tip)
+            widget.edit.editingFinished.connect(self._update_derived)
+        else:
+            widget = QtWidgets.QLineEdit()
+            widget.setStyleSheet(_INPUT_STYLE)
+            widget.setToolTip(tip)
+            widget.editingFinished.connect(self._update_derived)
+        self._fields[key] = widget
+        return widget
+
+    @staticmethod
+    def _field_label(key, label):
+        """Strip the baked-in unit from a label that now has a selector."""
+        if key in _QUANTITY_FOR and "(" in label:
+            label = label[:label.index("(")].strip()
+        return label + ":"
+
+    def _field_si(self, key, default=None):
+        """Field value in SI, whichever unit is showing."""
+        widget = self._fields.get(key)
+        if widget is None:
+            return default
+        if isinstance(widget, unit_fields.UnitField):
+            return widget.value_si()
+        text = widget.text().strip()
+        if not text:
+            return default
+        try:
+            return float(text)
+        except ValueError:
+            return default
+
+    def _set_field_si(self, key, si, decimals=3):
+        widget = self._fields.get(key)
+        if widget is None:
+            return
+        if isinstance(widget, unit_fields.UnitField):
+            widget.set_value_si(si)
+        else:
+            widget.setText(f"{si:.{decimals}f}")
 
     def get_last_run(self):
         """(engine, result, metrics) from the last successful engine run, or None.
@@ -524,6 +623,33 @@ class EngineLabWidget(QtWidgets.QWidget):
         if self._last_result is None or self._last_engine is None:
             return None
         return self._last_engine, self._last_result, self._last_metrics
+
+    def current_engine_run(self):
+        """(engine, result, metrics) for the motor as the form stands now.
+
+        get_last_run() only answers once the user has pressed Run, and the
+        Flight Report only accepted it when the flight had been flown on this
+        tab's own generated curve. Between them, thirteen propulsion checks
+        reported "NO DATA" on every flight that used an imported thrust curve
+        - which is most of them.
+
+        The internal ballistics of the motor described on this tab are
+        computable whether or not that motor is the one that flew, so this
+        computes them on demand. The caller is responsible for saying which
+        case it has; what it must not do is report nothing.
+
+        Returns None only if the form cannot describe a motor at all.
+        """
+        if self._last_result is not None and self._last_engine is not None:
+            return self._last_engine, self._last_result, self._last_metrics
+        try:
+            engine = self._read_engine()
+            result = EngineModel(engine).run()
+            return engine, result, hs_metrics(result)
+        except Exception:
+            # A half-filled form is not an error worth surfacing here; the
+            # report simply says the engine could not be modelled.
+            return None
 
     # ---- presets -----------------------------------------------------------
     def _apply_preset(self, name):
@@ -542,7 +668,9 @@ class EngineLabWidget(QtWidgets.QWidget):
             key, factor, dec = spec[1], spec[2], spec[3]
             value = preset.get(key, _ENGINE_DEFAULTS.get(key))
             if value is not None:
-                self._fields[key].setText(f"{value * factor:.{dec}f}")
+                self._set_field_si(key, value, dec) \
+                    if isinstance(self._fields[key], unit_fields.UnitField) \
+                    else self._fields[key].setText(f"{value * factor:.{dec}f}")
         idx = self.inj_combo.findText(preset.get("inj_type", "Showerhead"))
         if idx >= 0:
             self.inj_combo.setCurrentIndex(idx)
@@ -556,7 +684,9 @@ class EngineLabWidget(QtWidgets.QWidget):
             ("Body diameter (mm)", "d_body", 1000.0, 1),
         ]:
             if key in rocket:
-                self._fields[key].setText(f"{rocket[key] * factor:.{dec}f}")
+                self._set_field_si(key, rocket[key], dec) \
+                    if isinstance(self._fields[key], unit_fields.UnitField) \
+                    else self._fields[key].setText(f"{rocket[key] * factor:.{dec}f}")
 
     def _injector_type_changed(self, name):
         """Suggest the matching discharge coefficient when the type changes.
@@ -615,24 +745,30 @@ class EngineLabWidget(QtWidgets.QWidget):
         kwargs = {}
         for spec in _ALL_FIELDS:
             key, factor = spec[1], spec[2]
-            text = self._fields[key].text().strip()
-            if not text:
-                # A blank optional field means "leave it at the default"
-                # rather than an error, so old saved profiles still load.
-                if key in _ENGINE_DEFAULTS:
-                    kwargs[key] = _ENGINE_DEFAULTS[key]
-                    continue
-                raise ValueError(f"Missing value for '{key}'")
-            value = float(text) / factor
+            widget = self._fields[key]
+            if isinstance(widget, unit_fields.UnitField):
+                # Already SI; the spec's factor described the old baked-in
+                # display unit and no longer applies.
+                value = widget.value_si()
+            else:
+                text = widget.text().strip()
+                if not text:
+                    # A blank optional field means "leave it at the default"
+                    # rather than an error, so old saved profiles still load.
+                    if key in _ENGINE_DEFAULTS:
+                        kwargs[key] = _ENGINE_DEFAULTS[key]
+                        continue
+                    raise ValueError(f"Missing value for '{key}'")
+                value = float(text) / factor
             kwargs[key] = int(round(value)) if key in _INT_FIELDS else value
         kwargs["fuel"] = FUELS[self.fuel_combo.currentText()]
         kwargs["inj_type"] = self.inj_combo.currentText()
         return Engine(**kwargs)
 
     def _read_rocket(self) -> Rocket:
-        m_dry = float(self._fields["m_dry"].text() or 20.0)
-        Cd_body = float(self._fields["Cd_body"].text() or 1.6)
-        d_body = float(self._fields["d_body"].text() or 140.0) / 1000.0
+        m_dry = self._field_si("m_dry", 20.0)
+        Cd_body = self._field_si("Cd_body", 1.6)
+        d_body = self._field_si("d_body", 0.140)
         return Rocket(m_dry=m_dry, Cd_body=Cd_body, d_body=d_body)
 
     # ---- actions ------------------------------------------------------------
@@ -728,7 +864,7 @@ class EngineLabWidget(QtWidgets.QWidget):
             self.error_label.setText(f"Could not save thrust curve to {out_dir}: {exc}")
             return
 
-        dry_mass = float(self._fields["m_dry"].text() or 20.0)
+        dry_mass = self._field_si("m_dry", 20.0)
         if self._on_send_to_simulation:
             self._on_send_to_simulation(path, self._last_metrics["prop_mass"], dry_mass)
 

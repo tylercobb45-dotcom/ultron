@@ -23,6 +23,8 @@ from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery ta
 from aero_tab import AeroAnalysisWidget  # Cd vs Mach analysis tab
 from sections import EngineSection, AerodynamicsSection, AssemblyPanel
 import theme as app_theme
+import units as app_units
+import unit_fields
 import flight_model
 import aero
 import datasheet  # Flight + engine spreadsheet views
@@ -1598,9 +1600,20 @@ class RocketSimulationUI(QtWidgets.QWidget):
         
         self.unit_select = QtWidgets.QComboBox()
         self.unit_select.addItems(["Metric (m, kg)", "Imperial (ft, lb)"])
+        # This combo existed but was connected to nothing, so choosing
+        # Imperial did not change a single field. It now switches every
+        # unit-aware field in the app to that system's preferred unit,
+        # converting the displayed number rather than reinterpreting it.
+        self.unit_select.currentIndexChanged.connect(self.on_unit_system_changed)
         units_layout.addWidget(QtWidgets.QLabel("Select Unit System:"))
         units_layout.addWidget(self.unit_select)
-        
+        units_layout.addWidget(QtWidgets.QLabel(
+            "<span style='font-size:9pt'>Every field keeps its value in SI "
+            "internally, so switching systems never changes the rocket - only "
+            "how it is written. Individual fields can still be set to any unit "
+            "of their own dimension. Dimensionless values (Cd, Mach, O/F, "
+            "efficiencies) have no unit and are unaffected.</span>"))
+
         settings_layout.addWidget(units_group)
         
         # Rocket Configuration Profiles section
@@ -3430,6 +3443,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     }}
                 """)
 
+    def unit_system(self):
+        """'metric' or 'imperial', per the Settings tab."""
+        return (app_units.IMPERIAL if self.unit_select.currentIndex() == 1
+                else app_units.METRIC)
+
+    def on_unit_system_changed(self, _index=None):
+        """Switch every unit-aware field to the chosen system."""
+        system = self.unit_system()
+        for field in self.findChildren(unit_fields.UnitField):
+            field.set_system(system)
+
     def on_theme_changed(self, theme_name):
         """Handle theme selection change"""
         if theme_name and theme_name in self.themes and theme_name != self.current_theme:
@@ -4428,13 +4452,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if not hasattr(self, 'flight_report'):
             return
         try:
-            engine_run = None
-            # Only attribute engine internals to a flight actually flown on the
-            # Engine Lab's own curve.
-            if (getattr(self, 'engine_lab_curve_path', None)
-                    and self.thrust_curve_path == self.engine_lab_curve_path):
-                engine_run = self.engine_lab.get_last_run()
-            engine, engine_result = (engine_run[0], engine_run[1]) if engine_run else (None, None)
+            # The engine internals are always computed, so the thirteen
+            # propulsion checks always have real numbers to grade. They used
+            # to be supplied only when the flight had been flown on the
+            # Engine Lab's own generated curve, which meant every flight on
+            # an imported thrust curve - most of them - reported NO DATA
+            # across the whole propulsion section.
+            #
+            # flown_engine says which case this is: True when the curve that
+            # flew came from this motor, False when the motor is modelled
+            # from the Engine tab while a different curve flew. The report
+            # says so rather than implying the two match.
+            flown_engine = bool(
+                getattr(self, 'engine_lab_curve_path', None)
+                and self.thrust_curve_path == self.engine_lab_curve_path)
+            engine_run = (self.engine_lab.get_last_run() if flown_engine
+                          else self.engine_lab.current_engine_run())
+            engine, engine_result = ((engine_run[0], engine_run[1])
+                                     if engine_run else (None, None))
 
             # Everything the report grades geometry against should be the
             # geometry that actually flew. Passing only diameter, fin count and
@@ -4464,6 +4499,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
             self.flight_report.update_from_simulation(
                 results, engine_result=engine_result, engine=engine,
+                engine_is_flown=flown_engine,
                 geometry_hints=hints,
                 cd_source=self.cd_source(),
                 mass_props=(self.vehicle_tab.mass_properties()
@@ -4497,22 +4533,30 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             traceback.print_exc()
 
-        # The engine sheet is only meaningful when the flight was actually
-        # flown on a curve this app generated, so we know what was inside it.
+        # Motor internals are computed for every run now, the same as the
+        # Flight Report's propulsion checks. When the flown curve came from
+        # somewhere else the sheet says so rather than showing nothing - the
+        # numbers still describe a real motor, just not necessarily the one
+        # that flew.
         try:
-            engine_run = None
-            if (getattr(self, 'engine_lab_curve_path', None)
-                    and self.thrust_curve_path == self.engine_lab_curve_path):
-                engine_run = self.engine_lab.get_last_run()
+            flown = bool(getattr(self, 'engine_lab_curve_path', None)
+                         and self.thrust_curve_path == self.engine_lab_curve_path)
+            engine_run = (self.engine_lab.get_last_run() if flown
+                          else self.engine_lab.current_engine_run())
             if engine_run:
                 self.engine_sheet.set_rows(datasheet.engine_rows(engine_run[1]))
+                self.engine_sheet.info.setText(
+                    "Motor internals at every integration sample."
+                    if flown else
+                    "This flight used an imported thrust curve. These are the "
+                    "internals of the motor described on the Engine tab, which "
+                    "is not necessarily the motor that flew.")
             else:
                 self.engine_sheet.set_rows([])
                 self.engine_sheet.info.setText(
-                    "This flight used an imported thrust curve, so there are "
-                    "no motor internals to show. Design the motor on the "
-                    "Engine Lab tab and press \"Send to Simulation\" to get "
-                    "chamber pressure, O/F, regression rate and the rest.")
+                    "The Engine tab does not yet describe a motor that can be "
+                    "modelled. Fill in the tank, injector, grain and nozzle "
+                    "to get chamber pressure, O/F, regression rate and the rest.")
         except Exception:
             traceback.print_exc()
 

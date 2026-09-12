@@ -21,6 +21,8 @@ from pathlib import Path
 
 from PyQt5 import QtWidgets, QtGui, QtCore
 import theme
+import graphs_tab
+import datasheet
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -229,7 +231,34 @@ class FlightReportWidget(QtWidgets.QWidget):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([440, 460])
-        vbox.addWidget(splitter, stretch=1)
+
+        # Three views of the same run: the graded checks, every graph, and the
+        # raw per-timestep numbers behind both. The checks tab keeps its own
+        # summary figure; the Graphs tab is the full set.
+        self.view_tabs = QtWidgets.QTabWidget()
+        checks_host = QtWidgets.QWidget()
+        ch = QtWidgets.QVBoxLayout(checks_host)
+        ch.setContentsMargins(0, 0, 0, 0)
+        ch.addWidget(splitter)
+        self.view_tabs.addTab(checks_host, "Checks")
+
+        self.graphs = graphs_tab.GraphGallery()
+        self.view_tabs.addTab(self.graphs, "Graphs")
+
+        self.raw_sheet = datasheet.DataSheet(
+            datasheet.FLIGHT_COLUMNS, title="flight_raw_data")
+        self.raw_sheet.info.setText(
+            "Run a simulation - every computed value at every output step "
+            "appears here, one row per timestep.")
+        self.view_tabs.addTab(self.raw_sheet, "Raw Data")
+
+        self.engine_raw_sheet = datasheet.DataSheet(
+            datasheet.ENGINE_COLUMNS, title="engine_raw_data")
+        self.engine_raw_sheet.info.setText(
+            "Motor internals at every integration sample.")
+        self.view_tabs.addTab(self.engine_raw_sheet, "Engine Raw Data")
+
+        vbox.addWidget(self.view_tabs, stretch=1)
         return panel
 
     def _update_material_note(self):
@@ -303,8 +332,16 @@ class FlightReportWidget(QtWidgets.QWidget):
     # ---- data in -----------------------------------------------------------
     def update_from_simulation(self, flight, engine_result=None, engine=None,
                                geometry_hints=None, cd_source=None,
-                               mass_props=None, summary=None):
-        """Called after a simulation run completes."""
+                               mass_props=None, summary=None,
+                               engine_is_flown=True):
+        """Called after a simulation run completes.
+
+        ``engine_is_flown`` distinguishes "these internals belong to the curve
+        that flew" from "this is the motor on the Engine tab, modelled while a
+        different curve flew". Both give the propulsion checks real numbers;
+        only the first lets the report claim they describe this flight.
+        """
+        self._engine_is_flown = engine_is_flown
         if geometry_hints:
             self.apply_geometry_hints(geometry_hints)
         self._flight = flight
@@ -321,8 +358,24 @@ class FlightReportWidget(QtWidgets.QWidget):
         if not self._flight:
             self.banner.setText("Run a simulation first - the report is built from its data.")
             return
+        # Feed the Graphs and Raw Data tabs the same rows the checks grade,
+        # derived the same way the Flight Data sheet derives them, so the
+        # three views can never disagree about a number.
+        try:
+            flight_rows = datasheet.flight_rows(self._flight)
+            engine_rows = (datasheet.engine_rows(self._engine_result)
+                           if self._engine_result else [])
+            self.raw_sheet.set_rows(flight_rows)
+            self.engine_raw_sheet.set_rows(engine_rows)
+            self.graphs.set_data(flight_rows, engine_rows)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
         self._report = fa.analyze(self._flight, self.vehicle_config(),
                                   self._engine_result, self._engine,
+                                  engine_is_flown=getattr(
+                                      self, "_engine_is_flown", True),
                                   cd_source=getattr(self, "_cd_source", None),
                                   mass_props=getattr(self, "_mass_props", None),
                                   summary=getattr(self, "_summary", None))
