@@ -16,6 +16,8 @@ Qt-free and importable on its own so it can be tested headlessly.
 from __future__ import annotations
 
 import math
+
+import flight_equations as fe
 from dataclasses import dataclass
 
 G0 = 9.80665           # standard gravity [m/s^2]
@@ -65,12 +67,12 @@ _P_BASE = _build_base_pressures()
 
 def geopotential(z: float) -> float:
     """Geometric altitude [m] -> geopotential altitude [m]."""
-    return R_EARTH * z / (R_EARTH + z)
+    return fe.geopotential_altitude(z)
 
 
 def viscosity(T: float) -> float:
     """Dynamic viscosity of air [Pa s] from Sutherland's law."""
-    return _MU0 * (T / _T_MU0) ** 1.5 * (_T_MU0 + _S_MU) / (T + _S_MU)
+    return fe.air_viscosity(T)
 
 
 def properties(z: float):
@@ -94,8 +96,8 @@ def properties(z: float):
     else:
         T = t0 + lapse * (h - h0)
         P = p0 * (T / t0) ** (-G0 / (R_AIR * lapse))
-    rho = P / (R_AIR * T)
-    return T, P, rho, math.sqrt(GAMMA * R_AIR * T), viscosity(T)
+    rho = fe.air_density(P, T)
+    return T, P, rho, fe.speed_of_sound(T), viscosity(T)
 
 
 @dataclass
@@ -127,10 +129,7 @@ class LaunchSite:
     def gravity(self, z: float = 0.0) -> float:
         """Latitude- and altitude-corrected gravity [m/s^2]."""
         phi = math.radians(self.latitude_deg)
-        g_surface = 9.780327 * (1 + 0.0053024 * math.sin(phi) ** 2
-                                - 0.0000058 * math.sin(2 * phi) ** 2)
-        r = R_EARTH + self.elevation_m + max(0.0, z)
-        return g_surface * (R_EARTH / r) ** 2
+        return fe.local_gravity(self.latitude_deg, z, self.elevation_m)
 
     def _offsets(self):
         """Temperature and pressure multipliers that pin the standard column

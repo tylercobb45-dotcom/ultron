@@ -29,6 +29,8 @@ Qt-free and importable on its own.
 from __future__ import annotations
 
 import math
+
+import flight_equations as fe
 from dataclasses import dataclass, field
 
 # --- nose cone shapes -----------------------------------------------------
@@ -218,25 +220,8 @@ class Airframe:
 
 def skin_friction_coefficient(reynolds: float, mach: float,
                               roughness_m: float, length_m: float) -> float:
-    """Flat-plate skin friction, compressibility corrected.
-
-    Turbulent Prandtl-Schlichting above transition, laminar Blasius below,
-    with a roughness floor so a rough airframe cannot beat a smooth one.
-    """
-    re = max(1.0, reynolds)
-    if re < 5.0e5:
-        cf = 1.328 / math.sqrt(re)
-    else:
-        cf = 0.455 / (math.log10(re) ** 2.58)
-    # Roughness-limited friction: below a critical Reynolds the surface finish
-    # governs and Cf stops falling with Re.
-    if roughness_m > 0 and length_m > 0:
-        cf_rough = 0.032 * (roughness_m / length_m) ** 0.2
-        cf = max(cf, cf_rough)
-    # Compressibility: friction drops as Mach rises
-    if mach > 0.1:
-        cf /= (1.0 + 0.15 * mach * mach) ** 0.58
-    return cf
+    """Flat-plate skin friction - see flight_equations for the equation."""
+    return fe.skin_friction_coefficient(reynolds, mach, roughness_m, length_m)
 
 
 def base_drag_coefficient(mach: float, thrusting: bool) -> float:
@@ -246,13 +231,7 @@ def base_drag_coefficient(mach: float, thrusting: bool) -> float:
     this term largely disappears - which is why a rocket's drag jumps at
     burnout even though nothing about its shape changed.
     """
-    if mach < 1.0:
-        cd = 0.12 + 0.13 * mach * mach
-    else:
-        cd = 0.25 / mach
-    if thrusting:
-        cd *= 0.15
-    return cd
+    return fe.base_drag_coefficient(mach, thrusting)
 
 
 def wave_drag_coefficient(mach: float, airframe: Airframe) -> float:
@@ -265,29 +244,9 @@ def wave_drag_coefficient(mach: float, airframe: Airframe) -> float:
 
     This is an engineering correlation, not CFD.
     """
-    fineness = max(0.5, airframe.nose_fineness)
     _cp, shape_factor, _desc = NOSE_SHAPES.get(
         airframe.nose_shape, NOSE_SHAPES["Tangent Ogive"])
-
-    # Drag divergence: finer noses hold off the transonic rise longer.
-    m_div = min(0.95, 0.72 + 0.06 * min(fineness, 4.0))
-    if mach <= m_div:
-        return 0.0
-
-    # Peak transonic wave drag, referenced to frontal area.
-    peak = shape_factor * 0.90 / (fineness ** 1.20)
-    peak = min(peak, 1.2)
-    m_peak = 1.10
-
-    if mach < m_peak:
-        # Rise from divergence to the transonic peak
-        frac = (mach - m_div) / (m_peak - m_div)
-        return peak * frac ** 1.8
-    # Supersonic decay. Slender-body wave drag falls roughly with the
-    # Prandtl-Glauert factor; clamp so it stays physical out to Mach 5+.
-    beta = math.sqrt(max(0.05, mach * mach - 1.0))
-    decay = min(1.0, 1.10 / beta ** 0.85)
-    return peak * decay
+    return fe.wave_drag_coefficient(mach, airframe.nose_fineness, shape_factor)
 
 
 def fin_drag_coefficient(mach: float, airframe: Airframe, cf: float) -> float:
