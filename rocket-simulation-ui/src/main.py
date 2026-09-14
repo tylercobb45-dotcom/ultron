@@ -1833,7 +1833,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             def _idle_force_update():
                 try:
                     if not self.is_launching:
-                        self.update_force_diagram()
+                        self.update_force_diagram(
+                            getattr(self, '_force_scrub_time', None))
                 except Exception:
                     pass
             self.force_update_timer.timeout.connect(_idle_force_update)
@@ -2543,7 +2544,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.net_vector = None
         
         layout.addWidget(self.force_canvas)
-        
+
+        # Scrub through the flight. Without this the diagram only ever showed
+        # whatever instant the launch animation happened to be at, so the
+        # forces were unreadable in motion and frozen at zero the rest of the
+        # time. Dragging this walks the real simulated flight.
+        scrub_row = QtWidgets.QHBoxLayout()
+        self.force_scrubber = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.force_scrubber.setRange(0, 1000)
+        self.force_scrubber.setEnabled(False)
+        self.force_scrubber.valueChanged.connect(self._on_force_scrub)
+        self.force_time_label = QtWidgets.QLabel("Run a simulation to scrub")
+        self.force_time_label.setStyleSheet(
+            f"color:{app_theme.PALETTE['text_dim']}; font-size:9pt;")
+        self.force_time_label.setMinimumWidth(150)
+        scrub_row.addWidget(self.force_scrubber, 1)
+        scrub_row.addWidget(self.force_time_label)
+        layout.addLayout(scrub_row)
+
         # Force magnitude displays
         forces_grid = QtWidgets.QGridLayout()
         forces_grid.setSpacing(8)
@@ -3228,186 +3246,206 @@ class RocketSimulationUI(QtWidgets.QWidget):
             
             pass
 
-    def update_force_diagram(self):
-        """Update the real-time force vector diagram"""
+    def force_state(self, t=None):
+        """The forces acting on the rocket at time t, from the real flight.
+
+        This used to recompute its own approximations - a fixed 1.5 chute Cd,
+        sea-level density, g as 9.81 - and only while the launch animation was
+        running, so the panel read zero at every other moment. The simulation
+        already produces thrust, drag, mass, local gravity and canopy drag at
+        every timestep, so the diagram shows those instead of a second, worse
+        estimate that could disagree with the flight it claims to describe.
+
+        Returns a dict of real numbers, or the standing-on-the-pad state when
+        no flight has been run yet.
+        """
+        rows = getattr(self, '_last_results', None)
+        if rows:
+            if t is None:
+                t = getattr(self, 'launch_time', 0.0)
+            # Nearest sample. The output step is small enough that
+            # interpolating would not change what the arrows look like.
+            row = min(rows, key=lambda r: abs((r.get('time') or 0.0) - t))
+            mass = row.get('mass') or 0.0
+            gravity = row.get('gravity') or 9.80665
+            thrust = max(0.0, row.get('thrust') or 0.0)
+            velocity = row.get('velocity') or 0.0
+            # The model reports total drag; split the canopy back out so the
+            # panel can show them separately the way it always claimed to.
+            drag_total = abs(row.get('drag') or 0.0)
+            cda_chute = row.get('cda_recovery') or 0.0
+            cda_body = max(0.0, (row.get('Cd_eff') or 0.0) * (row.get('A_eff') or 0.0))
+            share = cda_chute / (cda_chute + cda_body) if (cda_chute + cda_body) > 0 else 0.0
+            chute_drag = drag_total * share
+            body_drag = drag_total - chute_drag
+            weight = mass * gravity
+            return {
+                'time': row.get('time') or 0.0,
+                'thrust': thrust, 'body_drag': body_drag,
+                'chute_drag': chute_drag, 'weight': weight,
+                'net': thrust - drag_total * (1 if velocity >= 0 else -1) - weight,
+                'velocity': velocity, 'mass': mass,
+                'on_pad': False, 'has_flight': True,
+                'chute_deployed': bool(row.get('chute_deployed')),
+            }
+
+        # No flight yet: the rocket is sitting on the rail. Weight is real and
+        # the rail pushes back exactly as hard, which is worth drawing - it is
+        # a true free-body diagram, not a blank panel.
+        try:
+            mass = self.get_inputs_for_simulation()[0] or 0.0
+        except Exception:
+            mass = 0.0
+        weight = mass * 9.80665
+        return {'time': 0.0, 'thrust': 0.0, 'body_drag': 0.0, 'chute_drag': 0.0,
+                'weight': weight, 'net': 0.0, 'velocity': 0.0, 'mass': mass,
+                'on_pad': True, 'has_flight': False, 'chute_deployed': False}
+
+    def update_force_diagram(self, t=None):
+        """Draw the free-body diagram for the current moment of flight."""
         if not hasattr(self, 'force_ax') or not hasattr(self, 'force_canvas'):
             return
-            
-        # Clear and reset the diagram
-        self.force_ax.clear()
-        self.force_ax.set_xlim(-2, 2)
-        self.force_ax.set_ylim(-1, 4)
-        self.force_ax.set_aspect('equal')
-        self.force_ax.axis('off')
-        
-        import matplotlib.patches as patches
-        
-        # Draw enhanced rocket body instead of simple rectangle
-        self.draw_rocket_body()
-        
-        # Update and draw airflow particles
-        self.update_airflow_particles()
-        
-        if hasattr(self, 'is_launching') and self.is_launching:
-            # Get current forces from simulation
-            try:
-                # Calculate current forces
-                _, Cd, A, rho, _, _, _, _, _, _, _, _ = self.get_inputs_for_simulation()
-                
-                # Get current values
-                velocity = getattr(self, 'launch_velocity', 0.0)
-                mass = getattr(self, 'launch_mass', 0.0)
-                time = getattr(self, 'launch_time', 0.0)
-                
-                # Get thrust from thrust curve
-                times_thrust, thrusts, thrust_func, burn_time = self.load_thrust_curve_data()
-                thrust_force = float(thrust_func(time)) if time <= burn_time else 0.0
-                
-                # Calculate drag force
-                drag_force = 0.5 * rho * (velocity ** 2) * Cd * A if velocity != 0 else 0.0
-                drag_force = abs(drag_force)  # Always positive magnitude
-                
-                # Check for parachute deployment and calculate parachute drag
-                chute_deployed = getattr(self, 'chute_deployed', False)
-                chute_drag_force = 0.0
-                if chute_deployed:
-                    try:
-                        chute_cd = 1.5  # Typical parachute drag coefficient
-                        _, _, _, _, _, _, _, _, _, chute_size, _, _ = self.get_inputs_for_simulation()
-                        if chute_size and chute_size > 0:
-                            chute_open_factor = getattr(self, 'chute_open_factor', 1.0)
-                            effective_chute_area = chute_size * chute_open_factor
-                            chute_drag_force = 0.5 * rho * (velocity ** 2) * chute_cd * effective_chute_area if velocity != 0 else 0.0
-                            chute_drag_force = abs(chute_drag_force)
-                    except:
-                        chute_drag_force = 0.0
-                
-                # Total drag is body drag + parachute drag
-                total_drag_force = drag_force + chute_drag_force
-                
-                # Weight force
-                weight_force = mass * 9.81
-                
-                # Net force (upward positive) - include parachute drag in calculation
-                net_force = thrust_force - total_drag_force - weight_force
-                
-                # Scale factors for display (normalize to largest force for visibility)
-                max_force = max(thrust_force, total_drag_force, weight_force, abs(net_force), 1.0)
-                scale = 1.0 / max_force  # Scale to unit vectors, then apply display scale
-                display_scale = 0.8  # Maximum arrow length
-                
-                # Rocket center reference (define before any drawing that uses it)
-                rocket_center_x, rocket_center_y = 0.0, 2.0
 
-                # Draw parachute if deployed (after we have center coordinates)
-                if chute_deployed:
-                    self.draw_parachute(rocket_center_x, rocket_center_y, chute_open_factor)
-                
-                # Thrust vector (upward, green)
-                if thrust_force > 0:
-                    thrust_length = thrust_force * scale * display_scale
-                    self.force_ax.arrow(rocket_center_x, rocket_center_y, 0, thrust_length,
-                                       head_width=0.08, head_length=0.06, fc='#00FF00', ec='#00FF00',
-                                       linewidth=2, alpha=0.8)
-                    self.force_ax.text(rocket_center_x + 0.3, rocket_center_y + thrust_length/2,
-                                      f'T={thrust_force:.0f}N', fontsize=8, color='#00FF00', fontweight='bold')
-                    
-                    # Add engine exhaust visualization
-                    self.draw_engine_exhaust(thrust_force, max_force)
-                
-                # Drag vector (downward, red) - body drag only
-                if drag_force > 0 and abs(velocity) > 0.1:
-                    drag_length = drag_force * scale * display_scale
-                    drag_direction = -1 if velocity > 0 else 1  # Oppose motion
-                    self.force_ax.arrow(rocket_center_x - 0.3, rocket_center_y, 0, drag_direction * drag_length,
-                                       head_width=0.08, head_length=0.06, fc='#FF4444', ec='#FF4444',
-                                       linewidth=2, alpha=0.8)
-                    self.force_ax.text(rocket_center_x - 0.6, rocket_center_y + (drag_direction * drag_length)/2,
-                                      f'D={drag_force:.0f}N', fontsize=8, color='#FF4444', fontweight='bold')
-                
-                # Parachute drag vector (separate from body drag, purple/magenta)
-                if chute_deployed and chute_drag_force > 0 and abs(velocity) > 0.1:
-                    chute_drag_length = chute_drag_force * scale * display_scale
-                    chute_drag_direction = -1 if velocity > 0 else 1  # Oppose motion
-                    self.force_ax.arrow(rocket_center_x - 0.6, rocket_center_y + 0.8, 0, chute_drag_direction * chute_drag_length,
-                                       head_width=0.08, head_length=0.06, fc='#FF00FF', ec='#FF00FF',
-                                       linewidth=2, alpha=0.8)
-                    self.force_ax.text(rocket_center_x - 0.9, rocket_center_y + 0.8 + (chute_drag_direction * chute_drag_length)/2,
-                                      f'CD={chute_drag_force:.0f}N', fontsize=8, color='#FF00FF', fontweight='bold')
-                
-                # Weight vector (downward, orange)
-                if weight_force > 0:
-                    weight_length = weight_force * scale * display_scale
-                    self.force_ax.arrow(rocket_center_x + 0.3, rocket_center_y, 0, -weight_length,
-                                       head_width=0.08, head_length=0.06, fc='#FFAA00', ec='#FFAA00',
-                                       linewidth=2, alpha=0.8)
-                    self.force_ax.text(rocket_center_x + 0.6, rocket_center_y - weight_length/2,
-                                      f'W={weight_force:.0f}N', fontsize=8, color='#FFAA00', fontweight='bold')
-                
-                # Net force vector (cyan, from center)
-                if abs(net_force) > 1.0:  # Only show if significant
-                    net_length = abs(net_force) * scale * display_scale
-                    net_direction = 1 if net_force > 0 else -1
-                    self.force_ax.arrow(rocket_center_x, rocket_center_y - 0.8, 0, net_direction * net_length,
-                                       head_width=0.12, head_length=0.08, fc='#00D4FF', ec='#00D4FF',
-                                       linewidth=3, alpha=0.9)
-                    self.force_ax.text(rocket_center_x - 0.8, rocket_center_y - 0.8 + (net_direction * net_length)/2,
-                                      f'Net={net_force:.0f}N', fontsize=8, color='#00D4FF', fontweight='bold')
-                
-                # Update force displays
-                if hasattr(self, 'thrust_force_display'):
-                    self.thrust_force_display.value.setText(f"{thrust_force:.0f} {self.thrust_force_display.unit}")
-                    self.drag_force_display.value.setText(f"{drag_force:.0f} {self.drag_force_display.unit}")
-                    self.chute_drag_display.value.setText(f"{chute_drag_force:.0f} {self.chute_drag_display.unit}")
-                    self.weight_force_display.value.setText(f"{weight_force:.0f} {self.weight_force_display.unit}")
-                    self.net_force_display.value.setText(f"{net_force:.0f} {self.net_force_display.unit}")
-                    self.velocity_display.value.setText(f"{velocity:.1f} {self.velocity_display.unit}")
-                    
-                    # Update chute drag display color based on deployment
-                    if chute_deployed:
-                        self.chute_drag_display.label.setStyleSheet("font-size: 9px; font-weight: bold; color: #FF00FF;")
-                    else:
-                        self.chute_drag_display.label.setStyleSheet("font-size: 9px; font-weight: bold; color: #808080;")
-                
-            except Exception as e:
-                # On error, show default state
-                self.setup_initial_force_diagram()
-                return
-        else:
-            # Standby state - show static rocket with zero forces
+        if t is None:
+            # The idle refresh timer calls this with no time. Without this it
+            # fell back to launch_time (0.0) and redrew the pad every 150ms,
+            # wiping out whatever moment the user had scrubbed to a fraction
+            # of a second after they got there.
+            t = getattr(self, '_force_scrub_time', None)
+        state = self.force_state(t)
+        ax = self.force_ax
+        ax.clear()
+        # Tight limits around where the arrows actually live, so the diagram
+        # fills the panel instead of being a small drawing in a large empty
+        # box. Aspect stays equal so a force twice as big looks twice as long.
+        ax.set_xlim(-1.75, 1.75)
+        ax.set_ylim(-2.0, 3.4)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        self.draw_rocket_body()
+        try:
+            self.update_airflow_particles()
+        except Exception:
+            pass
+
+        cx, cy = 0.0, 2.0
+        if state['chute_deployed']:
             try:
-                m, _, _, _, _, _, _, _, _, _, _, _ = self.get_inputs_for_simulation()
-                weight_force = m * 9.81
-                
-                if hasattr(self, 'thrust_force_display'):
-                    self.thrust_force_display.value.setText(f"0 {self.thrust_force_display.unit}")
-                    self.drag_force_display.value.setText(f"0 {self.drag_force_display.unit}")
-                    self.chute_drag_display.value.setText(f"0 {self.chute_drag_display.unit}")
-                    self.weight_force_display.value.setText(f"{weight_force:.0f} {self.weight_force_display.unit}")
-                    self.net_force_display.value.setText(f"0 {self.net_force_display.unit}")
-                    self.velocity_display.value.setText(f"0.0 {self.velocity_display.unit}")
-                    
-                    # Gray out chute display when not deployed
-                    self.chute_drag_display.label.setStyleSheet("font-size: 9px; font-weight: bold; color: #808080;")
-            except:
-                if hasattr(self, 'thrust_force_display'):
-                    self.thrust_force_display.value.setText(f"0 {self.thrust_force_display.unit}")
-                    self.drag_force_display.value.setText(f"0 {self.drag_force_display.unit}")
-                    self.chute_drag_display.value.setText(f"0 {self.chute_drag_display.unit}")
-                    self.weight_force_display.value.setText(f"0 {self.weight_force_display.unit}")
-                    self.net_force_display.value.setText(f"0 {self.net_force_display.unit}")
-                    self.velocity_display.value.setText(f"0.0 {self.velocity_display.unit}")
-                    
-                    # Gray out chute display
-                    self.chute_drag_display.label.setStyleSheet("font-size: 9px; font-weight: bold; color: #808080;")
-        
-        # Add title
-        theme_color = '#ECF0F1' if self.current_theme == "professional" else '#2C3E50'
-        self.force_ax.text(0, 3.5, 'Live Forces', ha='center', va='center',
-                          fontsize=9, fontweight='bold', color=theme_color)
-        
-        # Refresh display
-        self.force_canvas.draw()
+                self.draw_parachute(cx, cy, getattr(self, 'chute_open_factor', 1.0))
+            except Exception:
+                pass
+        if state['thrust'] > 0:
+            try:
+                self.draw_engine_exhaust(state['thrust'], max(state['thrust'], 1.0))
+            except Exception:
+                pass
+
+        # Every arrow is scaled against the largest force on screen, so the
+        # picture stays readable whether the numbers are newtons or kilonewtons
+        # and you can still see at a glance which force dominates.
+        v = state['velocity']
+        oppose = -1 if v >= 0 else 1        # drag always opposes motion
+        arrows = [
+            ('thrust', state['thrust'], 0.0, +1, '#00FF00', 'Thrust'),
+            ('body_drag', state['body_drag'], -0.55, oppose, '#FF4444', 'Drag'),
+            ('chute_drag', state['chute_drag'], -1.05, oppose, '#FF00FF', 'Chute'),
+            ('weight', state['weight'], 0.55, -1, '#FFAA00', 'Weight'),
+        ]
+        if state['on_pad'] and state['weight'] > 0:
+            # The rail holds the vehicle up; without this the pad diagram shows
+            # weight with nothing balancing it, which is simply wrong.
+            arrows.append(('normal', state['weight'], 1.05, +1, '#7FDBFF', 'Rail'))
+
+        biggest = max([abs(a[1]) for a in arrows] + [abs(state['net']), 1.0])
+        span = 1.15                     # longest arrow drawn, in axis units
+
+        # A force under half a newton, or under half a percent of the biggest
+        # one, is not worth an arrow: it drew a stub labelled "0 N", which
+        # reads as a force that is there and zero rather than one that is not
+        # there at all.
+        floor = max(0.5, biggest * 0.005)
+        for _key, magnitude, dx, direction, colour, label in arrows:
+            if magnitude < floor:
+                continue
+            length = (magnitude / biggest) * span
+            ax.arrow(cx + dx, cy, 0, direction * length,
+                     head_width=0.10, head_length=0.09,
+                     fc=colour, ec=colour, linewidth=2.2,
+                     length_includes_head=True, alpha=0.95)
+            ax.text(cx + dx, cy + direction * (length + 0.12),
+                    f"{label}\n{magnitude:,.0f} N", ha='center',
+                    va='bottom' if direction > 0 else 'top',
+                    fontsize=7, color=colour, fontweight='bold',
+                    linespacing=0.95)
+
+        net = state['net']
+        if abs(net) > 0.5:
+            length = (abs(net) / biggest) * span
+            direction = 1 if net > 0 else -1
+            ax.arrow(cx, cy - 1.5, 0, direction * max(length, 0.06),
+                     head_width=0.15, head_length=0.11,
+                     fc='#00D4FF', ec='#00D4FF', linewidth=3,
+                     length_includes_head=True, alpha=0.95)
+            ax.text(cx + 0.18, cy - 1.5 + direction * length / 2,
+                    f"Net {net:,.0f} N", fontsize=8, color='#00D4FF',
+                    fontweight='bold', va='center', ha='left')
+        elif state['on_pad']:
+            ax.text(cx, cy - 1.7, "Net 0 N - balanced on the rail",
+                    ha='center', va='center', fontsize=7.5, color='#7A7A86')
+
+        headline = ('On the pad' if state['on_pad'] else
+                    f"t = {state['time']:.2f} s")
+        # set_title puts this outside the drawing area; as a text() at the top
+        # of the axes it collided with the label on the longest arrow.
+        ax.set_title(f"Live Forces - {headline}", fontsize=9,
+                     fontweight='bold', color='#FFFFFF', pad=6)
+        if not state['has_flight']:
+            ax.text(0, -1.9, "Run a simulation to scrub through the flight",
+                    ha='center', va='center', fontsize=7.5, color='#7A7A86')
+
+        self._update_force_readouts(state)
+        self.force_canvas.draw_idle()
+
+    def _update_force_readouts(self, state):
+        """Push the same numbers to the gauges under the diagram."""
+        if not hasattr(self, 'thrust_force_display'):
+            return
+        for widget, value in (
+                (self.thrust_force_display, state['thrust']),
+                (self.drag_force_display, state['body_drag']),
+                (self.chute_drag_display, state['chute_drag']),
+                (self.weight_force_display, state['weight']),
+                (self.net_force_display, state['net'])):
+            widget.value.setText(f"{value:,.0f} {widget.unit}")
+        self.velocity_display.value.setText(
+            f"{state['velocity']:.1f} {self.velocity_display.unit}")
+        live = "#FF00FF" if state['chute_deployed'] else "#808080"
+        self.chute_drag_display.label.setStyleSheet(
+            f"font-size: 9px; font-weight: bold; color: {live};")
+
+    def _on_force_scrub(self, value):
+        """Time slider under the force diagram."""
+        rows = getattr(self, '_last_results', None)
+        if not rows:
+            return
+        span = (rows[-1].get('time') or 0.0)
+        t = span * (value / 1000.0)
+        self._force_scrub_time = t
+        self.force_time_label.setText(f"t = {t:6.2f} s  of {span:.1f} s")
+        self.update_force_diagram(t)
+
+    def enable_force_scrubber(self):
+        """Switch the scrubber on once there is a flight to scrub."""
+        if not hasattr(self, 'force_scrubber'):
+            return
+        rows = getattr(self, '_last_results', None)
+        has = bool(rows)
+        self.force_scrubber.setEnabled(has)
+        self._force_scrub_time = 0.0 if has else None
+        if has:
+            self.force_scrubber.setValue(0)
+            self._on_force_scrub(0)
 
     # (Removed temporary stub definition of update_launch_frame; real implementation appears later.)
 
@@ -3961,9 +3999,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Update time
         self.launch_time += 0.05
 
-        # Update live force diagram in sync with animation
+        # Update live force diagram in sync with animation. The animation's
+        # own clock is passed explicitly - falling through to the scrubbed
+        # time would freeze the diagram while the rocket flew up the screen.
         try:
-            self.update_force_diagram()
+            self.update_force_diagram(self.launch_time)
         except Exception:
             pass
         
@@ -4720,6 +4760,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     def plot_results(self, results):
         self._last_results = results
+        # The force diagram can now be scrubbed across the real flight.
+        try:
+            self.enable_force_scrubber()
+        except Exception:
+            traceback.print_exc()
         self.figure.clear()
         if not results:
             return
