@@ -52,7 +52,11 @@ def main():
     hybrid_sim_dir = project_root / "hybrid_sim"
 
     cmd = [
-        sys.executable, "-m", "pyinstaller",
+        # "PyInstaller", capitalised: that is the real package name. The
+        # lowercase spelling only resolves on a case-insensitive filesystem,
+        # so "-m pyinstaller" works on Windows and fails outright on Linux
+        # and macOS.
+        sys.executable, "-m", "PyInstaller",
         # onedir, not onefile. A onefile build re-extracts the entire
         # bundle to a temp folder on EVERY launch - tens of seconds from a
         # USB stick, it litters temp directories, and locked-down lab

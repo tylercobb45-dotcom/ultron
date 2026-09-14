@@ -66,6 +66,35 @@ jobs:
         working-directory: rocket-simulation-ui
         run: python build_simple.py --no-prompt
 
+      - name: Check the bundle is complete
+        # PyInstaller does not fail when it leaves a module out - it just
+        # ships an app that dies on the user's machine. Open the bundle and
+        # confirm every module and data folder actually made it in.
+        working-directory: rocket-simulation-ui
+        run: python tools/check_bundle.py
+
+      - name: Check it starts (Linux only)
+        # The one runner where a real headless launch is possible. A window
+        # that builds is the broadest smoke test there is.
+        if: runner.os == 'Linux'
+        working-directory: rocket-simulation-ui/dist/JARVIS_Rocket_Simulation
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          # The log goes to the runner temp, not into the folder we are
+          # about to ship.
+          timeout 60 ./JARVIS_Rocket_Simulation > "$RUNNER_TEMP/launch.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/launch.log"
+          # 124 is the timeout killing a healthy, still-running app. Anything
+          # else means it exited on its own, which at startup means it crashed.
+          if [ "$code" -ne 124 ]; then
+            echo "::error::the app exited with $code instead of staying up"
+            exit 1
+          fi
+          echo "started and stayed up"
+
       - name: Stage the downloadable folder
         shell: bash
         working-directory: rocket-simulation-ui
