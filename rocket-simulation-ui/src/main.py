@@ -4161,8 +4161,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     def select_thrust_curve(self):
         options = QtWidgets.QFileDialog.Options()
-        # Default to the thrust_curves directory in the project if it exists
-        default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'thrust_curves')
+        # Default to the bundled thrust_curves folder. bundled_dir, not a walk
+        # up from __file__: in the downloadable build the curves are unpacked
+        # beside the program, not two folders above this module.
+        default_dir = portable_paths.bundled_dir('thrust_curves')
         if not os.path.isdir(default_dir):
             default_dir = ''
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(

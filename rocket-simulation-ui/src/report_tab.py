@@ -22,6 +22,7 @@ from pathlib import Path
 from PyQt5 import QtWidgets, QtGui, QtCore
 import theme
 import graphs_tab
+import portable_paths
 import unit_fields
 import datasheet
 import matplotlib.pyplot as plt
@@ -577,7 +578,10 @@ class FlightReportWidget(QtWidgets.QWidget):
     def _export(self):
         if not self._report:
             return
-        default = os.path.join(os.path.expanduser("~"), "jarvis_flight_report.html")
+        # Beside the program on a flash-drive copy, not in the home folder
+        # of whichever computer this is.
+        default = os.path.join(portable_paths.exports_dir(),
+                               "jarvis_flight_report.html")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export Flight Report", default, "HTML Report (*.html)")
         if not path:

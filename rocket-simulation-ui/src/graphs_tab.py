@@ -18,6 +18,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavToolba
 from PyQt5 import QtWidgets, QtCore
 
 import theme
+import portable_paths
 
 FT = 3.280839895
 
@@ -479,11 +480,14 @@ class GraphGallery(QtWidgets.QWidget):
         self.canvas.draw()
 
     def _save_all(self):
+        import os
+        # Open on the exports folder, which on a flash-drive copy is on the
+        # drive - so "save every graph" lands with the rest of the work
+        # instead of on whatever computer this happens to be.
         directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Save every graph as PNG")
+            self, "Save every graph as PNG", portable_paths.exports_dir())
         if not directory:
             return
-        import os
         fig = plt.Figure(figsize=(8, 6))
         canvas = FigureCanvas(fig)
         written = 0

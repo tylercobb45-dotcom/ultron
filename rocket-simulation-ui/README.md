@@ -11,14 +11,27 @@ time.
 ```
 rocket-simulation-ui
 ├── src
+│   ├── engine_equations.py # EVERY motor equation, one file: tank, injector, grain, nozzle
+│   ├── flight_equations.py # EVERY airframe equation: atmosphere, drag, stability, recovery
 │   ├── main.py             # App entry point, PyQt5 UI, themes, telemetry dashboard
-│   ├── simulation.py       # Flight physics: thrust curve parsing, drag, parachute, atmosphere
+│   ├── simulation.py       # Flight integrator: thrust curve parsing, drag, parachute
 │   ├── engine_lab.py       # Engine Lab tab: design a hybrid engine, generate a thrust curve
 │   ├── atmosphere.py       # ISA-1976 to 86 km + launch-site conditions and wind shear
 │   ├── aero.py             # Nose/body/fin geometry, Mach-5 drag buildup, Barrowman CP
 │   ├── recovery.py         # Recovery trains: single, dual, reefed, streamer
 │   ├── flight_model.py     # 2-DOF flight: wind drift, moving CG, staged recovery
+│   ├── mass_model.py       # Mass components, ballast, CG migration and pitch inertia
 │   ├── vehicle_tab.py      # Vehicle tab: airframe, mass/balance, launch site, recovery
+│   ├── mass_tab.py         # Mass & balance tab: the component list and its totals
+│   ├── aero_tab.py         # Aerodynamics tab: Cd vs Mach sweep, power-on/off buildup
+│   ├── graphs_tab.py       # Graphs tab: every plot in the app, in one gallery
+│   ├── datasheet.py        # Raw-data sheet: the whole timeline, exportable to CSV
+│   ├── sections.py         # Shared section widgets and the collapsible panel layout
+│   ├── units.py            # Unit system: 19 dimensions, conversion, dimensionless guard
+│   ├── unit_fields.py      # Per-field unit pickers bound to SI storage
+│   ├── rasp.py             # RASP .eng reading and writing (masses in kilograms)
+│   ├── portable_paths.py   # Where to save when running from a flash drive
+│   ├── component_library.py# Stock components (nose cones, tubes, fins, hardware)
 │   ├── theme.py            # Dark futuristic theme (black/red/white, sharp edges)
 │   ├── presets.py          # Preset engines and rockets, with their reference data
 │   ├── failure_analysis.py # Failure-mode checks run against a completed flight (Qt-free)
@@ -29,6 +42,7 @@ rocket-simulation-ui
 │   ├── live_code_viewer.py # In-app viewer for the simulation source
 │   ├── JARVIS.ico          # Window/app icon
 │   ├── crash.jpg           # Image shown in the crash dialog on an unhandled exception
+│   ├── assets/             # Drop-down arrow images the stylesheet references
 │   └── profiles/           # Saved rocket configuration presets (JSON)
 ├── hybrid_sim/              # Vendored hybrid (N2O/fuel-grain) engine physics package
 │   ├── hybrid_sim/          # Tank blowdown, injector, regression, nozzle, 1-DOF flight - see its README
@@ -39,11 +53,28 @@ rocket-simulation-ui
 │   ├── build_presets.py     # Regenerates the preset rocket profiles
 │   └── validate_presets.py  # Checks presets against published/reference data
 ├── thrust_curves/          # Real measured motor curves (thrustcurve.org) + RASP .eng
+├── build_simple.py         # Builds the downloadable, no-Python-needed folder
+├── DOWNLOADABLE-README.md  # What ships inside the downloadable zips
 ├── requirements.txt
 └── README.md
 ```
 
 ## Setup
+
+### The downloadable version (no Python needed)
+
+Grab a zip from the
+**[Releases page](https://github.com/tylercobb45-dotcom/ultron/releases)** —
+`JARVIS-Downloadable-Windows.zip`, `JARVIS-Downloadable-macOS.zip` or
+`JARVIS-Downloadable-Linux.zip` — unzip it onto a flash drive, and run
+`JARVIS_Rocket_Simulation`. Nothing is installed, no admin rights are needed,
+and everything you save lands in the `JARVIS-Data` folder beside the program,
+so your rockets travel with the drive.
+
+Full instructions, including what to do about SmartScreen and antivirus, are
+in [`DOWNLOADABLE-README.md`](DOWNLOADABLE-README.md).
+
+### From source (needs Python)
 
 **Windows:** double-click **`Run JARVIS.bat`**. It finds Python, installs the
 dependencies the first time, and launches the app. If Python is missing it
@@ -62,7 +93,8 @@ PATH"* in the installer.
    python src/main.py
    ```
 
-Needs Python 3.12 or newer.
+Needs Python 3.11 or newer — that is the version the downloadable builds are
+made with, so it is the one the app is actually proven on.
 
 ## Usage
 
@@ -273,11 +305,25 @@ the airframe, the run says so rather than silently picking a side.
 
 ## Packaging & Distribution
 
-See [`PACKAGING_GUIDE.md`](PACKAGING_GUIDE.md) for building a standalone
-executable with PyInstaller, and [`DISTRIBUTION_README.md`](DISTRIBUTION_README.md)
-for how to share it. For running the executable on locked-down Windows
-machines (AppLocker/WDAC/SmartScreen), see the root
-[`DIGITAL_SIGNATURE_GUIDE.md`](../DIGITAL_SIGNATURE_GUIDE.md).
+The downloadable builds are made by
+[`.github/workflows/build-downloadable.yml`](../.github/workflows/build-downloadable.yml),
+which runs both physics suites and then `build_simple.py` on Windows, macOS
+and Linux runners. Pushing a `v*` tag builds all three and attaches the zips
+to a GitHub release; the workflow can also be started by hand from the Actions
+tab. To build one locally:
+
+```
+pip install pyinstaller
+python build_simple.py
+```
+
+That leaves a ready-to-copy folder in `dist/JARVIS_Rocket_Simulation/`. What
+the user sees is documented in
+[`DOWNLOADABLE-README.md`](DOWNLOADABLE-README.md); see
+[`PACKAGING_GUIDE.md`](PACKAGING_GUIDE.md) and
+[`DISTRIBUTION_README.md`](DISTRIBUTION_README.md) for the older notes, and
+the root [`DIGITAL_SIGNATURE_GUIDE.md`](../DIGITAL_SIGNATURE_GUIDE.md) for
+locked-down Windows machines (AppLocker/WDAC/SmartScreen).
 
 ## Contributing
 

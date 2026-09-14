@@ -6,8 +6,13 @@ Each check tests the model against something it was NOT built from:
 analytic identities, conservation laws, handbook anchor values, and the
 row-by-row Excel reference curve.
 """
-import sys, json, math
-sys.path.insert(0, ".")
+import sys, json, math, os
+# Everything here is located relative to THIS file, not to wherever it was
+# run from, so CI (which runs "python hybrid_sim/verify.py" from the project
+# root) finds the package and the Excel reference just as a local run does.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REF_JSON = os.path.join(_HERE, "excel_ref.json")
+sys.path.insert(0, _HERE)
 import numpy as np
 from hybrid_sim import Engine, EngineModel, Rocket, FlightModel, FUELS, n2o, metrics
 from hybrid_sim.config import G0
@@ -89,14 +94,14 @@ F = res["thrust"]; pk = F.argmax()
 check("no post-peak oscillation", int(np.sum(np.diff(F[pk:]) > 1.0)) == 0)
 # tank cools but stays physical
 dT_py = res["T_tank"][0]-res["T_tank"][-1]
-_c = json.load(open("excel_ref.json"))["curve"]
+_c = json.load(open(_REF_JSON))["curve"]
 _Tt = [p[3] for p in _c if p[3] is not None]
 dT_xl = _Tt[0]-min(_Tt)
 check("tank cooling matches Excel +-5K", abs(dT_py-dT_xl) < 5,
       f"python {dT_py:.1f}K vs excel {dT_xl:.1f}K")
 
 print("\n== 6. Excel reference cross-check (row-by-row) ==")
-ref = json.load(open("excel_ref.json"))
+ref = json.load(open(_REF_JSON))
 s = ref["summary"]
 check("peak thrust +-3% of Excel", abs(m["peak_thrust"]/s["Peak thrust"]-1) < 0.03,
       f"{m['peak_thrust']:.0f} vs {s['Peak thrust']:.0f}")

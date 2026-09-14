@@ -1,4 +1,4 @@
-name: Build portable JARVIS
+name: Build the downloadable JARVIS
 
 # Produces ready-to-run folders that need no Python, no installer and no
 # admin rights: download the zip from the Releases page, unzip it onto a
@@ -24,13 +24,13 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            asset: JARVIS-Portable-Windows
+            asset: JARVIS-Downloadable-Windows
           - os: macos-latest
             label: macOS
-            asset: JARVIS-Portable-macOS
+            asset: JARVIS-Downloadable-macOS
           - os: ubuntu-latest
             label: Linux
-            asset: JARVIS-Portable-Linux
+            asset: JARVIS-Downloadable-Linux
 
     steps:
       - uses: actions/checkout@v4
@@ -66,13 +66,13 @@ jobs:
         working-directory: rocket-simulation-ui
         run: python build_simple.py --no-prompt
 
-      - name: Stage the portable folder
+      - name: Stage the downloadable folder
         shell: bash
         working-directory: rocket-simulation-ui
         run: |
           mkdir -p staging
           cp -r dist/JARVIS_Rocket_Simulation "staging/${{ matrix.asset }}"
-          cp PORTABLE-README.md "staging/${{ matrix.asset }}/README.txt"
+          cp DOWNLOADABLE-README.md "staging/${{ matrix.asset }}/README.txt"
           # An empty data folder so it is obvious where saved work lands, and
           # so the app finds a writable folder on first run.
           mkdir -p "staging/${{ matrix.asset }}/JARVIS-Data"

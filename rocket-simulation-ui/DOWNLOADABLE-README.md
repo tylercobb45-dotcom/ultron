@@ -1,4 +1,7 @@
-# JARVIS on a flash drive
+# The downloadable JARVIS
+
+This is the downloadable version: a ready-to-run copy of JARVIS that needs
+no Python and no installer.
 
 Copy it to a USB stick, plug the stick into any computer, run it. Nothing is
 installed, no admin rights are needed, and your rockets travel with the drive.
@@ -6,8 +9,8 @@ installed, no admin rights are needed, and your rockets travel with the drive.
 ## The short version
 
 1. Go to the **[Releases page](https://github.com/tylercobb45-dotcom/ultron/releases)**
-2. Download the zip for the computers you use — `JARVIS-Portable-Windows.zip`,
-   `JARVIS-Portable-macOS.zip` or `JARVIS-Portable-Linux.zip`
+2. Download the zip for the computers you use — `JARVIS-Downloadable-Windows.zip`,
+   `JARVIS-Downloadable-macOS.zip` or `JARVIS-Downloadable-Linux.zip`
 3. Unzip it **onto the flash drive**
 4. Open the folder and run `JARVIS_Rocket_Simulation`
 
@@ -19,7 +22,7 @@ Everything you create goes into the **`JARVIS-Data`** folder sitting next to
 the program:
 
 ```
-E:\JARVIS-Portable-Windows\
+E:\JARVIS-Downloadable-Windows\
 ├── JARVIS_Rocket_Simulation.exe
 ├── _internal\                 (the program's own files - leave alone)
 └── JARVIS-Data\               <- everything you make lives here

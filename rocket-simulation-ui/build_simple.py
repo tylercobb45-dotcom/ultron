@@ -80,6 +80,15 @@ def main():
         f"--add-data={hybrid_sim_dir}{sep}hybrid_sim",
         f"--paths={hybrid_sim_dir}",
         "--hidden-import=hybrid_sim",
+        # hybrid_sim/engine.py reaches engine_equations through a runtime
+        # sys.path insert, which PyInstaller cannot follow, so nothing would
+        # collect it and the frozen Engine Lab would die on import. Name it
+        # explicitly. flight_equations is imported normally (aero, atmosphere)
+        # and would be traced anyway - it is listed for symmetry, so the two
+        # physics files are never separated by accident.
+        f"--paths={src_dir}",
+        "--hidden-import=engine_equations",
+        "--hidden-import=flight_equations",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",
         "--hidden-import=scipy.optimize",

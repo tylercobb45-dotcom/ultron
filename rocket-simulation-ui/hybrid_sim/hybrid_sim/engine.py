@@ -31,11 +31,19 @@ from .config import Engine, SimConfig, CSTAR_OF, CSTAR_VAL, P_SL
 # Every equation this model marches through time lives in src/engine_equations.
 # It is the one place the motor's physics is written down; this class is the
 # integrator around it, not a second copy of it.
+#
+# Finding it takes two tries, because this package is loaded two different
+# ways.  Running from source, hybrid_sim/hybrid_sim/engine.py sits three
+# folders below the project root, so ../../../src is the equations file.  In a
+# frozen (flash-drive) build that folder does not exist: the app unpacks to a
+# temp folder where engine_equations has been bundled as an ordinary top-level
+# module, and the plain import below finds it with no path help at all.  So we
+# only touch sys.path when the source layout is actually there.
 import os as _os
 import sys as _sys
 _SRC = _os.path.join(_os.path.dirname(_os.path.dirname(
     _os.path.dirname(_os.path.abspath(__file__)))), "src")
-if _SRC not in _sys.path:
+if _os.path.isfile(_os.path.join(_SRC, "engine_equations.py")) and _SRC not in _sys.path:
     _sys.path.insert(0, _SRC)
 import engine_equations as eq
 
