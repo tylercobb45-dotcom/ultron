@@ -27,6 +27,7 @@ from PyQt5 import QtWidgets, QtCore
 import theme
 import rasp
 import unit_fields
+import portable_paths
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -51,16 +52,9 @@ if os.path.isdir(_HYBRID_SIM_ROOT) and _HYBRID_SIM_ROOT not in sys.path:
 
 
 def _generated_curves_dir():
-    """Where to save generated thrust curves.
-
-    Running from source these sit with the project. Frozen, they must not go
-    into the bundle: a onefile build unpacks to a temp directory that is
-    deleted on exit, and an install location may not be writable - so use a
-    per-user folder that survives and is always writable.
-    """
-    if getattr(sys, 'frozen', False):
-        return os.path.join(os.path.expanduser('~'), 'JARVIS', 'generated_curves')
-    return os.path.join(_HYBRID_SIM_ROOT, 'generated_curves')
+    """Where to save generated thrust curves - beside the program, so a
+    motor designed on one computer is still there on the next."""
+    return portable_paths.generated_curves_dir()
 
 from hybrid_sim import Engine, Rocket, EngineModel, FlightModel, FUELS, metrics as hs_metrics  # noqa: E402
 from hybrid_sim.config import INJECTOR_TYPES  # noqa: E402

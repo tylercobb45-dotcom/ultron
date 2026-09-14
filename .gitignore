@@ -170,3 +170,9 @@ rocket-simulation-ui/*.spec
 # Exclude dist directory contents except JARVIS.exe
 rocket-simulation-ui/dist/*
 !rocket-simulation-ui/dist/JARVIS.exe
+
+# Portable user data. This is created beside the program at runtime and is
+# the user's own work - saved rockets, settings, exports, and the libraries a
+# source checkout installs onto the drive. None of it belongs in the repo.
+JARVIS-Data/
+**/JARVIS-Data/

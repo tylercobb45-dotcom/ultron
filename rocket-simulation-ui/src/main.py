@@ -28,24 +28,18 @@ import unit_fields
 import flight_model
 import aero
 import datasheet  # Flight + engine spreadsheet views
+import portable_paths
 
 
 def user_settings_path():
-    """Location of user_settings.json.
+    """Location of user_settings.json - see portable_paths.
 
-    Running from source this stays next to the code. A frozen build must not
-    write into the bundle: a PyInstaller onefile app unpacks to a temp
-    directory that is deleted on exit, so settings saved there are lost every
-    run, and an install directory may not be writable at all.
+    This used to write into the home folder of whatever computer the app was
+    running on, which loses the point of a flash-drive copy: settings and
+    saved rockets stayed behind on each machine instead of travelling with
+    the drive.
     """
-    if getattr(sys, 'frozen', False):
-        folder = os.path.join(os.path.expanduser('~'), 'JARVIS')
-        try:
-            os.makedirs(folder, exist_ok=True)
-        except OSError:
-            folder = os.path.dirname(sys.executable)
-        return os.path.join(folder, 'user_settings.json')
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_settings.json')
+    return portable_paths.settings_file()
 
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
@@ -5223,10 +5217,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
     # Profile Management Methods
     def get_profiles_dir(self):
         """The writable directory new rocket profiles are saved to."""
-        profiles_dir = os.path.join(os.path.dirname(self.user_settings_file), 'profiles')
-        if not os.path.exists(profiles_dir):
-            os.makedirs(profiles_dir, exist_ok=True)
-        return profiles_dir
+        return portable_paths.profiles_dir()
 
     def get_profile_search_dirs(self):
         """Every directory to read rockets from.
@@ -5235,9 +5226,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
         in a packaged build those live in the bundle, which is not writable.
         """
         dirs = [self.get_profiles_dir()]
-        bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profiles')
-        if os.path.isdir(bundled) and bundled not in dirs:
-            dirs.append(bundled)
+        # Shipped presets travel inside the program. __file__ does not point
+        # into the bundle in a packaged build, so ask portable_paths, which
+        # knows where PyInstaller put them.
+        for bundled in (portable_paths.bundled_dir('profiles'),
+                        portable_paths.bundled_dir('src', 'profiles')):
+            if os.path.isdir(bundled) and bundled not in dirs:
+                dirs.append(bundled)
         return dirs
 
     def refresh_profile_dropdown(self):

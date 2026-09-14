@@ -9,6 +9,20 @@ import subprocess
 import shutil
 from pathlib import Path
 
+
+APP_NAME = "JARVIS_Rocket_Simulation"
+
+
+def built_app_path(project_root):
+    """Path to the built executable.
+
+    onedir puts it in dist/<name>/<name>[.exe]; the whole folder is what
+    gets copied to the flash drive, not just this file.
+    """
+    exe = APP_NAME + (".exe" if os.name == "nt" else "")
+    return Path(project_root) / "dist" / APP_NAME / exe
+
+
 def main():
     print("🚀 Building JARVIS Rocket Simulation Executable...")
     
@@ -39,7 +53,12 @@ def main():
 
     cmd = [
         sys.executable, "-m", "pyinstaller",
-        "--onefile",
+        # onedir, not onefile. A onefile build re-extracts the entire
+        # bundle to a temp folder on EVERY launch - tens of seconds from a
+        # USB stick, it litters temp directories, and locked-down lab
+        # machines often block executing from temp. onedir starts fast and
+        # runs in place from the drive.
+        "--onedir",
         "--windowed",
         "--name=JARVIS_Rocket_Simulation",
         f"--icon={src_dir / 'JARVIS.ico'}",
@@ -74,19 +93,13 @@ def main():
         result = subprocess.run(cmd, check=True, text=True)
         
         # Check if executable was created
-        exe_path = project_root / "dist" / "JARVIS_Rocket_Simulation.exe"
+        exe_path = built_app_path(project_root)
         if exe_path.exists():
-            size_mb = exe_path.stat().st_size / (1024 * 1024)
-            print(f"✅ Success! Executable created: {exe_path}")
-            print(f"📁 Size: {size_mb:.1f} MB")
-            
-            # Test if it's a proper executable
-            print("🧪 Testing executable type...")
-            if exe_path.suffix.lower() == '.exe':
-                print("✅ File has proper .exe extension")
-            else:
-                print("❌ Warning: File doesn't have .exe extension")
-                
+            folder = exe_path.parent
+            total = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file())
+            print(f"✅ Success! Built: {exe_path}")
+            print(f"📁 Folder size: {total / (1024 * 1024):.1f} MB")
+            print(f"📦 Copy the whole '{folder.name}' folder to the flash drive.")
             return True
         else:
             print("❌ Executable not found after build")
@@ -102,8 +115,8 @@ def main():
 def test_executable():
     """Test the executable by trying to run it briefly"""
     project_root = Path(__file__).parent
-    exe_path = project_root / "dist" / "JARVIS_Rocket_Simulation.exe"
-    
+    exe_path = built_app_path(project_root)
+
     if exe_path.exists():
         print("🧪 Testing executable...")
         try:
@@ -125,16 +138,20 @@ if __name__ == "__main__":
     success = main()
     if success:
         print("\n🎉 Build completed successfully!")
-        print("📂 Your executable is ready in the 'dist' folder")
-        print("💡 To run: Double-click JARVIS_Rocket_Simulation.exe")
+        print(f"📂 Ready in dist/{APP_NAME}/")
+        print(f"💡 Copy that whole folder to a flash drive and run {APP_NAME}")
         print("\n📋 Distribution notes:")
-        print("  - Single file executable (no installation needed)")
-        print("  - Contains complete Python runtime + all dependencies")
-        print("  - Should run on any Windows 64-bit system")
-        print("  - If antivirus flags it, that's normal for new executables")
+        print("  - No installation, no admin rights, no Python needed")
+        print("  - Contains the complete Python runtime and dependencies")
+        print("  - Everything you save goes to JARVIS-Data beside the program,")
+        print("    so your rockets travel with the drive")
+        print("  - If antivirus flags it, that is normal for a fresh build")
         
-        # Optional test
-        if input("\n🤖 Test the executable now? (y/n): ").lower().startswith('y'):
+        # Optional test. --no-prompt keeps this non-interactive so CI (and
+        # anyone scripting a build) does not hang on a question.
+        if "--no-prompt" in sys.argv:
+            print("\n(--no-prompt: skipping the launch test)")
+        elif input("\n🤖 Test the executable now? (y/n): ").lower().startswith('y'):
             test_executable()
     else:
         print("\n💥 Build failed!")

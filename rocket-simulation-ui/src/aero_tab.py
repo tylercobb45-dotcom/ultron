@@ -31,6 +31,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 
 import aero as aero_mod
 import theme
+import portable_paths
 import datasheet
 
 _P = theme.PALETTE
@@ -362,7 +363,7 @@ class AeroAnalysisWidget(QtWidgets.QWidget):
     def export_table(self):
         if not self._rows:
             return
-        default = os.path.join(os.path.expanduser("~"), "cd_vs_mach.csv")
+        default = os.path.join(portable_paths.exports_dir(), "cd_vs_mach.csv")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export Cd(Mach) table", default, "CSV Files (*.csv)")
         if not path:

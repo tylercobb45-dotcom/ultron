@@ -1,0 +1,114 @@
+name: Build portable JARVIS
+
+# Produces ready-to-run folders that need no Python, no installer and no
+# admin rights: download the zip from the Releases page, unzip it onto a
+# flash drive, run it on any computer.
+#
+# Runs on a version tag (and can be started by hand from the Actions tab).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to attach the builds to a release
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false        # a broken mac build must not lose the windows one
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            asset: JARVIS-Windows
+          - os: macos-latest
+            label: macOS
+            asset: JARVIS-macOS
+          - os: ubuntu-latest
+            label: Linux
+            asset: JARVIS-Linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 because PyQt5 wheels are reliably available for it on all
+          # three runners; newer versions have gaps.
+          python-version: "3.11"
+
+      - name: Install Qt runtime libraries (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-cursor0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r rocket-simulation-ui/requirements.txt
+          pip install pyinstaller
+
+      - name: Run the physics test suites
+        # Never ship a build whose numbers have not been checked.
+        working-directory: rocket-simulation-ui
+        run: |
+          python tools/validate_presets.py
+          python hybrid_sim/verify.py
+
+      - name: Build
+        working-directory: rocket-simulation-ui
+        run: python build_simple.py --no-prompt
+
+      - name: Stage the portable folder
+        shell: bash
+        working-directory: rocket-simulation-ui
+        run: |
+          mkdir -p staging
+          cp -r dist/JARVIS_Rocket_Simulation "staging/${{ matrix.asset }}"
+          cp PORTABLE-README.md "staging/${{ matrix.asset }}/README.txt"
+          # An empty data folder so it is obvious where saved work lands, and
+          # so the app finds a writable folder on first run.
+          mkdir -p "staging/${{ matrix.asset }}/JARVIS-Data"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: rocket-simulation-ui/staging/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Attach builds to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: builds
+
+      - name: Zip each platform
+        run: |
+          cd builds
+          for d in */; do
+            name="${d%/}"
+            (cd "$name" && zip -qr "../${name}.zip" .)
+          done
+          ls -lh *.zip
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: builds/*.zip
+          body: |
+            Download the zip for your computer, unzip it onto a flash drive,
+            and run it. No installation, no Python, no admin rights.
+
+            Everything you save goes into the `JARVIS-Data` folder beside the
+            program, so your rockets, motors and settings travel with the
+            drive from one computer to the next.

@@ -21,6 +21,8 @@ import os
 
 from PyQt5 import QtWidgets, QtCore
 
+import portable_paths
+
 # key -> (heading, unit, scale applied to the stored value, decimals)
 # Anything not listed still shows up, just with its raw key as the heading, so
 # adding a new field to the model never silently drops it from the sheet.
@@ -464,7 +466,7 @@ class DataSheet(QtWidgets.QWidget):
     def export_csv(self):
         if not self._rows:
             return
-        default = os.path.join(os.path.expanduser("~"),
+        default = os.path.join(portable_paths.exports_dir(),
                                "jarvis_%s.csv" % self._title)
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export %s" % self._title, default, "CSV Files (*.csv)")
