@@ -24,7 +24,7 @@ def built_app_path(project_root):
 
 
 def main():
-    print("🚀 Building JARVIS Rocket Simulation Executable...")
+    print("Building JARVIS Rocket Simulation Executable...")
     
     # Get the project root directory
     project_root = Path(__file__).parent
@@ -32,20 +32,20 @@ def main():
     main_py = src_dir / "main.py"
     
     if not main_py.exists():
-        print(f"❌ Error: {main_py} not found!")
+        print(f"ERROR: Error: {main_py} not found!")
         return False
     
     # Clean previous builds
     for folder in ["build", "dist", "__pycache__"]:
         folder_path = project_root / folder
         if folder_path.exists():
-            print(f"🧹 Cleaning {folder}...")
+            print(f"Cleaning {folder}...")
             shutil.rmtree(folder_path)
     
     # Change to project directory
     os.chdir(project_root)
     
-    print("🔨 Building with PyInstaller...")
+    print("Building with PyInstaller...")
     
     # PyInstaller uses ';' between source and destination on Windows, ':' elsewhere.
     sep = ";" if os.name == "nt" else ":"
@@ -110,19 +110,19 @@ def main():
         if exe_path.exists():
             folder = exe_path.parent
             total = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file())
-            print(f"✅ Success! Built: {exe_path}")
-            print(f"📁 Folder size: {total / (1024 * 1024):.1f} MB")
-            print(f"📦 Copy the whole '{folder.name}' folder to the flash drive.")
+            print(f"OK: Success! Built: {exe_path}")
+            print(f"Folder size: {total / (1024 * 1024):.1f} MB")
+            print(f"Copy the whole '{folder.name}' folder to the flash drive.")
             return True
         else:
-            print("❌ Executable not found after build")
+            print("ERROR: Executable not found after build")
             return False
             
     except subprocess.CalledProcessError as e:
-        print(f"❌ PyInstaller failed: {e}")
+        print(f"ERROR: PyInstaller failed: {e}")
         return False
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"ERROR: Unexpected error: {e}")
         return False
 
 def test_executable():
@@ -131,7 +131,7 @@ def test_executable():
     exe_path = built_app_path(project_root)
 
     if exe_path.exists():
-        print("🧪 Testing executable...")
+        print("Testing executable...")
         try:
             # Try to start the process and kill it quickly (just to test it launches)
             import time
@@ -140,20 +140,20 @@ def test_executable():
                                      stderr=subprocess.PIPE)
             time.sleep(2)  # Let it start
             process.terminate()
-            print("✅ Executable test passed - app can launch")
+            print("OK: Executable test passed - app can launch")
             return True
         except Exception as e:
-            print(f"❌ Executable test failed: {e}")
+            print(f"ERROR: Executable test failed: {e}")
             return False
     return False
 
 if __name__ == "__main__":
     success = main()
     if success:
-        print("\n🎉 Build completed successfully!")
-        print(f"📂 Ready in dist/{APP_NAME}/")
-        print(f"💡 Copy that whole folder to a flash drive and run {APP_NAME}")
-        print("\n📋 Distribution notes:")
+        print("\nBuild completed successfully!")
+        print(f"Ready in dist/{APP_NAME}/")
+        print(f"Copy that whole folder to a flash drive and run {APP_NAME}")
+        print("\nDistribution notes:")
         print("  - No installation, no admin rights, no Python needed")
         print("  - Contains the complete Python runtime and dependencies")
         print("  - Everything you save goes to JARVIS-Data beside the program,")
@@ -164,9 +164,9 @@ if __name__ == "__main__":
         # anyone scripting a build) does not hang on a question.
         if "--no-prompt" in sys.argv:
             print("\n(--no-prompt: skipping the launch test)")
-        elif input("\n🤖 Test the executable now? (y/n): ").lower().startswith('y'):
+        elif input("\nTest the executable now? (y/n): ").lower().startswith('y'):
             test_executable()
     else:
-        print("\n💥 Build failed!")
-        print("💡 Try running from command prompt to see detailed error messages")
+        print("\nBuild failed!")
+        print("Try running from command prompt to see detailed error messages")
         sys.exit(1)
