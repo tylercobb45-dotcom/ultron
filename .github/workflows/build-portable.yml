@@ -24,13 +24,13 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            asset: JARVIS-Windows
+            asset: JARVIS-Portable-Windows
           - os: macos-latest
             label: macOS
-            asset: JARVIS-macOS
+            asset: JARVIS-Portable-macOS
           - os: ubuntu-latest
             label: Linux
-            asset: JARVIS-Linux
+            asset: JARVIS-Portable-Linux
 
     steps:
       - uses: actions/checkout@v4

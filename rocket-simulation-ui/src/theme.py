@@ -63,8 +63,12 @@ def stylesheet() -> str:
     # frozen build missing assets/ could render completely unstyled rather
     # than merely arrow-less. Both images are checked, since the disabled
     # state uses the second.
-    if _os.path.exists(arrow) and _os.path.exists(arrow_dim):
-        arrow_rules = _ARROW_RULES.format(arrow=arrow, arrow_dim=arrow_dim)
+    arrow_up = f"{_assets}/arrow_up.png"
+    arrow_up_dim = f"{_assets}/arrow_up_dim.png"
+    if all(_os.path.exists(p) for p in (arrow, arrow_dim, arrow_up, arrow_up_dim)):
+        arrow_rules = _ARROW_RULES.format(
+            arrow=arrow, arrow_dim=arrow_dim,
+            arrow_up=arrow_up, arrow_up_dim=arrow_up_dim)
     else:
         arrow_rules = ""      # Qt's native arrow: plain, but correct
     return _BASE_SHEET(p, arrow_rules)
@@ -85,6 +89,18 @@ QComboBox::down-arrow {{
 QComboBox::down-arrow:disabled {{ image: url("{arrow_dim}"); }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
     image: url("{arrow}"); width: 9px; height: 6px;
+}}
+/* The up arrow was never styled, so every spin box showed a red triangle
+   below and Qt's unstyled default above - mismatched, and barely visible on
+   the dark ground. */
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url("{arrow_up}"); width: 9px; height: 6px;
+}}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {{
+    image: url("{arrow_up_dim}");
+}}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {{
+    image: url("{arrow_dim}");
 }}
 """
 

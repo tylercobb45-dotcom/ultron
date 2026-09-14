@@ -1681,7 +1681,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.humidity_input.textChanged.connect(self.update_air_density)
         self.tabs.addTab(_scrollable(launch_tab), "Launch Conditions")
 
-        # Add Launch tab last (to the right)
+        # Add the Stability Test tab last (to the right)
         launch_anim_tab = QtWidgets.QWidget()
         launch_anim_layout = QtWidgets.QVBoxLayout(launch_anim_tab)
 
@@ -2041,7 +2041,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Initial animation update
         update_launch_animation()
 
-        self.tabs.addTab(_scrollable(launch_anim_tab), "Launch")
+        # This tab is the stability check: rail angle, CG against CP,
+        # static margin and the wind that pushes the vehicle off it.
+        # "Launch" said nothing about that and sat confusingly next to
+        # "Launch Conditions", which is the atmosphere and the pad.
+        self.tabs.addTab(_scrollable(launch_anim_tab), "Stability Test")
 
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
