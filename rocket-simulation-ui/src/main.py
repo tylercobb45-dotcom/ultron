@@ -1751,13 +1751,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.stability_status_label.setStyleSheet("font-size:14px;color:#2E8B57;font-weight:bold;")
         stability_layout.addRow(self.stability_status_label)
 
-        # Update stability margin when inputs change
+        # Update stability margin when inputs change.
+        #
+        # Before the tab has been flown this is all there is: the margin as
+        # the rocket stands on the pad, from the two figures entered above.
+        # Once it HAS been flown, the flight's own verdict replaces it and
+        # must not be overwritten by a pad number - the whole point is that
+        # the margin does not stay at its pad value once the motor lights.
         def update_stability():
+            if getattr(self, '_stability_envelope', None):
+                self._report_stability_envelope()
+                return
             margin = self.center_of_pressure_input.value() - self.center_of_mass_input.value()
             status = "Stable" if margin > 0.05 else "Unstable"
             color = "#2E8B57" if status == "Stable" else "#E94F37"
-            self.stability_status_label.setText(f"Stability Margin: {margin:.2f} m ({status})")
-            self.stability_status_label.setStyleSheet(f"font-size:14px;font-weight:bold;color:{color};")
+            self.stability_status_label.setText(
+                f"On the pad: {margin:.2f} m ({status}) - press Launch to "
+                f"test it through the burn")
+            self.stability_status_label.setStyleSheet(f"font-size:13px;font-weight:bold;color:{color};")
         self.rocket_length_input.valueChanged.connect(update_stability)
         self.center_of_mass_input.valueChanged.connect(update_stability)
         self.center_of_pressure_input.valueChanged.connect(update_stability)
@@ -3204,7 +3215,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         Returns a dict of real numbers, or the standing-on-the-pad state when
         no flight has been run yet.
         """
-        rows = getattr(self, '_last_results', None)
+        rows = self.stability_rows()
         if rows:
             if t is None:
                 t = getattr(self, 'launch_time', 0.0)
@@ -3409,7 +3420,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
     def _on_force_scrub(self, value):
         """Time slider under the force diagram."""
-        rows = getattr(self, '_last_results', None)
+        rows = self.stability_rows()
         if not rows:
             return
         span = (rows[-1].get('time') or 0.0)
@@ -3422,7 +3433,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         """Switch the scrubber on once there is a flight to scrub."""
         if not hasattr(self, 'force_scrubber'):
             return
-        rows = getattr(self, '_last_results', None)
+        rows = self.stability_rows()
         has = bool(rows)
         self.force_scrubber.setEnabled(has)
         self._force_scrub_time = 0.0 if has else None
@@ -3499,6 +3510,160 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Animation removed
         return
 
+    # -- the stability test's own flight ---------------------------------
+    #
+    # This tab asks one question: is the rocket stable for the WHOLE launch?
+    # A single "CP minus CG" cannot answer it, because neither point stays
+    # put. Propellant leaves from a particular place, so the centre of
+    # gravity walks along the airframe as the motor burns, and the centre of
+    # pressure moves with Mach number. The margin is a curve over the flight,
+    # and what matters is its worst moment - which is usually just after
+    # burnout, when the CG has moved as far as it is going to and the rocket
+    # is still fast.
+    #
+    # So this tab flies the real model itself rather than showing whatever
+    # the Simulation tab last happened to run, and everything on the page -
+    # the animation, the force vectors, the CG and CP marks, the verdict -
+    # comes from that one flight.
+
+    # Calibers of static margin that count as stable. Under the low figure
+    # the fins cannot correct a disturbance; over the high one the rocket
+    # weathercocks hard into the wind and loses altitude to it.
+    STABLE_MIN_CAL = 1.5
+    STABLE_MAX_CAL = 4.0
+
+    def stability_rows(self):
+        """The stability test's own flight.
+
+        Falls back to the Simulation tab's last run so the panel still has
+        something real to draw before this tab has been flown.
+        """
+        return (getattr(self, '_stability_results', None)
+                or getattr(self, '_last_results', None))
+
+    def run_stability_test(self):
+        """Fly the rocket for this tab, with the same model the app flies.
+
+        Returns the rows, or None with the reason already on screen.
+        """
+        try:
+            self.save_inputs()
+            (m, Cd, A, rho, time_step, _fin_t, _fin_l, body_diameter,
+             chute_height, chute_size, chute_deploy_time, chute_cd,
+             prop_m) = self.get_inputs_for_simulation()
+        except Exception:
+            self._set_stability_note(
+                "Enter the rocket's mass, drag and area on the Simulation tab "
+                "before running the stability test.", ok=False)
+            return None
+
+        if not all((m > 0, Cd > 0, A > 0, rho > 0)):
+            self._set_stability_note(
+                "Mass, drag coefficient, area and air density all have to be "
+                "positive before this can fly.", ok=False)
+            return None
+
+        sim_kwargs = {
+            'thrust_curve_path': self.thrust_curve_path,
+            'chute_height': chute_height,
+            'chute_size': chute_size,
+            'time_step': time_step,
+            'chute_deploy_start': chute_deploy_time,
+            'chute_cd': chute_cd,
+            'propellant_mass': prop_m,
+        }
+        try:
+            rows, summary = self.run_flight_simulation(
+                m, Cd, A, rho, sim_kwargs, time_step,
+                body_diameter=body_diameter)
+        except Exception:
+            traceback.print_exc()
+            self._set_stability_note(
+                "The flight model failed - see the console.", ok=False)
+            return None
+
+        if not isinstance(rows, list) or not rows:
+            self._set_stability_note(
+                "The flight model returned nothing to test.", ok=False)
+            return None
+
+        self._stability_results = rows
+        self._stability_summary = summary
+        self._stability_envelope = self.stability_envelope(rows)
+        self._report_stability_envelope()
+        self.enable_force_scrubber()
+        return rows
+
+    def stability_envelope(self, rows):
+        """How the static margin behaved across the ascent.
+
+        Only the part of the flight where the fins can actually do anything
+        is judged: from the moment there is enough airspeed for them to bite,
+        up to apogee. Below that speed the margin is a number with no force
+        behind it, and on the way down under a parachute it means nothing at
+        all - counting either would fail rockets that are perfectly sound.
+        """
+        judged = []
+        seen_flying = False
+        for row in rows:
+            margin = row.get('stability_cal')
+            speed = abs(row.get('airspeed') or row.get('velocity') or 0.0)
+            if (row.get('velocity') or 0.0) <= 0 and seen_flying:
+                break                      # past apogee
+            if speed >= 15.0:              # fins have authority from here
+                seen_flying = True
+            if seen_flying and margin is not None:
+                judged.append((row.get('time') or 0.0, margin))
+        if not judged:
+            return None
+
+        worst_t, worst = min(judged, key=lambda p: p[1])
+        best_t, best = max(judged, key=lambda p: p[1])
+        return {
+            'min_cal': worst, 'min_time': worst_t,
+            'max_cal': best, 'max_time': best_t,
+            'start_cal': judged[0][1], 'end_cal': judged[-1][1],
+            'under': worst < self.STABLE_MIN_CAL,
+            'over': best > self.STABLE_MAX_CAL,
+        }
+
+    def _report_stability_envelope(self):
+        """Put the whole-flight verdict on the tab, not a one-instant number."""
+        env = getattr(self, '_stability_envelope', None)
+        if not env:
+            self._set_stability_note(
+                "Flew, but the model reported no static margin to judge.",
+                ok=False)
+            return
+        if env['under']:
+            text = (f"UNSTABLE at T+{env['min_time']:.1f} s - margin falls to "
+                    f"{env['min_cal']:.2f} cal (needs {self.STABLE_MIN_CAL:.1f})")
+            ok = False
+        elif env['over']:
+            text = (f"Over-stable - {env['max_cal']:.2f} cal at "
+                    f"T+{env['max_time']:.1f} s will weathercock into wind")
+            ok = False
+        else:
+            text = (f"Stable all the way up - margin stays between "
+                    f"{env['min_cal']:.2f} and {env['max_cal']:.2f} cal")
+            ok = True
+        self._set_stability_note(text, ok=ok)
+
+    def _set_stability_note(self, text, ok=True):
+        if not hasattr(self, 'stability_status_label'):
+            return
+        colour = "#2E8B57" if ok else "#E94F37"
+        self.stability_status_label.setText(text)
+        self.stability_status_label.setStyleSheet(
+            f"font-size:13px;font-weight:bold;color:{colour};")
+
+    def _stability_row_at(self, t):
+        """The flown state at time t, for the animation and the vectors."""
+        rows = self.stability_rows()
+        if not rows:
+            return None
+        return min(rows, key=lambda r: abs((r.get('time') or 0.0) - t))
+
     def start_launch_animation(self):
         """Start the rocket launch animation"""
         if self.is_launching:
@@ -3528,12 +3693,20 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.smooth_center_y = 1.5
         self.smooth_zoom = 1.0
         self.smooth_flame_intensity = 0.0
-        try:
-            m, _, _, _, _, _, _, _, _, _, _, _ = self.get_inputs_for_simulation()
-            self.launch_mass = m
-        except:
-            self.launch_mass = 5.0  # Default mass
-            
+        # Fly it first. Everything this tab shows - the animation, the force
+        # vectors, the CG and CP marks, the verdict - is read back out of this
+        # one run, so if it cannot fly there is nothing honest to animate.
+        #
+        # (The mass used to be fetched here by unpacking twelve values from a
+        # thirteen-value call inside a bare except, so it raised every single
+        # time and silently animated a hardcoded 5 kg rocket no matter what
+        # was entered. The flight now carries the mass, and its own migrating
+        # CG with it.)
+        if self.run_stability_test() is None:
+            return
+        self.launch_mass = (self._stability_results[0].get('mass')
+                            or 0.0) or 5.0
+
         self.is_launching = True
         self.launch_time = 0.0
         self.launch_button.setText('Launching...')
@@ -3567,230 +3740,120 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _ensure_animation_state(self):
+        """Seed the drawing's own state so a frame can be drawn at any time.
+
+        The integration this replaced seeded these on its first pass. Without
+        it, anything that draws a frame without going through the Launch
+        button - a theme change, a redraw, a test - dies on a missing
+        attribute part way through the drawing, with half a figure on screen.
+        """
+        defaults = {
+            'launch_velocity': 0.0, 'launch_altitude': 0.0,
+            'launch_x_pos': 0.0, 'launch_x_vel': 0.0,
+            'launch_mass': 0.0, 'launch_angle': 0.0,
+            'launch_angular_velocity': 0.0, 'launch_prev_velocity': 0.0,
+            'prev_acceleration': 0.0,
+            'chute_deployed': False, 'chute_open_factor': 0.0,
+            'apogee_marked': False, 'apogee_pos': None,
+            'apogee_flash_frames': 0,
+            'position_history': None,
+            'smooth_center_x': 0.0, 'smooth_center_y': 1.5,
+            'smooth_zoom': 1.0, 'smooth_flame_intensity': 0.0,
+        }
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, [] if value is None and
+                        name == 'position_history' else value)
+
     def update_launch_frame(self):
         """Update each frame of the launch animation using real simulation parameters"""
         ax = self.launch_fig.gca()
         ax.clear()
         
-        # Get rocket parameters from Simulation tab
-        try:
-            vals = self.get_inputs_for_simulation()
-            m = vals[0] if len(vals) > 0 else 5.0
-            Cd = vals[1] if len(vals) > 1 else 0.7
-            A = vals[2] if len(vals) > 2 else 0.004560
-            rho = vals[3] if len(vals) > 3 else 1.225
-            time_step = vals[4] if len(vals) > 4 else 0.1
-            fin_thickness = vals[5] if len(vals) > 5 else 0.003
-            fin_length = vals[6] if len(vals) > 6 else 0.1
-            body_diameter = vals[7] if len(vals) > 7 else 0.06
-            chute_height = vals[8] if len(vals) > 8 else 500.0
-            chute_size = vals[9] if len(vals) > 9 and vals[9] is not None else 0.5
-            chute_deploy_time = vals[10] if len(vals) > 10 else 0.0
-            chute_cd = vals[11] if len(vals) > 11 and vals[11] is not None else 1.5
-            if m <= 0 or Cd <= 0 or A <= 0 or rho <= 0:
-                raise ValueError("Invalid simulation parameters")
-        except Exception:
-            # Fallback to default values if simulation inputs are invalid
-            m = 5.0
-            Cd = 0.7
-            A = 0.004560
-            rho = 1.225
-            time_step = 0.1
-            fin_thickness = 0.003
-            fin_length = 0.1
-            body_diameter = 0.06
-            chute_height = 500.0
-            chute_size = 0.5
-            chute_deploy_time = 0.0
-            chute_cd = 1.5
-        
-        # Get wind and stability parameters
-        wind_speed = self.wind_speed_input.value()
-        wind_dir_deg = self.wind_direction_input.value()
-        margin = self.center_of_pressure_input.value() - self.center_of_mass_input.value()
-        stable = margin > 0.05
-        # Instability gain (0..1) grows as margin goes below threshold
-        instability_gain = 0.0
-        if not stable:
-            try:
-                instability_gain = min(1.0, max(0.0, (0.05 - margin) / 0.05))
-            except Exception:
-                instability_gain = 1.0
-        color = '#2E8B57' if stable else '#E94F37'
-        
-        # Load thrust curve data using shared method
-        times_thrust, thrusts, thrust_func, burn_time = self.load_thrust_curve_data()
-        
-        # Current simulation time
+        # Play back the stability test's own flight.
+        #
+        # This used to integrate its own physics beside the real model: a
+        # constant mass, a constant air density, gravity pinned at 9.81, wind
+        # drift as "wind_speed * 0.01  # Scale for demo", and a restoring
+        # torque built from an arbitrary stiffness over a "crude rotational
+        # inertia proxy". It decided stable or unstable ONCE, from two spin
+        # boxes, and held that for the whole flight.
+        #
+        # That is precisely the thing a stability test must not do. The
+        # centre of gravity moves as propellant leaves, so a rocket can start
+        # the burn with plenty of margin and end it without any. The real
+        # model already tracks the moving CG, the CP against Mach, the
+        # atmosphere and the wind, so the animation now shows THAT flight
+        # instead of a second, worse one that could disagree with it.
+        self._ensure_animation_state()
+        # The "run a simulation" placeholder is a FIGURE-level text, so
+        # ax.clear() never touched it and it sat behind every frame of the
+        # animation forever. Clear it once there is a real frame to draw.
+        if self.launch_fig.texts:
+            self.launch_fig.texts.clear()
+        rows = self.stability_rows()
         t = self.launch_time
-        
-        # Get thrust at current time
-        current_thrust = float(thrust_func(t)) if t <= burn_time else 0.0
-        
-        # Physics simulation with real parameters
-        g = 9.81
-        
-        # Wind drift calculation
-        drift_factor = wind_speed * 0.01  # Scale for demo
-        angle_rad = wind_dir_deg * math.pi / 180
-        x_drift_per_sec = drift_factor * math.cos(angle_rad)
-        y_drift_per_sec = drift_factor * math.sin(angle_rad)
-        
-        # Integrate motion using simplified physics with smoothing
-        # Use stored velocity and position if available, otherwise initialize
-        if not hasattr(self, 'launch_velocity'):
-            self.launch_velocity = 0.0
-            self.launch_altitude = 0.0
-            self.launch_x_pos = 0.0
-            self.launch_x_vel = 0.0
-            self.launch_mass = m
-            self.prev_acceleration = 0.0  # For smoothing
-            # Initialize angular state if missing
-            launch_guide_angle_deg = self.launch_angle_input.value()
-            self.launch_angle = math.radians(launch_guide_angle_deg)
-            self.launch_angular_velocity = 0.0
-            # Parachute/apogee defaults
-            self.chute_deployed = False
-            self.chute_open_factor = 0.0
-            self.apogee_marked = False
-            self.apogee_pos = None
-            self.apogee_flash_frames = 0
-            self.launch_prev_velocity = 0.0
-            
-        dt = 0.025  # Smaller time step for smoother physics (25ms)
+        wind_speed = self.wind_speed_input.value()
 
-        # Handle parachute deployment triggers (descent + below threshold altitude)
-        if not hasattr(self, 'chute_deployed'):
-            self.chute_deployed = False
-            self.chute_open_factor = 0.0
-        # Deploy only on descent below set altitude
-        try:
-            deploy_alt_threshold = max(0.0, chute_height or 0.0)
-            should_deploy = (self.launch_velocity < 0) and (self.launch_altitude <= deploy_alt_threshold)
-        except Exception:
-            should_deploy = False
-        if not self.chute_deployed and should_deploy:
-            self.chute_deployed = True
-        
-        # Perform multiple small integration steps for smoother motion
-        for step_idx in range(2):  # 2 steps of 25ms each = 50ms total
-            # Sample thrust per substep for smoother burn dynamics
-            t_sub = t + step_idx * dt
-            current_thrust_step = float(thrust_func(t_sub)) if t_sub <= burn_time else 0.0
+        if not rows:
+            ax.text(0.5, 0.5, "Press Launch to fly the stability test",
+                    transform=ax.transAxes, ha='center', va='center',
+                    fontsize=12, color='#7A7A86')
+            if hasattr(self, 'launch_canvas'):
+                self.launch_canvas.draw_idle()
+            return
 
-            # --- Angular dynamics (spin) ---
-            # Dynamic pressure based on total speed
-            v_total = max(0.0, (self.launch_velocity**2 + self.launch_x_vel**2) ** 0.5)
-            q_dyn = 0.5 * rho * (v_total ** 2)
-            # Torques: restoring when stable, divergent when unstable, plus damping and small turbulence
-            k_stable = 3.0
-            k_unstable = 2.0
-            k_damp = 1.2
-            torque = 0.0
-            # Angle is measured from vertical (0 = up)
-            if stable:
-                torque += -k_stable * q_dyn * self.launch_angle
-            else:
-                torque += k_unstable * q_dyn * instability_gain * self.launch_angle
-                torque += 0.4 * q_dyn * instability_gain * (random.random() - 0.5)
-            # Damping always opposes angular velocity
-            torque += -k_damp * self.launch_angular_velocity
-            # Convert torque to angular acceleration via an arbitrary inertia constant
-            I = max(0.1, m * 0.02)  # crude rotational inertia proxy
-            angular_acc = torque / I
-            # Integrate orientation
-            self.launch_angular_velocity += angular_acc * dt
-            self.launch_angle += self.launch_angular_velocity * dt
-            # Keep angle within -pi..pi for numerical stability (not limiting spin, just wrapping)
-            if self.launch_angle > math.pi:
-                self.launch_angle -= 2 * math.pi
-            elif self.launch_angle < -math.pi:
-                self.launch_angle += 2 * math.pi
+        row = self._stability_row_at(t)
+        max_thrust = max((r.get('thrust') or 0.0) for r in rows) or 1.0
+        current_thrust = max(0.0, row.get('thrust') or 0.0)
 
-            # Thrust aligned with body axis
-            thrust_dir_x = math.sin(self.launch_angle)
-            thrust_dir_y = math.cos(self.launch_angle)
-            thrust_x = current_thrust_step * thrust_dir_x
-            thrust_y = current_thrust_step * thrust_dir_y
+        self.launch_altitude = max(0.0, row.get('altitude') or 0.0)
+        self.launch_x_pos = row.get('downrange') or 0.0
+        self.launch_velocity = row.get('velocity') or 0.0
+        self.launch_x_vel = row.get('horizontal_velocity') or 0.0
+        self.launch_mass = row.get('mass') or self.launch_mass
+        # The model reports tilt in degrees from vertical; the drawing wants
+        # radians, same sign convention.
+        self.launch_angle = math.radians(row.get('angle_from_vertical_deg') or 0.0)
+        self.chute_deployed = bool(row.get('chute_deployed'))
+        self.chute_open_factor = float(row.get('chute_fill') or
+                                       (1.0 if self.chute_deployed else 0.0))
+        # Speed through the air, for the drag arrow and the canopy's heading.
+        # It used to leak out of the integration loop into the drawing below;
+        # with the loop gone it has to be stated.
+        v_total = math.hypot(self.launch_x_vel, self.launch_velocity)
 
-            # Effective drag area with parachute (Cd*A + Cd_chute*A_chute*open)
-            drag_area_base = Cd * A
-            chute_area_term = (chute_cd * chute_size) if (chute_size and chute_cd) else 0.0
-            if self.chute_deployed:
-                # Gradually open chute
-                self.chute_open_factor = min(1.0, self.chute_open_factor + 0.12)
-            drag_area_eff = drag_area_base + (self.chute_open_factor * chute_area_term)
+        # Stability is now a property of this instant of the flight, read off
+        # the margin the model computed for it, not a verdict fixed before
+        # the rocket left the pad.
+        margin_cal = row.get('stability_cal')
+        if margin_cal is None:
+            stable = True
+        else:
+            stable = self.STABLE_MIN_CAL <= margin_cal <= self.STABLE_MAX_CAL
+        color = '#2E8B57' if stable else '#E94F37'
 
-            # Calculate vertical drag force magnitude: F_drag = 0.5 * rho * v^2 * drag_area_eff
-            if self.launch_velocity != 0:
-                drag_force_mag = 0.5 * rho * (self.launch_velocity ** 2) * drag_area_eff
-                # Drag always opposes motion
-                drag_term = math.copysign(drag_force_mag, self.launch_velocity)
-            else:
-                drag_term = 0.0
-            
-            # Net force: thrust - weight - drag(sign)
-            net_force = thrust_y - drag_term - (self.launch_mass * g)
-            acceleration = net_force / self.launch_mass
-            
-            # Add instability if rocket is unstable (stronger, includes lateral wobble)
-            if not stable:
-                # Vertical wobble increases slightly with time
-                wobble_magnitude = (0.8 + 1.2 * instability_gain) * math.sin(t_sub * 8.0) * (1 + min(t, 10) * 0.07)
-                acceleration += wobble_magnitude
-                # Lateral acceleration from thrust tilt and wobble
-                a_x = thrust_x / self.launch_mass
-                a_x += (0.8 * instability_gain) * math.sin(t_sub * (6.0 + 1.5 * instability_gain))
-                a_x += (0.4 * instability_gain) * (random.random() - 0.5)  # small noise for non-periodic motion
-                # Horizontal drag opposes lateral velocity to avoid runaway drift
-                if self.launch_x_vel != 0:
-                    drag_x_mag = 0.5 * rho * (self.launch_x_vel ** 2) * drag_area_eff
-                    drag_x_term = math.copysign(drag_x_mag, self.launch_x_vel)
-                    a_x += -drag_x_term / self.launch_mass
-                # Integrate x velocity and position
-                self.launch_x_vel += a_x * dt
-            else:
-                # When stable, lateral acceleration only from thrust alignment
-                a_x = thrust_x / self.launch_mass
-                # Horizontal drag
-                if self.launch_x_vel != 0:
-                    drag_x_mag = 0.5 * rho * (self.launch_x_vel ** 2) * drag_area_eff
-                    drag_x_term = math.copysign(drag_x_mag, self.launch_x_vel)
-                    a_x += -drag_x_term / self.launch_mass
-                self.launch_x_vel += a_x * dt
-            
-            # Smooth acceleration changes to avoid jerky motion
-            acceleration_smoothing = 0.3
-            self.prev_acceleration += (acceleration - self.prev_acceleration) * acceleration_smoothing
-            
-            # Update velocity and position with smoothed acceleration
-            self.launch_velocity += self.prev_acceleration * dt
-            self.launch_altitude += self.launch_velocity * dt
-            
-            # Add wind drift (smaller steps for smoother movement)
-            # Combine wind drift and integrated lateral velocity
-            self.launch_x_pos += (self.launch_x_vel + x_drift_per_sec) * dt
-            
-            # Don't go below ground
-            if self.launch_altitude < 0:
-                self.launch_altitude = 0
-                self.launch_velocity = max(0, self.launch_velocity * -0.3)  # Bounce with energy loss
-        
-        # Detect apogee (sign change of vertical velocity)
-        try:
-            if (not self.apogee_marked) and (self.launch_prev_velocity > 0) and (self.launch_velocity <= 0) and (self.launch_altitude > 0.5):
+        # Apogee, taken from the flight rather than watched for frame by frame.
+        if not getattr(self, 'apogee_marked', False):
+            peak = max(range(len(rows)),
+                       key=lambda i: rows[i].get('altitude') or 0.0)
+            if (rows[peak].get('time') or 0.0) <= t:
                 self.apogee_marked = True
-                self.apogee_pos = (self.launch_x_pos, self.launch_altitude)
+                self.apogee_pos = (rows[peak].get('downrange') or 0.0,
+                                   rows[peak].get('altitude') or 0.0)
                 self.apogee_flash_frames = 30
-        except Exception:
-            pass
-        self.launch_prev_velocity = self.launch_velocity
 
-        # Use calculated positions
         x_pos = self.launch_x_pos
-        y_pos = self.launch_altitude
-            
-        y_pos = max(0, y_pos)  # Don't go below ground
+        y_pos = max(0.0, self.launch_altitude)
+
+        # The wind arrow used to be drawn from a "scale for demo" constant.
+        # The flight carries the real wind at this altitude, so draw that.
+        wind_here = row.get('wind_speed')
+        if wind_here is None:
+            wind_here = wind_speed
+        wind_arrow_dx = math.copysign(
+            min(2.0, 0.15 * abs(wind_here)), wind_here or 1.0)
         
         # Calculate camera following parameters with smoothing
         # Smooth camera movement using exponential moving average
@@ -3858,9 +3921,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
         
         # Draw current rocket position (rotated polygon) and flame aligned with body
         if y_pos > 0:
-            # Rocket dimensions in world units (visual only)
-            L_draw = 0.6
-            W_draw = 0.18
+            # Rocket size, scaled to the view rather than fixed in metres.
+            # It was a flat 0.6 m, while the camera zooms out with altitude -
+            # so the rocket shrank to nothing the moment it climbed, and the
+            # tracker showed an empty sky. Tying it to the view keeps it the
+            # same size on screen the whole way up. Visual only; it is a
+            # marker for where the rocket is, not a scale drawing.
+            L_draw = max(0.6, view_height * 0.075)
+            W_draw = L_draw * 0.3
             # Body frame vertices: (x_right, y_forward)
             nose = (0.0, L_draw/2)
             left_tail = (-W_draw/2, -L_draw/2)
@@ -3879,7 +3947,6 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Add thrust flame based on actual thrust with smoothing
             if not hasattr(self, 'smooth_flame_intensity'):
                 self.smooth_flame_intensity = 0.0
-            max_thrust = max(thrusts) if thrusts else 1000  # Normalize flame size
             target_flame_intensity = current_thrust / max_thrust if max_thrust > 0 else 0
             # Smooth flame intensity changes
             flame_smoothing = 0.2
@@ -3905,16 +3972,15 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Draw parachute if deployed
             if self.chute_deployed and self.chute_open_factor > 0.05:
                 # Direction opposite velocity
-                v_total = (self.launch_x_vel**2 + self.launch_velocity**2) ** 0.5
                 if v_total < 1e-3:
                     para_dir = (0.0, 1.0)
                 else:
                     para_dir = (-self.launch_x_vel / v_total, -self.launch_velocity / v_total)
                 # Canopy center a bit behind rocket along para_dir
-                canopy_offset = 0.9 * L_draw
+                canopy_offset = 1.1 * L_draw
                 canopy_center = (x_pos + para_dir[0] * canopy_offset,
                                  y_pos + para_dir[1] * canopy_offset)
-                canopy_radius = 0.35 * self.chute_open_factor
+                canopy_radius = L_draw * 0.6 * self.chute_open_factor
                 canopy = mpatches.Circle(canopy_center, canopy_radius, facecolor='#A7C7E7', edgecolor='#3C2F1E', linewidth=2, alpha=0.85, zorder=5)
                 ax.add_patch(canopy)
                 # Lines (shrouds) to tail
@@ -3923,17 +3989,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
             # FBD arrows (thrust, drag, gravity) near rocket
             # Thrust
-            max_thrust = max(thrusts) if thrusts else 1000
-            t_scale = 0.4 * (current_thrust / max_thrust) if max_thrust > 0 else 0
-            ax.arrow(x_pos, y_pos, u_forward[0]*t_scale, u_forward[1]*t_scale, head_width=0.06, head_length=0.08, fc='green', ec='green', alpha=0.8, zorder=7)
+            arrow_unit = max(0.4, view_height * 0.05)
+            t_scale = arrow_unit * (current_thrust / max_thrust) if max_thrust > 0 else 0
+            ax.arrow(x_pos, y_pos, u_forward[0]*t_scale, u_forward[1]*t_scale, head_width=arrow_unit*0.15, head_length=arrow_unit*0.2, fc='green', ec='green', alpha=0.8, zorder=7)
             # Drag opposite velocity
             if v_total > 1e-3:
                 d_dir = (-self.launch_x_vel / v_total, -self.launch_velocity / v_total)
-                d_scale = 0.4 * min(1.0, v_total / 50.0)
-                ax.arrow(x_pos, y_pos, d_dir[0]*d_scale, d_dir[1]*d_scale, head_width=0.06, head_length=0.08, fc='red', ec='red', alpha=0.8, zorder=7)
+                d_scale = arrow_unit * min(1.0, v_total / 50.0)
+                ax.arrow(x_pos, y_pos, d_dir[0]*d_scale, d_dir[1]*d_scale, head_width=arrow_unit*0.15, head_length=arrow_unit*0.2, fc='red', ec='red', alpha=0.8, zorder=7)
             # Gravity
-            g_len = 0.3
-            ax.arrow(x_pos, y_pos, 0, -g_len, head_width=0.06, head_length=0.08, fc='blue', ec='blue', alpha=0.8, zorder=7)
+            g_len = arrow_unit * 0.75
+            ax.arrow(x_pos, y_pos, 0, -g_len, head_width=arrow_unit*0.15, head_length=arrow_unit*0.2, fc='blue', ec='blue', alpha=0.8, zorder=7)
 
         # Apogee flash marker
         if self.apogee_flash_frames and self.apogee_pos:
@@ -3944,7 +4010,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         
         # Draw wind arrow
         if wind_speed > 0:
-            ax.arrow(-0.5, y_pos + 0.2, x_drift_per_sec * 20, 0, 
+            ax.arrow(-0.5, y_pos + 0.2, wind_arrow_dx, 0, 
                     head_width=0.15, head_length=0.15, 
                     fc='#4682B4', ec='#4682B4', linewidth=3, alpha=0.7)
         
@@ -3965,15 +4031,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Theme-aware styling
         self.style_axes(ax)
         
-        # Add status text
-        if not stable and y_pos > 0:
-            # Attach instability warning near the rocket so it's always visible
-            ax.text(x_pos, y_pos + 0.5, 'UNSTABLE!', ha='center', va='center', 
-                   fontsize=12, color='red', fontweight='bold',
-                   bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8))
+        # Add status text.
+        #
+        # Too much margin and too little are different failures and must not
+        # carry the same word: a rocket at 4.6 calibers is not going to tumble,
+        # it is going to turn hard into the wind and lose altitude doing it.
+        # Calling that "UNSTABLE!" sends you adding nose weight, which is the
+        # wrong way.
+        if not stable and y_pos > 0 and margin_cal is not None:
+            if margin_cal < self.STABLE_MIN_CAL:
+                banner, face = f'UNSTABLE  {margin_cal:.1f} cal', 'yellow'
+            else:
+                banner, face = f'OVER-STABLE  {margin_cal:.1f} cal', '#FFD47F'
+            ax.text(x_pos, y_pos + L_draw * 0.9, banner, ha='center', va='bottom',
+                   fontsize=11, color='#7A1B1B', fontweight='bold',
+                   bbox=dict(boxstyle='round', facecolor=face, alpha=0.85))
         
         if y_pos <= 0 and t > 1:
-            ax.text(x_pos, 0.3, 'IMPACT!', ha='center', va='center', 
+            ax.text(x_pos, view_height * 0.05, 'IMPACT!', ha='center', va='center', 
                    fontsize=14, color='red', fontweight='bold',
                    bbox=dict(boxstyle='round', facecolor='orange', alpha=0.9))
         
@@ -3990,8 +4065,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             pass
         
-        # End animation when rocket impacts ground, or after a safety max duration
-        if (y_pos <= 0 and t > 1) or self.launch_time > 60:
+        # The playback ends when the flight does. The old cut-offs - ground
+        # contact, or a 60 s safety stop - belonged to a model that made its
+        # own trajectory up; this one runs to the end of the flown rows, so a
+        # descent under canopy that really takes three minutes is not cut off
+        # at one.
+        flight_end = (rows[-1].get('time') or 0.0) if rows else 0.0
+        if self.launch_time > flight_end:
             self.launch_timer.stop()
             self.is_launching = False
             self.launch_button.setText('Launch Again!')
