@@ -1,10 +1,8 @@
 name: Build the downloadable JARVIS
 
-# Produces a ready-to-run Windows folder that needs no Python, no installer
-# and no admin rights: download the zip from the Releases page, unzip it onto
-# a flash drive, run it.
-#
-# Windows only, deliberately. Nothing here builds or tests macOS or Linux.
+# Produces ready-to-run folders that need no Python, no installer and no
+# admin rights: download the zip from the Releases page, unzip it onto a
+# flash drive, run it on any computer.
 #
 # Two ways to run it:
 #
@@ -35,13 +33,24 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false        # a broken mac build must not lose the windows one
       matrix:
         include:
-          # Windows only. This is the platform the app is used on, and the
-          # only one built, tested or released.
+          # Windows is the download. It is the platform this gets used on,
+          # and the only artifact that reaches the Releases page.
           - os: windows-latest
             label: Windows
             asset: JARVIS-Downloadable-Windows
+            release: true
+          # Linux is kept as a TEST, not a download. It is the only runner
+          # where the frozen app can actually be launched and checked that it
+          # stays up - Windows and macOS runners cannot do that headless.
+          # Without it every build would be verified as complete but never as
+          # running. It publishes no release asset.
+          - os: ubuntu-latest
+            label: Linux (smoke test only)
+            asset: JARVIS-SmokeTest-Linux
+            release: false
 
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +60,14 @@ jobs:
           # 3.11 because PyQt5 wheels are reliably available for it on all
           # three runners; newer versions have gaps.
           python-version: "3.11"
+
+      - name: Install Qt runtime libraries (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-cursor0
 
       - name: Install dependencies
         run: |
@@ -75,6 +92,28 @@ jobs:
         # confirm every module and data folder actually made it in.
         working-directory: rocket-simulation-ui
         run: python tools/check_bundle.py
+
+      - name: Check it starts (Linux only)
+        # The one runner where a real headless launch is possible. A window
+        # that builds is the broadest smoke test there is.
+        if: runner.os == 'Linux'
+        working-directory: rocket-simulation-ui/dist/JARVIS_Rocket_Simulation
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          # The log goes to the runner temp, not into the folder we are
+          # about to ship.
+          timeout 60 ./JARVIS_Rocket_Simulation > "$RUNNER_TEMP/launch.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/launch.log"
+          # 124 is the timeout killing a healthy, still-running app. Anything
+          # else means it exited on its own, which at startup means it crashed.
+          if [ "$code" -ne 124 ]; then
+            echo "::error::the app exited with $code instead of staying up"
+            exit 1
+          fi
+          echo "started and stayed up"
 
       - name: Stage the downloadable folder
         shell: bash
@@ -105,8 +144,12 @@ jobs:
           path: builds
 
       - name: Zip the Windows build
+        # Only the Windows folder becomes a release asset. The Linux build is
+        # a smoke test; it has already done its job by launching in its own
+        # job and is not something anyone downloads.
         run: |
           cd builds
+          rm -rf JARVIS-SmokeTest-Linux
           for d in */; do
             name="${d%/}"
             (cd "$name" && zip -qr "../${name}.zip" .)
