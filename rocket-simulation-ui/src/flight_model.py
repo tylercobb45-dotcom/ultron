@@ -273,7 +273,8 @@ def run_flight(thrust_points,
                # 15 km flight under a main at 6 m/s needs ~2,500 s, and a
                # single deploy at apogee from 27 km needs well over an hour.
                max_time: float = 5400.0,
-               cd_override=None):
+               cd_override=None,
+               cp_override=None):
     """Integrate a flight. Returns a list of per-sample dicts.
 
     Semi-implicit Euler at a small fixed step: recovery deployment and rail
@@ -384,7 +385,11 @@ def run_flight(thrust_points,
             # there is none, the vehicle simply keeps the attitude it had.
             theta_rel = math.atan2(rvx, rvz if abs(rvz) > 1e-9 else 1e-9)
             cg_now = mass_props.cg(prop_left)
-            cp_now = airframe.center_of_pressure(mach)
+            # A CP set by hand replaces the one the geometry implies, so the
+            # Stability Test tab's override changes what actually flies rather
+            # than only what is printed beside it.
+            cp_now = (cp_override if cp_override is not None
+                      else airframe.center_of_pressure(mach))
             margin_cal = (cp_now - cg_now) / diameter
             # Real inertia from the mass components when they exist, and the
             # uniform-rod estimate when they do not. This is what sets how
@@ -476,7 +481,8 @@ def run_flight(thrust_points,
         sample_dt = output_dt * (10.0 if recovery_system.any_deployed() else 1.0)
         if t >= next_output - 1e-12:
             cg = mass_props.cg(prop_left)
-            cp = airframe.center_of_pressure(mach)
+            cp = (cp_override if cp_override is not None
+                  else airframe.center_of_pressure(mach))
             stability = (cp - cg) / diameter
             chute_cda = cda_recovery
             results.append({

@@ -121,6 +121,109 @@ def _lock_unit_combo(combo):
     return combo
 
 
+class StabilityLengthField(QtWidgets.QWidget):
+    """A length with a unit picker, that follows the loaded rocket by default.
+
+    Two problems this solves at once.
+
+    The Stability Test tab's rocket length, centre of mass and centre of
+    pressure were plain metre boxes that nothing ever filled in. Load a
+    rocket and they kept whatever was typed last, so the pad margin shown
+    here could describe a different vehicle from the one being flown - the
+    same failure the Engine tab's preview had.
+
+    And they were metres only, on a page where everything else can be set in
+    whichever unit the numbers came in.
+
+    So the value is held in SI internally and displayed in whichever unit is
+    picked, and it tracks the vehicle until someone deliberately overrides it.
+    """
+
+    UNITS = (("m", 1.0), ("cm", 0.01), ("mm", 0.001),
+             ("in", 0.0254), ("ft", 0.3048))
+
+    def __init__(self, si_value=0.0, maximum_m=100.0, parent=None):
+        super().__init__(parent)
+        self._si = float(si_value)
+        self._unit_index = 0
+        self._loading = False
+
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        self.spin = QtWidgets.QDoubleSpinBox()
+        self.spin.setDecimals(3)
+        self.spin.setRange(0.0, maximum_m / self.UNITS[0][1])
+        self.spin.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                QtWidgets.QSizePolicy.Fixed)
+        self.spin.valueChanged.connect(self._on_value_changed)
+        row.addWidget(self.spin, 1)
+
+        self.unit = QtWidgets.QComboBox()
+        for name, _factor in self.UNITS:
+            self.unit.addItem(name)
+        self.unit.currentIndexChanged.connect(self._on_unit_changed)
+        row.addWidget(self.unit, 0)
+
+        self._maximum_m = maximum_m
+        self._refresh_display()
+
+    # -- value in SI, whatever is on screen -------------------------------
+    # value()/setValue() keep the QDoubleSpinBox spelling these replaced, so
+    # every existing caller keeps working and keeps getting metres.
+    def value(self):
+        return self._si
+
+    def setValue(self, v):
+        self.set_si_value(v)
+
+    def si_value(self):
+        return self._si
+
+    def set_si_value(self, value):
+        self._si = float(value or 0.0)
+        self._refresh_display()
+
+    def factor(self):
+        return self.UNITS[self._unit_index][1]
+
+    def _refresh_display(self):
+        self._loading = True
+        try:
+            factor = self.factor()
+            self.spin.setRange(0.0, self._maximum_m / factor)
+            # Enough decimals that a millimetre still shows in any unit.
+            self.spin.setDecimals(1 if factor <= 0.001 else 3)
+            self.spin.setValue(self._si / factor)
+        finally:
+            self._loading = False
+
+    def _on_value_changed(self, shown):
+        if self._loading:
+            return
+        self._si = float(shown) * self.factor()
+        self.valueChanged.emit(self._si)
+
+    def _on_unit_changed(self, index):
+        # Convert the value that is already there rather than reinterpreting
+        # it: 1.5 m picked as inches is 1.5 m shown as 59.055 in, not 1.5 in.
+        self._unit_index = index
+        self._refresh_display()
+
+    def set_editable(self, editable):
+        self.spin.setReadOnly(not editable)
+        self.spin.setButtonSymbols(
+            QtWidgets.QAbstractSpinBox.UpDownArrows if editable
+            else QtWidgets.QAbstractSpinBox.NoButtons)
+        self.spin.setEnabled(True)      # stays readable either way
+        self.spin.setToolTip("" if editable else
+                             "Taken from the loaded rocket. Tick Override to "
+                             "set it by hand.")
+
+    valueChanged = QtCore.pyqtSignal(float)
+
+
 def _scrollable(page):
     """Wrap a tab page in a vertical scroll area.
 
@@ -1713,23 +1816,43 @@ class RocketSimulationUI(QtWidgets.QWidget):
         stability_group = QtWidgets.QGroupBox("Rocket Stability")
         stability_layout = QtWidgets.QFormLayout(stability_group)
 
-        self.rocket_length_input = QtWidgets.QDoubleSpinBox()
-        self.rocket_length_input.setRange(0.1, 10.0)
-        self.rocket_length_input.setValue(1.0)
-        self.rocket_length_input.setSuffix(" m")
+        # These follow the loaded rocket unless the override is ticked, and
+        # each carries its own unit picker. Left to be typed by hand they went
+        # stale the moment a different vehicle was loaded, so the pad margin
+        # shown here could belong to a rocket that was no longer on screen.
+        self.stability_override = QtWidgets.QCheckBox(
+            "Override - set these by hand instead of from the rocket")
+        self.stability_override.setToolTip(
+            "Off: length, CG and CP are read from the loaded rocket and keep "
+            "up with it.\nOn: type your own, and they stop tracking.")
+        self.stability_override.toggled.connect(self._on_stability_override)
+        stability_layout.addRow(self.stability_override)
+
+        self.rocket_length_input = StabilityLengthField(1.0, maximum_m=30.0)
         stability_layout.addRow("Rocket Length:", self.rocket_length_input)
 
-        self.center_of_mass_input = QtWidgets.QDoubleSpinBox()
-        self.center_of_mass_input.setRange(0.0, 10.0)
-        self.center_of_mass_input.setValue(0.5)
-        self.center_of_mass_input.setSuffix(" m")
-        stability_layout.addRow("Center of Mass:", self.center_of_mass_input)
+        self.center_of_mass_input = StabilityLengthField(0.5, maximum_m=30.0)
+        stability_layout.addRow("Center of Mass (from nose):",
+                                self.center_of_mass_input)
 
-        self.center_of_pressure_input = QtWidgets.QDoubleSpinBox()
-        self.center_of_pressure_input.setRange(0.0, 10.0)
-        self.center_of_pressure_input.setValue(0.7)
-        self.center_of_pressure_input.setSuffix(" m")
-        stability_layout.addRow("Center of Pressure:", self.center_of_pressure_input)
+        self.center_of_pressure_input = StabilityLengthField(0.7, maximum_m=30.0)
+        stability_layout.addRow("Center of Pressure (from nose):",
+                                self.center_of_pressure_input)
+
+        # These combos go through the same re-measure as every other unit
+        # picker. Windows ships a 9pt default font, so a combo sized before
+        # the stylesheet's 10pt lands gets clipped to a bare arrow - the
+        # defect _lock_unit_combo exists to prevent, and the one platform
+        # that cannot be tested from here.
+        for field in (self.rocket_length_input, self.center_of_mass_input,
+                      self.center_of_pressure_input):
+            self._unit_combos.append(field.unit)
+
+        self.stability_source_label = QtWidgets.QLabel()
+        self.stability_source_label.setWordWrap(True)
+        self.stability_source_label.setStyleSheet(
+            f"color:{app_theme.PALETTE['text_dim']}; font-size:9pt;")
+        stability_layout.addRow(self.stability_source_label)
 
         self.launch_angle_input = QtWidgets.QDoubleSpinBox()
         self.launch_angle_input.setRange(-45.0, 45.0)
@@ -1763,21 +1886,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # Once it HAS been flown, the flight's own verdict replaces it and
         # must not be overwritten by a pad number - the whole point is that
         # the margin does not stay at its pad value once the motor lights.
-        def update_stability():
-            if getattr(self, '_stability_envelope', None):
-                self._report_stability_envelope()
-                return
-            margin = self.center_of_pressure_input.value() - self.center_of_mass_input.value()
-            status = "Stable" if margin > 0.05 else "Unstable"
-            color = "#2E8B57" if status == "Stable" else "#E94F37"
-            self.stability_status_label.setText(
-                f"On the pad: {margin:.2f} m ({status}) - press Launch to "
-                f"test it through the burn")
-            self.stability_status_label.setStyleSheet(f"font-size:13px;font-weight:bold;color:{color};")
+        update_stability = self.refresh_stability_margin
         self.rocket_length_input.valueChanged.connect(update_stability)
         self.center_of_mass_input.valueChanged.connect(update_stability)
         self.center_of_pressure_input.valueChanged.connect(update_stability)
-        update_stability()
+        # Start tracking the rocket, not editable, which is the default.
+        self._on_stability_override(False)
+        QtCore.QTimer.singleShot(0, self.sync_stability_from_vehicle)
 
         # Update recommended angle label initially and when wind/angle changes
         def _update_rec_label():
@@ -3346,7 +3461,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             rows, summary = self.run_flight_simulation(
                 m, Cd, A, rho, sim_kwargs, time_step,
                 body_diameter=body_diameter,
-                site_override=self._stability_launch_site())
+                site_override=self._stability_launch_site(),
+                **self._stability_geometry_overrides())
         except Exception:
             traceback.print_exc()
             self._set_stability_note(
@@ -3364,6 +3480,109 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self._report_stability_envelope()
         self.enable_force_scrubber()
         return rows
+
+    def _on_stability_override(self, checked):
+        """Switch the stability figures between tracking and typed."""
+        for field in (self.rocket_length_input, self.center_of_mass_input,
+                      self.center_of_pressure_input):
+            field.set_editable(checked)
+        if not checked:
+            # Going back to tracking re-reads the rocket, so nothing the user
+            # typed is left behind masquerading as the vehicle's own numbers.
+            self.sync_stability_from_vehicle(force=True)
+        else:
+            self.stability_source_label.setText(
+                "Overridden - these are your numbers, not the rocket's.")
+        self.refresh_stability_margin()
+
+    def sync_stability_from_vehicle(self, force=False):
+        """Pull length, CG and CP off the loaded rocket.
+
+        Does nothing while the override is ticked, unless forced - that is how
+        turning the override back off restores the vehicle's own figures.
+
+        The centre of gravity taken here is the LOADED one, with propellant
+        aboard, because that is the margin the rocket leaves the rail with and
+        the one this page's pad reading is about. It migrates during the burn,
+        and the flight itself reports that; this is the starting point.
+        """
+        if getattr(self, 'stability_override', None) is None:
+            return
+        if self.stability_override.isChecked() and not force:
+            return
+        try:
+            airframe = self.vehicle_tab.airframe()
+            mass_props = self.vehicle_tab.mass_properties()
+        except Exception:
+            self.stability_source_label.setText(
+                "No rocket configured yet - tick Override to enter these by hand.")
+            return
+
+        length = airframe.total_length or 0.0
+        if length <= 0:
+            self.stability_source_label.setText(
+                "The loaded rocket has no length set - tick Override to enter "
+                "these by hand.")
+            return
+        cg = mass_props.cg(max(0.0, mass_props.propellant_mass_kg))
+        try:
+            cp = airframe.center_of_pressure(0.3)
+        except Exception:
+            cp = 0.0
+
+        self.rocket_length_input.set_si_value(length)
+        self.center_of_mass_input.set_si_value(cg)
+        self.center_of_pressure_input.set_si_value(cp)
+        diameter = airframe.body_diameter_m or 0.0
+        if diameter > 0:
+            self.stability_source_label.setText(
+                f"From the loaded rocket: {length:.3f} m long, "
+                f"{diameter * 1000:.0f} mm across, loaded CG at {cg:.3f} m, "
+                f"CP at {cp:.3f} m (subsonic).")
+        else:
+            self.stability_source_label.setText("From the loaded rocket.")
+        self.refresh_stability_margin()
+
+    def refresh_stability_margin(self):
+        """Re-state the pad margin, or the flight verdict if one exists."""
+        if getattr(self, '_stability_envelope', None):
+            self._report_stability_envelope()
+            return
+        if not hasattr(self, 'stability_status_label'):
+            return
+        cp = self.center_of_pressure_input.value()
+        cg = self.center_of_mass_input.value()
+        margin_m = cp - cg
+        try:
+            diameter = self.vehicle_tab.airframe().body_diameter_m or 0.0
+        except Exception:
+            diameter = 0.0
+        if diameter > 0:
+            cal = margin_m / diameter
+            ok = self.STABLE_MIN_CAL <= cal <= self.STABLE_MAX_CAL
+            text = (f"On the pad: {cal:.2f} cal ({margin_m:.3f} m) - "
+                    f"press Launch to test it through the burn")
+        else:
+            ok = margin_m > 0.05
+            text = (f"On the pad: {margin_m:.3f} m - press Launch to test it "
+                    f"through the burn")
+        self._set_stability_note(text, ok=ok)
+
+    def _stability_geometry_overrides(self):
+        """CG and CP for the flight, when they have been set by hand here.
+
+        With the override off this is empty and the rocket's own geometry
+        flies, which is the normal case. With it on, the typed figures are
+        what fly - otherwise ticking Override would change the number printed
+        beside the diagram while the rocket carried on flying its real CG,
+        which is worse than not offering the override at all.
+        """
+        if not getattr(self, 'stability_override', None):
+            return {}
+        if not self.stability_override.isChecked():
+            return {}
+        return {'cg_override': self.center_of_mass_input.value(),
+                'cp_override': self.center_of_pressure_input.value()}
 
     def _stability_launch_site(self):
         """The launch site as set on THIS tab.
@@ -4343,7 +4562,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             f"smaller canopy.")
 
     def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step,
-                              body_diameter=None, site_override=None):
+                              body_diameter=None, site_override=None,
+                              cg_override=None, cp_override=None):
         """Fly the vehicle.
 
         Uses the 2-DOF model (wind, full atmosphere, Mach-5 drag buildup,
@@ -4399,10 +4619,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     # An imported Cd(Mach) curve beats a single number,
                     # which in turn beats the estimate.
                     cd_over = self.cd_source()
+                    # A CG set by hand on the Stability Test tab is applied
+                    # by sliding the whole vehicle's mass distribution so its
+                    # LOADED centre of gravity lands where it was typed. The
+                    # propellant still burns off and the CG still migrates -
+                    # what moves is where it starts.
+                    if cg_override is not None:
+                        loaded = mass_props.cg(
+                            max(0.0, mass_props.propellant_mass_kg))
+                        shift = float(cg_override) - loaded
+                        if abs(shift) > 1e-9:
+                            mass_props.dry_cg_m = (mass_props.effective_dry_cg()
+                                                   + shift)
+                            mass_props.propellant_cg_m += shift
+                            mass_props.buildup = None   # the shift replaces it
                     results, summary = flight_model.run_flight(
                         points, airframe, site, recovery_system, mass_props,
                         output_dt=max(0.02, float(time_step or 0.05)),
-                        cd_override=cd_over)
+                        cd_override=cd_over, cp_override=cp_override)
                     if results:
                         self._note_model_used(results, airframe,
                                               recovery_system, cd_over, Cd, A,
@@ -5388,6 +5622,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
             config['vehicle'] = self.flight_report.get_config()
         if hasattr(self, 'vehicle_tab'):
             config['airframe'] = self.vehicle_tab.get_config()
+        # Whether the stability figures were typed rather than read from the
+        # rocket, so a deliberate override is not silently lost on reload.
+        config['stability_override'] = {
+            'enabled': bool(self.stability_override.isChecked()),
+            'rocket_length_m': self.rocket_length_input.value(),
+            'center_of_mass_m': self.center_of_mass_input.value(),
+            'center_of_pressure_m': self.center_of_pressure_input.value(),
+        }
         # A rocket is a pairing. Record which named designs it was assembled
         # from, so the Simulation tab can show the pairing again on reload.
         # The full configs above are still stored, so a rocket keeps working
@@ -5408,6 +5650,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             name = (config or {}).get('name') or 'this rocket'
             self.invalidate_flight_results(
                 f"Loaded {name} - run a simulation to see its flight.")
+            # The Stability Test tab's length, CG and CP belong to the rocket,
+            # so they are re-read once this configuration is in. Deferred to
+            # the end of the call, below, when the vehicle tab has been filled.
+            self._resync_stability_after_load = True
             asm = config.get('assembly') or {}
             if asm and hasattr(self, 'assembly'):
                 # Show the pairing this rocket was built from. The stored
@@ -5509,6 +5755,30 @@ class RocketSimulationUI(QtWidgets.QWidget):
                     self.result_label.setText(
                         "This rocket has no thrust curve saved. Load one, or "
                         "send a motor across from the Engine tab.")
+
+            # The vehicle is in place now, so the Stability Test tab can read
+            # its length, CG and CP off it.
+            if getattr(self, '_resync_stability_after_load', False):
+                self._resync_stability_after_load = False
+                try:
+                    saved = (config or {}).get('stability_override') or {}
+                    if saved.get('enabled'):
+                        # A deliberate override is restored as typed, rather
+                        # than being overwritten by the rocket's own figures.
+                        self.stability_override.setChecked(True)
+                        for field, key in (
+                                (self.rocket_length_input, 'rocket_length_m'),
+                                (self.center_of_mass_input, 'center_of_mass_m'),
+                                (self.center_of_pressure_input,
+                                 'center_of_pressure_m')):
+                            if saved.get(key):
+                                field.set_si_value(saved[key])
+                        self.refresh_stability_margin()
+                    else:
+                        self.stability_override.setChecked(False)
+                        self.sync_stability_from_vehicle(force=True)
+                except Exception:
+                    traceback.print_exc()
 
             return True
         except Exception as e:
