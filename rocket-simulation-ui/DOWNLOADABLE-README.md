@@ -9,8 +9,7 @@ installed, no admin rights are needed, and your rockets travel with the drive.
 ## The short version
 
 1. Go to the **[Releases page](https://github.com/tylercobb45-dotcom/ultron/releases)**
-2. Download the zip for the computers you use — `JARVIS-Downloadable-Windows.zip`,
-   `JARVIS-Downloadable-macOS.zip` or `JARVIS-Downloadable-Linux.zip`
+2. Download **`JARVIS-Downloadable-Windows.zip`**
 3. Unzip it **onto the flash drive**
 4. Open the folder and run `JARVIS_Rocket_Simulation`
 
@@ -51,12 +50,11 @@ If you downloaded the **source** (the green *Code* button) rather than a
 release, you need Python 3.11 or newer on the computer:
 
 - **Windows** — double-click `Run JARVIS.bat`
-- **macOS / Linux** — run `./RUN-JARVIS.sh` in a terminal
 
 The first run downloads the libraries into `JARVIS-Data/lib/` **on the drive**,
-keyed by platform and Python version, so one stick can serve a Windows lab and
-a Mac at home without them interfering. It needs the internet once; after that
-it works offline. Nothing is installed into the computer itself.
+keyed by platform and Python version, so one stick can serve several machines
+without them interfering. It needs the internet once; after that it works
+offline. Nothing is installed into the computer itself.
 
 ## Troubleshooting
 
@@ -68,17 +66,12 @@ program it has not seen before, because the build is not code-signed. Click
 a false positive. The zips are built in public by GitHub Actions from the
 source in this repository; the build log shows exactly what went into them.
 
-**macOS says the app is damaged or from an unidentified developer** —
-right-click the program and choose *Open*, then *Open* again. macOS only
-offers that on the first launch.
-
 **It starts slowly the first time** — reading a few hundred megabytes off a USB
 2.0 stick is simply slow. Later launches are quicker because the computer
 caches it. A USB 3 stick makes a real difference.
 
-**Nothing happens when I double-click** — run it from a terminal or Command
-Prompt to see the error. On Linux you may need the Qt system libraries:
-`sudo apt install libegl1 libgl1 libxkbcommon-x11-0`.
+**Nothing happens when I double-click** — run it from a Command Prompt to see
+the error.
 
 ## Which download do I want?
 

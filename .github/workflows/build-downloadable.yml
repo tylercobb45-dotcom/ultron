@@ -36,15 +36,21 @@ jobs:
       fail-fast: false        # a broken mac build must not lose the windows one
       matrix:
         include:
+          # Windows is the download. It is the platform this gets used on,
+          # and the only artifact that reaches the Releases page.
           - os: windows-latest
             label: Windows
             asset: JARVIS-Downloadable-Windows
-          - os: macos-latest
-            label: macOS
-            asset: JARVIS-Downloadable-macOS
+            release: true
+          # Linux is kept as a TEST, not a download. It is the only runner
+          # where the frozen app can actually be launched and checked that it
+          # stays up - Windows and macOS runners cannot do that headless.
+          # Without it every build would be verified as complete but never as
+          # running. It publishes no release asset.
           - os: ubuntu-latest
-            label: Linux
-            asset: JARVIS-Downloadable-Linux
+            label: Linux (smoke test only)
+            asset: JARVIS-SmokeTest-Linux
+            release: false
 
     steps:
       - uses: actions/checkout@v4
@@ -137,9 +143,13 @@ jobs:
         with:
           path: builds
 
-      - name: Zip each platform
+      - name: Zip the Windows build
+        # Only the Windows folder becomes a release asset. The Linux build is
+        # a smoke test; it has already done its job by launching in its own
+        # job and is not something anyone downloads.
         run: |
           cd builds
+          rm -rf JARVIS-SmokeTest-Linux
           for d in */; do
             name="${d%/}"
             (cd "$name" && zip -qr "../${name}.zip" .)
@@ -154,8 +164,10 @@ jobs:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           files: builds/*.zip
           body: |
-            Download the zip for your computer, unzip it onto a flash drive,
-            and run it. No installation, no Python, no admin rights.
+            Download the zip, unzip it onto a flash drive, and run
+            `JARVIS_Rocket_Simulation.exe`. No installation, no Python, no
+            admin rights. Windows will warn that it does not recognise the
+            program because it is not code-signed: More info -> Run anyway.
 
             Everything you save goes into the `JARVIS-Data` folder beside the
             program, so your rockets, motors and settings travel with the

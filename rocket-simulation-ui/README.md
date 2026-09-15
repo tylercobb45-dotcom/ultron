@@ -65,9 +65,8 @@ rocket-simulation-ui
 
 Grab a zip from the
 **[Releases page](https://github.com/tylercobb45-dotcom/ultron/releases)** —
-`JARVIS-Downloadable-Windows.zip`, `JARVIS-Downloadable-macOS.zip` or
-`JARVIS-Downloadable-Linux.zip` — unzip it onto a flash drive, and run
-`JARVIS_Rocket_Simulation`. Nothing is installed, no admin rights are needed,
+`JARVIS-Downloadable-Windows.zip` — unzip it onto a flash drive, and run
+`JARVIS_Rocket_Simulation.exe`. Nothing is installed, no admin rights are needed,
 and everything you save lands in the `JARVIS-Data` folder beside the program,
 so your rockets travel with the drive.
 
