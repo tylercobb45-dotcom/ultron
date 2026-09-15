@@ -28,6 +28,7 @@ import units as app_units
 import unit_fields
 import flight_model
 import aero
+import atmosphere as atmosphere_mod
 import datasheet  # Flight + engine spreadsheet views
 import portable_paths
 import flight_equations
@@ -5671,9 +5672,25 @@ class RocketSimulationUI(QtWidgets.QWidget):
             except (TypeError, ValueError):
                 return fallback
 
-        return {
-            "_units": "storage",
-            "fields": {
+        # Start from a COMPLETE set of defaults, then overlay what the
+        # profile gives. Listing only the fields that can be derived leaves
+        # the rest inheriting from the previous rocket - surface roughness,
+        # boattail, latitude, wind shear - and an exhaustive load-order test
+        # caught the flight moving by 0.7 ft depending on what had been loaded
+        # before it. Small, but it is the same leak in miniature, and the
+        # point of this change is that a rocket gives one answer.
+        fields = {}
+        for source in (aero.Airframe(), atmosphere_mod.LaunchSite()):
+            for attr in dir(source):
+                if attr.startswith('_'):
+                    continue
+                value = getattr(source, attr, None)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    fields[attr] = value
+        fields.update({"fin_count": 3, "cd_override": 0.0,
+                       "dry_mass_kg": 1.0, "propellant_mass_kg": 0.0,
+                       "dry_cg_m": 0.0, "propellant_cg_m": 0.0})
+        fields.update({
                 "nose_length_m": nose_length,
                 "body_diameter_m": diameter,
                 "body_length_m": body_length,
@@ -5701,7 +5718,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 "humidity_pct": number(lc.get('humidity'), 0.0),
                 "wind_speed_ms": number(ws.get('wind_speed'), 0.0),
                 "rail_angle_deg": number(st_angle, 0.0),
-            },
+        })
+        return {
+            "_units": "storage",
+            "fields": fields,
             # No components: the legacy mass is a single typed number, and a
             # stale buildup from the previous rocket would override it.
             "mass_components": [],
