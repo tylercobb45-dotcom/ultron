@@ -29,6 +29,7 @@ import flight_model
 import aero
 import datasheet  # Flight + engine spreadsheet views
 import portable_paths
+import flight_equations
 
 
 def user_settings_path():
@@ -1514,7 +1515,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         # --- Engine: the motor, and the library of saved motor designs ---
         self.engine_lab = EngineLabWidget(
-            on_send_to_simulation=self.use_engine_lab_thrust_curve)
+            on_send_to_simulation=self.use_engine_lab_thrust_curve,
+            # So the Engine tab's flight preview describes the rocket the app
+            # is actually configured for, instead of its own three boxes that
+            # nothing updates when a vehicle is loaded.
+            get_vehicle=self._engine_preview_vehicle)
         self.engine_section = EngineSection(self.engine_lab,
                                             self.get_profiles_dir)
         self.tabs.addTab(_scrollable(self.engine_section), "Engine")
@@ -4354,6 +4359,46 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             return 0.0
 
+    def _engine_preview_vehicle(self):
+        """The loaded rocket, for the Engine tab's quick flight preview.
+
+        Returns (dry mass kg, body Cd, body diameter m), or None before there
+        is a vehicle to describe. Dry mass, not liftoff: the preview's model
+        adds the propellant from the motor it just simulated, so handing it a
+        wet mass would count the propellant twice.
+        """
+        try:
+            airframe = self.vehicle_tab.airframe()
+            mass_props = self.vehicle_tab.mass_properties()
+        except Exception:
+            return None
+        dry = mass_props.effective_dry_mass()
+        diameter = airframe.body_diameter_m
+        if not dry or dry <= 0 or not diameter or diameter <= 0:
+            return None
+        # The same drag the flight model would use: an imported Cd(Mach)
+        # curve sampled low-subsonic, an override, or the airframe buildup.
+        cd = None
+        try:
+            source = self.cd_source()
+            if callable(source):
+                cd = float(source(0.3))
+            elif source:
+                cd = float(source)
+        except Exception:
+            cd = None
+        if not cd or cd <= 0:
+            # Fall back to the airframe buildup at a representative subsonic
+            # point, the same function the flight model calls each step.
+            try:
+                site = self.vehicle_tab.launch_site()
+                speed = 0.3 * site.properties(site.elevation_m)[3]
+                cd, _breakdown = aero.drag_coefficient(
+                    0.3, site.elevation_m, speed, airframe, site)
+            except Exception:
+                cd = None
+        return (dry, cd, diameter)
+
     def get_inputs_for_simulation(self):
         # Convert all values to base units for simulation
         m = self.get_value_in_base_unit(self.mass_input.text(), self.mass_unit.currentIndex(), [1, 0.001, 0.453592])
@@ -4395,6 +4440,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 errors.append("Propellant mass must be less than liftoff mass.")
             if errors:
                 self.error_label.setText("; ".join(errors))
+                # Whatever flew last is not this rocket. Leaving it on screen
+                # is how the app ends up reporting two different apogees.
+                self.invalidate_flight_results("; ".join(errors))
                 return
             else:
                 self.error_label.setText("")
@@ -4426,9 +4474,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # Error handling for simulation results
             if isinstance(results, dict) and 'error' in results:
                 self.error_label.setText(results['error'])
+                self.invalidate_flight_results(results['error'])
                 return
             if not isinstance(results, list) or not results:
                 self.error_label.setText("Simulation returned unexpected data.")
+                self.invalidate_flight_results(
+                    "Simulation returned unexpected data.")
                 return
             self.display_results(results)
             self.plot_results(results)
@@ -4436,6 +4487,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         except ValueError:
             self.error_label.setText("Please enter valid numbers.")
+            self.invalidate_flight_results("Please enter valid numbers.")
 
     def _assembly_changed(self):
         """A different engine or airframe was paired on the Simulation tab."""
@@ -4495,7 +4547,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
         dur = summary.get('duration_s', 0.0)
         self.error_label.setText(
             f"Simulation hit its time limit after {dur:,.0f} s with the "
-            f"vehicle still {alt:,.0f} m ({alt*3.28084:,.0f} ft) up. Apogee "
+            f"vehicle still {alt:,.0f} m ({alt*flight_equations.FT_PER_M:,.0f} ft) up. Apogee "
             f"and the ascent are valid; the descent is cut short, so landing "
             f"speed and drift are not final. Deploy the main lower or use a "
             f"smaller canopy.")
@@ -4745,6 +4797,72 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             traceback.print_exc()
 
+    def invalidate_flight_results(self, reason=""):
+        """Drop every number that came from the last flight.
+
+        A run's results outlive the rocket that produced them unless something
+        throws them away. Loading a different rocket, or a run that fails,
+        used to leave the previous flight on screen: the Simulation tab's
+        summary, the Flight Report's verdict, the raw sheets, the graphs, the
+        force diagram and the stability verdict all kept showing it, beside
+        the new vehicle's configuration. That is what makes the app report one
+        rocket at two different apogees depending which panel you read.
+
+        So they are cleared together, and the reason is put where the numbers
+        used to be rather than leaving a blank panel.
+        """
+        self._last_results = None
+        self.last_flight_summary = None
+        self._stability_results = None
+        self._stability_summary = None
+        self._stability_envelope = None
+        self._force_scrub_time = None
+
+        for sheet in ('flight_sheet', 'engine_sheet'):
+            widget = getattr(self, sheet, None)
+            if widget is not None:
+                try:
+                    widget.set_rows([])
+                except Exception:
+                    pass
+        try:
+            self.flight_report.clear_flight(reason)
+        except Exception:
+            pass
+        if hasattr(self, 'force_scrubber'):
+            self.force_scrubber.setEnabled(False)
+            self.force_time_label.setText("Run a simulation to scrub")
+        # Back to the pad: the diagram has no flight to read any more.
+        try:
+            self.update_force_diagram(None)
+        except Exception:
+            pass
+        # The stability verdict came from the flight that just went away.
+        if hasattr(self, 'stability_status_label'):
+            self._set_stability_note(
+                reason or "Press Launch to test this rocket through the burn",
+                ok=True)
+        try:
+            self.clear_plots()
+        except Exception:
+            pass
+
+    def clear_plots(self):
+        """Blank the Simulation tab's plots, with a line saying why."""
+        for name in ('figure', 'fig'):
+            figure = getattr(self, name, None)
+            if figure is None:
+                continue
+            try:
+                app_theme.placeholder_figure(
+                    figure, "No flight - run a simulation.")
+                canvas = getattr(self, 'canvas', None)
+                if canvas is not None:
+                    canvas.draw_idle()
+            except Exception:
+                pass
+            break
+
     def display_results(self, results):
         if results:
             self.populate_datasheets(results)
@@ -4769,9 +4887,22 @@ class RocketSimulationUI(QtWidgets.QWidget):
             final_mass = results[-1]['mass']
             final_mass_time = results[-1]['time']
 
-            # Mach calculation using local speed of sound
-            local_a = self.get_local_speed_of_sound()
-            machs = [r['velocity']/local_a if local_a else 0 for r in results]
+            # Mach comes from the flight itself.
+            #
+            # This used to divide every velocity by ONE speed of sound - the
+            # one at the launch site - while the flight model recorded Mach
+            # against the local speed of sound at each altitude. The air is
+            # colder and slower up there, so the two disagreed by about 2%:
+            # the summary said Mach 1.245 where the graphs and the raw sheet
+            # said 1.271, for the same flight. Use the recorded column when it
+            # is there, and only fall back to the fixed figure for the basic
+            # model, which does not produce one.
+            machs = [r.get('Mach') for r in results if r.get('Mach') is not None]
+            if len(machs) == len(results) and machs:
+                machs = [r['Mach'] for r in results]
+            else:
+                local_a = self.get_local_speed_of_sound()
+                machs = [r['velocity']/local_a if local_a else 0 for r in results]
             max_mach = max(machs)
             max_mach_idx = machs.index(max_mach)
             max_mach_time = results[max_mach_idx]['time']
@@ -5477,6 +5608,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
     def apply_configuration(self, config):
         """Apply a configuration to the current inputs"""
         try:
+            # The flight on screen belongs to whatever was loaded before. It
+            # is not this rocket, so it goes before anything else changes -
+            # otherwise the new vehicle's configuration sits beside the old
+            # vehicle's apogee and the two disagree.
+            name = (config or {}).get('name') or 'this rocket'
+            self.invalidate_flight_results(
+                f"Loaded {name} - run a simulation to see its flight.")
             asm = config.get('assembly') or {}
             if asm and hasattr(self, 'assembly'):
                 # Show the pairing this rocket was built from. The stored

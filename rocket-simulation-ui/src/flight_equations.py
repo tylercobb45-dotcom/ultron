@@ -69,6 +69,13 @@ G0 = 9.80665
 #: want the more precise constant, change it HERE and re-record the baselines
 #: - that is exactly the kind of edit this file exists to make possible.
 R_AIR = 287.05287
+
+#: Feet per metre. Exact by definition: 1 ft = 0.3048 m. Stated once here and
+#: imported, because the app had two spellings of it (3.28084 and
+#: 3.280839895) in different files, so two panels could print the same apogee
+#: as two slightly different numbers.
+FT_PER_M = 1.0 / 0.3048
+
 GAMMA_AIR = 1.4
 
 #: Mean Earth radius [m], for geopotential altitude and the gravity model.

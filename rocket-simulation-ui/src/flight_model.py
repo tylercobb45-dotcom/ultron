@@ -30,6 +30,7 @@ import aero as aero_mod
 import atmosphere as atmosphere_mod
 import recovery as recovery_mod
 import mass_model
+import flight_equations as fe
 
 G0 = 9.80665
 SIM_VERSION = 3
@@ -552,7 +553,7 @@ def run_flight(thrust_points,
 
     summary = {
         'apogee_m': apogee_z,
-        'apogee_ft': apogee_z * 3.28084,
+        'apogee_ft': apogee_z * fe.FT_PER_M,
         'rail_exit_speed': rail_exit_speed,
         'max_q': max_q_seen,
         'impulse': impulse,

@@ -19,8 +19,9 @@ from PyQt5 import QtWidgets, QtCore
 
 import theme
 import portable_paths
+import flight_equations as fe
 
-FT = 3.280839895
+FT = fe.FT_PER_M
 
 
 def _series(rows, key, scale=1.0):

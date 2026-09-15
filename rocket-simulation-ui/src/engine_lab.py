@@ -333,9 +333,14 @@ class EngineLabWidget(QtWidgets.QWidget):
     """Design a hybrid engine, run its internal-ballistics model, and (optionally)
     hand the resulting thrust curve off to the main Simulation tab."""
 
-    def __init__(self, on_send_to_simulation=None, parent=None):
+    def __init__(self, on_send_to_simulation=None, get_vehicle=None, parent=None):
         super().__init__(parent)
         self._on_send_to_simulation = on_send_to_simulation
+        # Returns the rocket the rest of the app is configured for, as
+        # (dry mass kg, body Cd, body diameter m), or None. Without it the
+        # flight preview below describes whatever is typed in this tab's own
+        # three boxes, which is not necessarily the rocket being designed.
+        self._get_vehicle = get_vehicle
         self._last_result = None      # hybrid_sim EngineModel.run() output
         self._last_metrics = None
         self._last_engine = None      # the Engine dataclass that produced it
@@ -759,11 +764,38 @@ class EngineLabWidget(QtWidgets.QWidget):
         kwargs["inj_type"] = self.inj_combo.currentText()
         return Engine(**kwargs)
 
-    def _read_rocket(self) -> Rocket:
+    def _read_rocket(self):
+        """The airframe the flight preview should fly, and where it came from.
+
+        This tab has its own dry mass, Cd and diameter boxes, and the preview
+        used to fly those and nothing else. They are not updated when a rocket
+        is loaded, so the preview reported the same apogee for every vehicle -
+        the value for a 20 kg, 140 mm airframe, which is right for exactly one
+        of the presets and out by a factor of six for another.
+
+        The rocket configured on the Aerodynamics and Simulation tabs wins
+        when there is one. The boxes here are the fallback, for designing a
+        motor before there is an airframe to put it in.
+        """
+        source = "this tab"
         m_dry = self._field_si("m_dry", 20.0)
         Cd_body = self._field_si("Cd_body", 1.6)
         d_body = self._field_si("d_body", 0.140)
-        return Rocket(m_dry=m_dry, Cd_body=Cd_body, d_body=d_body)
+        if self._get_vehicle is not None:
+            try:
+                vehicle = self._get_vehicle()
+            except Exception:
+                vehicle = None
+            if vehicle:
+                v_mass, v_cd, v_dia = vehicle
+                if v_mass and v_mass > 0:
+                    m_dry = float(v_mass)
+                if v_cd and v_cd > 0:
+                    Cd_body = float(v_cd)
+                if v_dia and v_dia > 0:
+                    d_body = float(v_dia)
+                source = "the loaded rocket"
+        return Rocket(m_dry=m_dry, Cd_body=Cd_body, d_body=d_body), source
 
     # ---- actions ------------------------------------------------------------
     def _run_engine(self):
@@ -792,10 +824,14 @@ class EngineLabWidget(QtWidgets.QWidget):
 
         preview = ""
         try:
-            rocket = self._read_rocket()
+            rocket, source = self._read_rocket()
             fl = FlightModel(rocket, result).run()
             preview = (
                 f"<br><b>Quick flight preview</b><br>"
+                f"<i>1-DOF estimate for {rocket.m_dry:.1f} kg dry, "
+                f"{rocket.d_body*1000:.0f} mm, Cd {rocket.Cd_body:.2f} "
+                f"(from {source}). The Simulation tab flies the full "
+                f"2-DOF model and is the number to trust.</i><br>"
                 f"Apogee: {fl['apogee_ft']:.0f} ft ({fl['apogee_m']:.0f} m)<br>"
                 f"Max velocity: {fl['v_max']:.1f} m/s (Mach {fl['mach_max']:.2f})<br>"
                 f"Max G (ascent): {fl['g_max_ascent']:.1f}"

@@ -22,6 +22,7 @@ import os
 from PyQt5 import QtWidgets, QtCore
 
 import portable_paths
+import flight_equations as fe
 
 # key -> (heading, unit, scale applied to the stored value, decimals)
 # Anything not listed still shows up, just with its raw key as the heading, so
@@ -176,7 +177,7 @@ ENGINE_COLUMNS = [
 
 PSI = 6894.757
 G0 = 9.80665
-FT_PER_M = 3.280839895
+FT_PER_M = fe.FT_PER_M
 PSF_PER_PA = 0.020885434        # Pa -> lb/ft^2
 GAMMA_AIR, R_AIR = 1.4, 287.058
 P_AMB_SL = 101325.0

@@ -360,6 +360,33 @@ class FlightReportWidget(QtWidgets.QWidget):
             else:
                 edit.setText(f"{value * factor:.{dec}f}")
 
+    # ---- data out ----------------------------------------------------------
+    def clear_flight(self, reason=""):
+        """Throw away the flight this tab is showing.
+
+        Called when the loaded rocket changes or a run fails. Without it the
+        verdict, the checks, the raw sheets and the graphs all keep describing
+        the PREVIOUS rocket beside the new rocket's configuration - which is
+        how one rocket ends up reported at two different apogees.
+        """
+        self._report = None
+        self._flight = None
+        self._engine_result = None
+        try:
+            self.raw_sheet.set_rows([])
+            self.engine_raw_sheet.set_rows([])
+            self.graphs.set_data([], [])
+        except Exception:
+            pass
+        try:
+            self.table.setRowCount(0)
+            self.detail.setHtml("Select a row for the full explanation.")
+        except Exception:
+            pass
+        self.banner.setText(
+            reason or "Run a simulation to generate a failure report.")
+        self.export_button.setEnabled(False)
+
     # ---- data in -----------------------------------------------------------
     def update_from_simulation(self, flight, engine_result=None, engine=None,
                                geometry_hints=None, cd_source=None,

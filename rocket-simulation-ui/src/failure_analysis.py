@@ -27,6 +27,7 @@ import math
 from dataclasses import dataclass, field
 
 import materials as mat_lib
+import flight_equations as fe
 
 OK = "OK"
 CAUTION = "CAUTION"
@@ -36,7 +37,7 @@ NO_DATA = "NO DATA"
 _STATUS_ORDER = {CRITICAL: 0, CAUTION: 1, OK: 2, NO_DATA: 3}
 
 G0 = 9.80665
-FT_PER_M = 3.28084
+FT_PER_M = fe.FT_PER_M
 
 # ISA constants
 _P_SL, _T_SL, _LAPSE, _T_TROP, _R_AIR, _GAMMA = 101325.0, 288.15, 0.0065, 216.65, 287.058, 1.4
@@ -315,7 +316,7 @@ def _trajectory_checks(rep, v, flight, t, alt, vel):
         rep.checks.append(Check(
             "W-03", "Recovery", "Downrange drift",
             _band_status(drift, None, None, 1500.0, 4000.0),
-            f"{drift:,.0f} m ({drift*3.28084:,.0f} ft)",
+            f"{drift:,.0f} m ({drift*FT_PER_M:,.0f} ft)",
             "under 1.5 km",
             f"Where the vehicle lands relative to the pad, from weathercocking on "
             f"the way up plus wind drift under canopy on the way down. High-altitude "
