@@ -5133,24 +5133,59 @@ class RocketSimulationUI(QtWidgets.QWidget):
             "G-Load": g_load,
             "Net Force": net_force,
         }
-        # Plot selected variable(s), but default to altitude for tooltip
+        # Convert to the unit system on screen, and SAY which it is.
+        #
+        # This plotted raw SI and labelled the axis "Value". So the L550's
+        # apogee was drawn as 4,853 - metres - beside a Flight Report reading
+        # 15,921 ft for the same flight. Two views of one number, neither
+        # carrying a unit, and the graph looked like the rocket only reached
+        # about 5,000 ft. Every series now carries its unit in the legend, and
+        # the axis carries it too when everything plotted shares one.
+        imperial = self.unit_select.currentIndex() == 1
+        FT = flight_equations.FT_PER_M
+        unit_map = {
+            #  label          metric                imperial
+            "Altitude":     (("m", 1.0),         ("ft", FT)),
+            "Velocity":     (("m/s", 1.0),       ("ft/s", FT)),
+            "Mass":         (("kg", 1.0),        ("lb", 1.0 / 0.45359237)),
+            "Acceleration": (("m/s2", 1.0),      ("ft/s2", FT)),
+            "Thrust":       (("N", 1.0),         ("lbf", 0.224808943)),
+            "Drag":         (("N", 1.0),         ("lbf", 0.224808943)),
+            "G-Load":       (("g", 1.0),         ("g", 1.0)),
+            "Net Force":    (("N", 1.0),         ("lbf", 0.224808943)),
+        }
+
+        def converted(label):
+            unit, factor = unit_map[label][1 if imperial else 0]
+            return [v * factor for v in values_map[label]], unit
+
         plotted = False
+        units_shown = []
         tooltip_label = 'Altitude'
-        tooltip_values = [r['altitude'] for r in results]
+        tooltip_values, tooltip_unit = converted('Altitude')
         for i, label in enumerate(labels):
             if self.graph_vars.get(label) and self.graph_vars[label].isChecked():
-                values = values_map[label]
-                ax.plot(times, values, label=label, color=series_colors[i % len(series_colors)])
+                values, unit = converted(label)
+                ax.plot(times, values, label=f"{label} ({unit})",
+                        color=series_colors[i % len(series_colors)])
+                units_shown.append(unit)
                 if not plotted:
-                    tooltip_label = label
-                    tooltip_values = values
+                    tooltip_label, tooltip_values, tooltip_unit = label, values, unit
                 plotted = True
         if not plotted:
             # Default to altitude if nothing selected
-            ax.plot(times, tooltip_values, label=tooltip_label, color=series_colors[0])
+            ax.plot(times, tooltip_values, label=f"{tooltip_label} ({tooltip_unit})",
+                    color=series_colors[0])
+            units_shown.append(tooltip_unit)
         ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Value')
+        # One unit on the axis when everything shares it; otherwise say plainly
+        # that the axis is mixed rather than pretend a single scale means
+        # something across metres, newtons and kilograms at once.
+        distinct = sorted(set(units_shown))
+        ax.set_ylabel(distinct[0] if len(distinct) == 1
+                      else "mixed units - see legend")
         ax.legend(ncol=2, loc='best')
+        self._plot_altitude_factor = FT if imperial else 1.0
         ax.figure.tight_layout()
         self.canvas.draw()
 
@@ -5168,11 +5203,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         # Get time and altitude arrays
         times = [r['time'] for r in results]
-        altitudes = [r['altitude'] for r in results]
+        # Same scale as the plotted curve, or the marker floats off it.
+        _alt_factor = getattr(self, '_plot_altitude_factor', 1.0)
+        altitudes = [r['altitude'] * _alt_factor for r in results]
 
-        # Fixed rocket size in data units (e.g., 2 seconds wide, 10 meters tall)
+        # The marker and its arrows are drawn in DATA units, so they have to
+        # be sized against the altitude axis rather than pinned to metres.
+        # Ten metres is a visible nudge on a 4,850 m axis and an invisible one
+        # on the same flight in feet, where the axis runs to 15,900.
         rocket_width = 2.0  # seconds (x-axis units)
-        rocket_height = 10.0  # meters (y-axis units)
+        rocket_height = max(1e-6,
+                            max(altitudes) - min(altitudes)) * 0.002
 
         # Initial position (first point on curve)
         x_pos = times[0]
@@ -5226,8 +5267,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
             result_b = self._fbd_results[min(frame+1, n_frames-1)]
             t_a = result_a['time']
             t_b = result_b['time']
-            alt_a = result_a['altitude']
-            alt_b = result_b['altitude']
+            scale = getattr(self, '_plot_altitude_factor', 1.0)
+            alt_a = result_a['altitude'] * scale
+            alt_b = result_b['altitude'] * scale
             frac = subframe / subframes_per_frame
             x_pos = t_a + (t_b - t_a) * frac
             y_pos = alt_a + (alt_b - alt_a) * frac
@@ -5235,7 +5277,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if frame > 0:
                 prev_a = self._fbd_results[frame-1]
                 dx_a = t_a - prev_a['time']
-                dy_a = alt_a - prev_a['altitude']
+                dy_a = alt_a - prev_a['altitude'] * scale
                 dx_b = t_b - t_a
                 dy_b = alt_b - alt_a
                 dx = dx_a + (dx_b - dx_a) * frac
@@ -5299,9 +5341,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             thrust_val = (thrust_a + (thrust_b - thrust_a) * frac) / max_thrust if max_thrust else 0
             drag_val = (drag_a + (drag_b - drag_a) * frac) / max_drag if max_drag else 0
             # Update thrust arrow (upwards from rocket base)
-            thrust_line.set_data([x_pos + arrow_x_offset, x_pos + arrow_x_offset], [y_pos, y_pos + thrust_val * 0.2])
+            thrust_line.set_data([x_pos + arrow_x_offset, x_pos + arrow_x_offset], [y_pos, y_pos + thrust_val * rocket_height * 2.0])
             # Update drag arrow (downwards from rocket top)
-            drag_line.set_data([x_pos + arrow_x_offset, x_pos + arrow_x_offset], [y_pos + rocket_height, y_pos + rocket_height - drag_val * 0.2])
+            drag_line.set_data([x_pos + arrow_x_offset, x_pos + arrow_x_offset], [y_pos + rocket_height,
+                                  y_pos + rocket_height - drag_val * rocket_height * 2.0])
             # Gravity arrow (fixed length, always down from rocket center)
             gravity_line.set_data([x_pos + arrow_x_offset, x_pos + arrow_x_offset], [y_pos + rocket_height/2, y_pos + rocket_height/2 - rocket_height*0.08])
 
