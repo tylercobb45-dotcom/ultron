@@ -5590,6 +5590,137 @@ class RocketSimulationUI(QtWidgets.QWidget):
             pass
 
     # Profile Management Methods
+    def _legacy_airframe_config(self, config):
+        """An airframe for a profile saved before airframes existed.
+
+        Those profiles predate the Aerodynamics tab but they do carry the
+        shape: body diameter and fin geometry on the Simulation tab, overall
+        length on the Stability tab. Building the airframe from those makes
+        the rocket fly as ITSELF. The alternative - leaving the previous
+        rocket's airframe in place - silently flies one rocket's motor on
+        another rocket's body.
+
+        What cannot be recovered is given a plain, stated default: a nose one
+        and a half calibers long and the rest body, which is an ordinary
+        slender layout rather than a claim about this particular vehicle.
+        """
+        rp = (config or {}).get('rocket_parameters') or {}
+        st = (config or {}).get('stability_settings') or {}
+
+        def si(key, unit_key, table, fallback):
+            """A legacy field plus its stored unit index, in SI."""
+            try:
+                value = float(rp.get(key))
+            except (TypeError, ValueError):
+                return fallback
+            idx = rp.get(unit_key, 0)
+            try:
+                factor = table[int(idx)]
+            except (TypeError, ValueError, IndexError):
+                factor = table[0]
+            return value * factor
+
+        LEN = [1.0, 0.01, 0.0254]          # m, cm, in - the legacy order
+        diameter = si('body_diameter', 'body_diameter_unit', LEN, 0.10)
+        fin_len = si('fin_length', 'fin_length_unit', LEN, diameter)
+        fin_thick = si('fin_thickness', 'fin_thickness_unit', LEN, 0.003)
+        try:
+            total_length = float(st.get('rocket_length') or 0.0)
+        except (TypeError, ValueError):
+            total_length = 0.0
+        if total_length <= 0:
+            total_length = max(10.0 * diameter, 1.0)
+        nose_length = min(1.5 * diameter, 0.45 * total_length)
+        body_length = max(0.1, total_length - nose_length)
+        try:
+            fin_count = int(float(rp.get('fin_count') or 3))
+        except (TypeError, ValueError):
+            fin_count = 3
+
+        # The profile's OWN drag coefficient wins over the buildup. The
+        # geometry above is partly invented - nothing in a legacy profile says
+        # how long the nose is - so letting a guessed shape set the drag would
+        # replace the one number the profile actually states about it. This
+        # rocket says Cd 0.75; flying the shape instead put it at a fifth of
+        # the altitude its own figures give.
+        try:
+            cd = float(rp.get('cd') or 0.0)
+        except (TypeError, ValueError):
+            cd = 0.0
+
+        MASS = [1.0, 0.001, 0.45359237]        # kg, g, lb - the legacy order
+        liftoff = si('mass', 'mass_unit', MASS, 0.0)
+        prop_mass = si('prop_mass', 'prop_mass_unit', MASS, 0.0)
+        if prop_mass >= liftoff > 0:
+            prop_mass = 0.0                    # nonsense; treat as unstated
+        dry_mass = max(0.001, liftoff - prop_mass) if liftoff > 0 else 1.0
+        try:
+            cg_m = float(st.get('center_of_mass') or 0.0)
+        except (TypeError, ValueError):
+            cg_m = 0.0
+
+        # Launch conditions come from the profile too, so the site does not
+        # stay set to the previous rocket's field and wind.
+        lc = (config or {}).get('launch_conditions') or {}
+        ws = (config or {}).get('wind_settings') or {}
+        st_angle = st.get('launch_angle', 0.0)
+
+        def number(value, fallback):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        return {
+            "_units": "storage",
+            "fields": {
+                "nose_length_m": nose_length,
+                "body_diameter_m": diameter,
+                "body_length_m": body_length,
+                "fin_count": fin_count,
+                "fin_root_chord_m": max(fin_len, 1e-3),
+                "fin_tip_chord_m": max(fin_len * 0.5, 1e-3),
+                "fin_span_m": max(fin_len * 0.5, 1e-3),
+                "fin_sweep_m": max(fin_len * 0.5, 0.0),
+                "fin_thickness_m": max(fin_thick, 1e-4),
+                "cd_override": cd if cd > 0 else 0.0,
+                # Mass, from the profile's own figures. Without these the
+                # vehicle keeps whatever dry mass was there before - the
+                # Simulation tab only pushes its mass down when a propellant
+                # mass is given too, so a legacy profile with no propellant
+                # figure flew at the default 20 kg. That put a 5 kg rocket at
+                # 1,975 ft on a motor that takes it past 15,000.
+                "dry_mass_kg": max(0.001, dry_mass),
+                "propellant_mass_kg": max(0.0, prop_mass),
+                "dry_cg_m": cg_m if cg_m > 0 else total_length * 0.55,
+                "propellant_cg_m": (total_length * 0.80
+                                    if cg_m <= 0 else min(total_length,
+                                                          cg_m + 0.25 * total_length)),
+                "elevation_m": number(lc.get('start_altitude'), 0.0),
+                "temperature_c": number(lc.get('temperature'), 15.0),
+                "humidity_pct": number(lc.get('humidity'), 0.0),
+                "wind_speed_ms": number(ws.get('wind_speed'), 0.0),
+                "rail_angle_deg": number(st_angle, 0.0),
+            },
+            # No components: the legacy mass is a single typed number, and a
+            # stale buildup from the previous rocket would override it.
+            "mass_components": [],
+        }
+
+    def _legacy_vehicle_config(self, config):
+        """A goal for a profile that carries none.
+
+        The target altitude is what the Flight Report grades against, and it
+        was surviving every rocket load - so a rocket was marked as falling
+        short of a goal that belonged to whatever was loaded before it. A
+        profile with no goal of its own gets the app default rather than
+        inheriting one.
+        """
+        cfg = dict(self.flight_report.default_config()
+                   if hasattr(self.flight_report, 'default_config') else {})
+        cfg['target_altitude_ft'] = 50000.0
+        return cfg
+
     def get_profiles_dir(self):
         """The writable directory new rocket profiles are saved to."""
         return portable_paths.profiles_dir()
@@ -5819,14 +5950,38 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.wind_speed_input.setValue(ws.get('wind_speed', 0.0))
             self.wind_direction_input.setValue(ws.get('wind_direction', 0))
 
-            # Engine design and materials/structure. Older profiles predate these
-            # sections; leaving those tabs alone is the right behaviour there.
+            # Engine design, goal and airframe.
+            #
+            # These used to be skipped when a profile did not carry them, on
+            # the reasoning that an older profile predates the sections and
+            # leaving those tabs alone is harmless. It is not: the PREVIOUS
+            # rocket's airframe stays loaded and the new rocket's motor is
+            # flown on it. Load a 76 mm supersonic airframe, then load a
+            # different rocket that has no airframe section, and you get its
+            # motor on the other rocket's body - 9,349 ft for a vehicle that
+            # flies 5,198 ft as itself, with a goal inherited from a third
+            # state. That is how one rocket reports three different apogees.
+            #
+            # So a missing section is now filled from what the profile does
+            # carry, rather than left as whatever was there before.
             if hasattr(self, 'engine_lab') and config.get('engine'):
                 self.engine_lab.apply_config(config['engine'])
-            if hasattr(self, 'flight_report') and config.get('vehicle'):
-                self.flight_report.apply_config(config['vehicle'])
-            if hasattr(self, 'vehicle_tab') and config.get('airframe'):
-                self.vehicle_tab.apply_config(config['airframe'])
+
+            if hasattr(self, 'flight_report'):
+                vehicle_cfg = config.get('vehicle')
+                if vehicle_cfg:
+                    self.flight_report.apply_config(vehicle_cfg)
+                else:
+                    self.flight_report.apply_config(
+                        self._legacy_vehicle_config(config))
+
+            if hasattr(self, 'vehicle_tab'):
+                airframe_cfg = config.get('airframe')
+                if airframe_cfg:
+                    self.vehicle_tab.apply_config(airframe_cfg)
+                else:
+                    self.vehicle_tab.apply_config(
+                        self._legacy_airframe_config(config))
 
             # Thrust curve. Shipped presets store a project-relative path so
             # they work on any machine; anything the user picked themselves is

@@ -43,5 +43,8 @@
   "wind_speed": 0.0,
   "wind_direction": 0
  },
- "thrust_curve_path": "thrust_curves/csv/Hypertek_835CC125J-K240.csv"
+ "thrust_curve_path": "thrust_curves/csv/Hypertek_835CC125J-K240.csv",
+ "vehicle": {
+  "target_altitude_ft": 5280.0
+ }
 }
