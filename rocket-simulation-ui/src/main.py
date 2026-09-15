@@ -2,6 +2,7 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 import sys
 import math
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from simulation import run_simulation
@@ -3476,6 +3477,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         self._stability_results = rows
         self._stability_summary = summary
+        self._build_playback(rows)
         self._stability_envelope = self.stability_envelope(rows)
         self._report_stability_envelope()
         self.enable_force_scrubber()
@@ -3567,6 +3569,47 @@ class RocketSimulationUI(QtWidgets.QWidget):
             text = (f"On the pad: {margin_m:.3f} m - press Launch to test it "
                     f"through the burn")
         self._set_stability_note(text, ok=ok)
+
+    # Frames the playback is allowed, and how they are shared between the
+    # climb and the descent. A Goddard flight is 200 s long; at one frame per
+    # 0.05 s that is 4,000 frames, and about six minutes of watching, nearly
+    # all of it a parachute drifting down. Budgeting frames instead keeps
+    # every flight roughly the same length to watch, whether it is a 30 s
+    # sport flight or a 40-minute descent from 30 km.
+    PLAYBACK_FRAMES = 420
+    PLAYBACK_ASCENT_SHARE = 0.62      # most of them on the part that matters
+
+    def _build_playback(self, rows):
+        """The flight times to show, one per frame.
+
+        Dense through the boost and coast, where the attitude and the forces
+        are actually changing, and coarse under the canopy, where they are
+        not. The animation steps through this list rather than advancing a
+        fixed slice of flight time, so a long descent costs a few frames
+        instead of thousands.
+        """
+        if not rows:
+            self._playback_times = []
+            return
+        end = rows[-1].get('time') or 0.0
+        apogee_i = max(range(len(rows)),
+                       key=lambda i: rows[i].get('altitude') or 0.0)
+        t_apogee = rows[apogee_i].get('time') or 0.0
+
+        n_up = max(2, int(self.PLAYBACK_FRAMES * self.PLAYBACK_ASCENT_SHARE))
+        n_down = max(2, self.PLAYBACK_FRAMES - n_up)
+        times = [t_apogee * i / (n_up - 1) for i in range(n_up)]
+        if end > t_apogee:
+            times += [t_apogee + (end - t_apogee) * (i + 1) / n_down
+                      for i in range(n_down)]
+        self._playback_times = times
+        self._playback_index = 0
+        # Cached once per run instead of rescanned every frame.
+        self._playback_apogee = (rows[apogee_i].get('downrange') or 0.0,
+                                 rows[apogee_i].get('altitude') or 0.0)
+        self._playback_apogee_t = t_apogee
+        self._playback_max_thrust = max(
+            (r.get('thrust') or 0.0) for r in rows) or 1.0
 
     def _stability_geometry_overrides(self):
         """CG and CP for the flight, when they have been set by hand here.
@@ -3730,7 +3773,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if hasattr(self, 'force_update_timer'):
             self.force_update_timer.stop()
         
-        self.launch_timer.start(33)  # ~30fps for smoother animation (was 50ms/20fps)
+        # 40 ms, not 33. A frame of this panel plus the force diagram costs
+        # more than 33 ms on ordinary hardware, so asking for 30 fps only
+        # built a backlog. With the playback schedule above the whole flight
+        # still plays in about twenty seconds.
+        self.launch_timer.start(40)
 
     def stop_launch_animation(self):
         """Stop the rocket launch animation and reset UI state."""
@@ -3781,7 +3828,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
                         name == 'position_history' else value)
 
     def update_launch_frame(self):
-        """Update each frame of the launch animation using real simulation parameters"""
+        """Update each frame of the launch animation using real simulation parameters.
+
+        Drops frames rather than queueing them. A frame costs more to draw
+        than the timer's interval, so without this guard Qt keeps firing while
+        the previous frame is still rendering, the event queue backs up, and
+        the whole window - not just this panel - stops responding. That
+        backlog is what the lag actually was. Skipping a frame we are too slow
+        to draw keeps the UI answering and only costs smoothness.
+        """
+        if getattr(self, '_frame_busy', False):
+            return
+        self._frame_busy = True
+        try:
+            self._update_launch_frame_inner()
+        finally:
+            self._frame_busy = False
+
+    def _update_launch_frame_inner(self):
         ax = self.launch_fig.gca()
         ax.clear()
         
@@ -3819,7 +3883,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             return
 
         row = self._stability_row_at(t)
-        max_thrust = max((r.get('thrust') or 0.0) for r in rows) or 1.0
+        # Scanned once when the flight was built, not once per frame.
+        max_thrust = getattr(self, '_playback_max_thrust', None)
+        if not max_thrust:
+            max_thrust = max((r.get('thrust') or 0.0) for r in rows) or 1.0
         current_thrust = max(0.0, row.get('thrust') or 0.0)
 
         self.launch_altitude = max(0.0, row.get('altitude') or 0.0)
@@ -3850,12 +3917,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         # Apogee, taken from the flight rather than watched for frame by frame.
         if not getattr(self, 'apogee_marked', False):
-            peak = max(range(len(rows)),
-                       key=lambda i: rows[i].get('altitude') or 0.0)
-            if (rows[peak].get('time') or 0.0) <= t:
+            # Located once per run; this used to rescan every row every frame.
+            t_apogee = getattr(self, '_playback_apogee_t', None)
+            if t_apogee is None:
+                peak = max(range(len(rows)),
+                           key=lambda i: rows[i].get('altitude') or 0.0)
+                t_apogee = rows[peak].get('time') or 0.0
+                self._playback_apogee = (rows[peak].get('downrange') or 0.0,
+                                         rows[peak].get('altitude') or 0.0)
+            if t_apogee <= t:
                 self.apogee_marked = True
-                self.apogee_pos = (rows[peak].get('downrange') or 0.0,
-                                   rows[peak].get('altitude') or 0.0)
+                self.apogee_pos = getattr(self, '_playback_apogee', (0.0, 0.0))
                 self.apogee_flash_frames = 30
 
         x_pos = self.launch_x_pos
@@ -3925,13 +3997,15 @@ class RocketSimulationUI(QtWidgets.QWidget):
         if len(self.position_history) > 20:
             self.position_history = self.position_history[-20:]
         
-        # Draw trail with fading alpha
-        for i in range(len(self.position_history)-1):
-            alpha = (i+1) / len(self.position_history) * 0.7
-            x1, y1 = self.position_history[i]
-            x2, y2 = self.position_history[i+1]
-            ax.plot([x1, x2], [y1, y2], 
-                   color=color, alpha=alpha, linewidth=2)
+        # The trail as ONE line, not one per segment. Nineteen separate
+        # ax.plot calls meant nineteen Line2D artists created, styled and
+        # drawn every frame for a twenty-point trail. The fade is gone with
+        # them; a single translucent line reads the same at this size.
+        if len(self.position_history) > 1:
+            trail_x = [p[0] for p in self.position_history]
+            trail_y = [p[1] for p in self.position_history]
+            ax.plot(trail_x, trail_y, color=color, alpha=0.55, linewidth=2,
+                    solid_capstyle='round')
         
         # Draw current rocket position (rotated polygon) and flame aligned with body
         if y_pos > 0:
@@ -4042,6 +4116,13 @@ class RocketSimulationUI(QtWidgets.QWidget):
         ax.set_title(f'Rocket Launch - T+{t:.1f}s - Alt: {y_pos:.1f}m', fontsize=14, fontweight='bold')
         ax.set_xlabel('Drift (m)')
         ax.set_ylabel('Altitude (m)')
+        # Cap the tick count. The camera changes the limits every frame, so
+        # matplotlib rebuilds the whole tick set every frame - it was about a
+        # third of the cost of drawing one, and the default locator can ask
+        # for a dozen ticks per axis at these ranges. Five a side reads the
+        # same on a panel this size for a fraction of the work.
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=4))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=4))
         # Theme-aware styling
         self.style_axes(ax)
         
@@ -4069,15 +4150,31 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.launch_canvas.draw()
         
         # Update time
-        self.launch_time += 0.05
+        # Advance along the playback schedule. Under the canopy that is a
+        # large slice of flight time per frame; through the boost it is a
+        # small one.
+        times = getattr(self, '_playback_times', None)
+        if times:
+            self._playback_index = getattr(self, '_playback_index', 0) + 1
+            if self._playback_index < len(times):
+                self.launch_time = times[self._playback_index]
+            else:
+                self.launch_time = times[-1] + 1.0    # past the end, stop below
+        else:
+            self.launch_time += 0.05
 
-        # Update live force diagram in sync with animation. The animation's
-        # own clock is passed explicitly - falling through to the scrubbed
-        # time would freeze the diagram while the rocket flew up the screen.
-        try:
-            self.update_force_diagram(self.launch_time)
-        except Exception:
-            pass
+        # The force diagram is half the cost of a frame and its arrows change
+        # far more slowly than 30 times a second, so it is redrawn every few
+        # frames rather than every one. The scrubber and the end of playback
+        # still redraw it immediately, so it is never left stale where anyone
+        # is looking at it.
+        self._force_frame_skip = getattr(self, '_force_frame_skip', 0) + 1
+        if self._force_frame_skip >= 3:
+            self._force_frame_skip = 0
+            try:
+                self.update_force_diagram(self.launch_time)
+            except Exception:
+                pass
         
         # The playback ends when the flight does. The old cut-offs - ground
         # contact, or a 60 s safety stop - belonged to a model that made its
@@ -4086,6 +4183,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # at one.
         flight_end = (rows[-1].get('time') or 0.0) if rows else 0.0
         if self.launch_time > flight_end:
+            # Land the diagram on the last real moment of the flight rather
+            # than wherever the throttle happened to leave it.
+            try:
+                self.update_force_diagram(flight_end)
+            except Exception:
+                pass
             self.launch_timer.stop()
             self.is_launching = False
             self.launch_button.setText('Launch Again!')
