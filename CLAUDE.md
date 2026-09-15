@@ -18,13 +18,19 @@ counts:
   test. Read Windows paths adversarially — encoding, path separators, CRLF,
   `cmd.exe` quoting — because this environment cannot execute them.
 
-### The one exception, and why
+### No other platforms
 
-Keep the **Linux job in CI as a test**, not as a published download. It is
-the only runner where the frozen app can actually be launched headless and
-checked that it stays up; Windows and macOS runners cannot do that. Deleting
-it would leave every build verified as *complete* but never as *running*.
-It produces no release asset, so it costs the user nothing.
+Do not build, test, release or report macOS or Linux. The user has said so
+explicitly. CI is Windows-only; there is no smoke-test job on another
+platform and none should be added back.
+
+The cost of that, so it is not rediscovered as a surprise: nothing in CI ever
+launches the built app. Windows runners cannot start a GUI headlessly, so a
+build is verified as COMPLETE - every module and data file present, both
+physics suites passing - but never as RUNNING. A defect that only shows at
+startup reaches the user. Compensate by reading the Windows-specific paths
+carefully rather than assuming a green build means a working one, and say so
+plainly when handing over a release.
 
 ## Verification expectations
 
