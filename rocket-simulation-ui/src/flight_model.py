@@ -318,6 +318,7 @@ def run_flight(thrust_points,
     prop_left = prop_mass
     on_rail = True
     theta = rail_angle          # vehicle axis angle from vertical [rad]
+    omega_pitch = 0.0           # pitch rate [rad/s]
     rail_travel = 0.0
     past_apogee = False
     launched = False
@@ -360,31 +361,60 @@ def run_flight(thrust_points,
         q_now = 0.5 * rho * speed_rel * speed_rel
         if on_rail:
             theta = rail_angle
+            omega_pitch = 0.0
         elif speed_rel > 1e-6:
-            # atan2 must see the real sign of vertical velocity. Clamping it
-            # to +1e-9 made every descending sample read as ~90 deg from
-            # vertical, so tilt and angle of attack were meaningless for the
-            # whole descent in the Flight Data sheet.
+            # Attitude comes from the moments acting on the vehicle, not from
+            # being told where to point.
+            #
+            # This used to drag theta toward the relative-wind direction with
+            # a time constant. That has two failures the stability test exists
+            # to catch. Near apogee the vertical speed passes through zero, so
+            # atan2 swings to +-90 degrees no matter what, and the vehicle was
+            # dutifully snapped horizontal - a tailspin that came out of the
+            # arithmetic rather than out of any force. And an UNSTABLE rocket
+            # could not misbehave at all: a negative margin clamped the
+            # restoring term to zero, so instead of diverging it simply
+            # tracked the wind a little more slowly than a stable one.
+            #
+            # Integrating the real moments fixes both at once. The normal
+            # force acts at the centre of pressure, so its moment about the
+            # centre of gravity restores when the CP is behind the CG and
+            # DIVERGES when it is in front - which is what being unstable
+            # means. Both scale with dynamic pressure, so at apogee, where
+            # there is none, the vehicle simply keeps the attitude it had.
             theta_rel = math.atan2(rvx, rvz if abs(rvz) > 1e-9 else 1e-9)
             cg_now = mass_props.cg(prop_left)
             cp_now = airframe.center_of_pressure(mach)
             margin_cal = (cp_now - cg_now) / diameter
-            # Pitch natural frequency from the aerodynamic restoring moment,
-            # against a slender-body inertia estimate.
             # Real inertia from the mass components when they exist, and the
             # uniform-rod estimate when they do not. This is what sets how
             # fast the vehicle can turn into a crosswind: a rocket with a
             # heavy nose and a heavy tail weathercocks more slowly than a rod
             # of the same mass and length.
-            inertia = mass_props.inertia(prop_left, airframe.total_length)
-            restoring = (q_now * a_ref * diameter
-                         * airframe.normal_force_slope() * max(0.0, margin_cal))
-            if restoring > 0 and inertia > 0:
-                omega = math.sqrt(restoring / inertia)
-                tau = min(20.0, max(0.05, 1.0 / omega))
-            else:
-                tau = 20.0     # no restoring moment: it barely turns at all
-            theta += (theta_rel - theta) * min(1.0, dt / tau)
+            inertia = max(1e-6, mass_props.inertia(prop_left,
+                                                   airframe.total_length))
+            # Angle of attack, wrapped into +-pi so a vehicle that has gone
+            # right round does not see a 300-degree error.
+            alpha_rad = math.atan2(math.sin(theta - theta_rel),
+                                   math.cos(theta - theta_rel))
+            cn_alpha = airframe.normal_force_slope()
+            arm = cp_now - cg_now                      # metres, +ve = stable
+            # Restoring (or divergent) moment. sin(alpha), not alpha, so it
+            # behaves sensibly once the vehicle is far off the wind.
+            moment = -q_now * a_ref * cn_alpha * math.sin(alpha_rad) * arm
+            # Pitch damping: the fins sweep through the air as the vehicle
+            # rotates, and that opposes the rotation. Without it a stable
+            # rocket oscillates about the wind forever instead of settling
+            # onto it.
+            if speed_rel > 1.0:
+                damping = (q_now * a_ref * cn_alpha * arm * arm
+                           / speed_rel) * omega_pitch
+                moment -= damping
+            omega_pitch += (moment / inertia) * dt
+            theta += omega_pitch * dt
+            # Keep theta in +-pi so the reported tilt reads as an angle rather
+            # than a winding count.
+            theta = math.atan2(math.sin(theta), math.cos(theta))
         dir_x, dir_z = math.sin(theta), math.cos(theta)
 
         # Angle of attack: between where the vehicle points and where the air

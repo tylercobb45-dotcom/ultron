@@ -638,9 +638,18 @@ def validate_mass_components():
     # when total_impulse started counting the curve's lead-in segment, which
     # the model was already flying: the derived Isp had been 3.4% low, so the
     # propellant ran out at 4.90 s while thrust continued to 6.41 s.
+    #
+    # Moved again from 15,917.2, by 1.4 ft, when the attitude model stopped
+    # dragging the vehicle toward the relative wind with a time constant and
+    # started integrating the real pitch moments instead. This preset flies in
+    # 4 m/s of wind, so it weathercocks and the change reaches it. That two
+    # quite different formulations land within 0.009% of each other on a
+    # stable rocket is the point of keeping this pin: it says the rewrite did
+    # not quietly recalibrate how hard a rocket turns into wind, while
+    # separately making an unstable one actually diverge.
     check("  a profile with no components is unchanged",
-          abs(s_leg["apogee_ft"] - 15917.2) < 1.0,
-          f"{s_leg['apogee_ft']:,.1f} ft against the recorded 15,917.2")
+          abs(s_leg["apogee_ft"] - 15918.6) < 1.0,
+          f"{s_leg['apogee_ft']:,.1f} ft against the recorded 15,918.6")
     print()
 
 

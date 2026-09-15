@@ -2685,6 +2685,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
     NOSE_Y = 2.55           # where the nose tip sits in axis units
     TAIL_Y = 0.35           # where the tail sits
     LANE = 0.62             # sideways spacing between arrow columns
+    PIVOT_Y = 1.45          # the page point the airframe rotates about
 
     def _rocket_geometry(self):
         """Screen geometry for the current airframe, and station -> y.
@@ -2728,8 +2729,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
             'station_y': station_y, 'height': height,
         }
 
-    def draw_rocket_body(self, geom=None):
-        """Draw the airframe in proportion, nose up."""
+    def draw_rocket_body(self, geom=None, tilt_deg=0.0):
+        """Draw the airframe in proportion, rotated to its real attitude.
+
+        ``tilt_deg`` is the angle of the nose from vertical, the same number
+        the flight model reports, so the diagram shows the vehicle the way the
+        tracker beside it does - including upside down, once it has pitched
+        right over.
+        """
         import matplotlib.patches as patches
 
         g = geom or self._rocket_geometry()
@@ -2737,43 +2744,65 @@ class RocketSimulationUI(QtWidgets.QWidget):
         y_nose_base = sy(g['nose_len'])
         y_body_end = sy(g['length'] - g['boattail'])
         y_tail = sy(g['length'])
+        rot = self._rotator(tilt_deg)
 
-        body = patches.Rectangle((-w, y_body_end), 2 * w, y_nose_base - y_body_end,
-                                 facecolor='#C0C0C0', edgecolor='#2B2B2B',
-                                 linewidth=1.4, zorder=3)
+        body = patches.Polygon(
+            [rot(-w, y_body_end), rot(w, y_body_end),
+             rot(w, y_nose_base), rot(-w, y_nose_base)],
+            closed=True, facecolor='#C0C0C0', edgecolor='#2B2B2B',
+            linewidth=1.4, zorder=3)
         self.force_ax.add_patch(body)
 
-        nose = patches.Polygon([(-w, y_nose_base), (w, y_nose_base),
-                                (0, self.NOSE_Y)],
-                               facecolor='#A8A8A8', edgecolor='#2B2B2B',
-                               linewidth=1.4, zorder=3)
+        nose = patches.Polygon(
+            [rot(-w, y_nose_base), rot(w, y_nose_base), rot(0, self.NOSE_Y)],
+            closed=True, facecolor='#A8A8A8', edgecolor='#2B2B2B',
+            linewidth=1.4, zorder=3)
         self.force_ax.add_patch(nose)
 
         if g['boattail'] > 0 and y_body_end > y_tail:
-            boat = patches.Polygon([(-w, y_body_end), (w, y_body_end),
-                                    (w * 0.6, y_tail), (-w * 0.6, y_tail)],
-                                   facecolor='#9A9A9A', edgecolor='#2B2B2B',
-                                   linewidth=1.2, zorder=3)
+            boat = patches.Polygon(
+                [rot(-w, y_body_end), rot(w, y_body_end),
+                 rot(w * 0.6, y_tail), rot(-w * 0.6, y_tail)],
+                closed=True, facecolor='#9A9A9A', edgecolor='#2B2B2B',
+                linewidth=1.2, zorder=3)
             self.force_ax.add_patch(boat)
 
-        # Fins, in proportion to the real root chord and span.
         if g['fin_root'] > 0 and g['fin_span'] > 0:
             root_h = (g['fin_root'] / g['length']) * g['height']
             span_w = min(0.42, (g['fin_span'] / g['length']) * g['height'] * 2.2)
             y_fin_root = sy(g['length'] - g['boattail'])
             for side in (-1, 1):
                 fin = patches.Polygon(
-                    [(side * w, y_fin_root + root_h), (side * w, y_fin_root),
-                     (side * (w + span_w), y_fin_root)],
-                    facecolor='#8A8A8A', edgecolor='#2B2B2B',
+                    [rot(side * w, y_fin_root + root_h),
+                     rot(side * w, y_fin_root),
+                     rot(side * (w + span_w), y_fin_root)],
+                    closed=True, facecolor='#8A8A8A', edgecolor='#2B2B2B',
                     linewidth=1.1, zorder=2)
                 self.force_ax.add_patch(fin)
 
-        nozzle = patches.Rectangle((-w * 0.5, y_tail - 0.07), w, 0.07,
-                                   facecolor='#404040', edgecolor='#2B2B2B',
-                                   linewidth=1, zorder=3)
+        nozzle = patches.Polygon(
+            [rot(-w * 0.5, y_tail), rot(w * 0.5, y_tail),
+             rot(w * 0.5, y_tail - 0.07), rot(-w * 0.5, y_tail - 0.07)],
+            closed=True, facecolor='#404040', edgecolor='#2B2B2B',
+            linewidth=1, zorder=3)
         self.force_ax.add_patch(nozzle)
         return g
+
+    def _rotator(self, tilt_deg):
+        """Map body coordinates to the page, rotating about the centre.
+
+        Body coordinates are the upright drawing: x across, y along the axis
+        with the nose up. Positive tilt leans the nose to the right, matching
+        the sign the flight model uses for the angle from vertical.
+        """
+        ang = math.radians(tilt_deg or 0.0)
+        ca, sa = math.cos(ang), math.sin(ang)
+        px, py = 0.0, self.PIVOT_Y
+
+        def rot(bx, by):
+            dx, dy = bx - px, by - py
+            return (px + dx * ca + dy * sa, py - dx * sa + dy * ca)
+        return rot
 
     def _draw_cg_cp(self, geom, state):
         """Mark the centre of gravity and centre of pressure on the airframe.
@@ -2786,6 +2815,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         sy = geom['station_y']
         half_w_label = geom['half_w'] + 0.03
+        rot = self._rotator(state.get('tilt_deg') or 0.0)
         drawn = {}
         for key, colour, filled, tag in (
                 ('cg_m', '#FFAA00', True, 'CG'),
@@ -2795,14 +2825,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 continue
             y = sy(station)
             drawn[key] = y
+            cx, cy = rot(0, y)
             self.force_ax.add_patch(patches.Circle(
-                (0, y), 0.062, facecolor=(colour if filled else 'none'),
+                (cx, cy), 0.062, facecolor=(colour if filled else 'none'),
                 edgecolor=colour, linewidth=1.6, zorder=6, alpha=0.95))
             if filled:
                 # The quartered look, so CG reads as CG at a glance.
-                self.force_ax.plot([-0.062, 0.062], [y, y], color='#1A1A1A',
-                                   linewidth=0.9, zorder=7)
-                self.force_ax.plot([0, 0], [y - 0.062, y + 0.062],
+                a1, a2 = rot(-0.062, y), rot(0.062, y)
+                b1, b2 = rot(0, y - 0.062), rot(0, y + 0.062)
+                self.force_ax.plot([a1[0], a2[0]], [a1[1], a2[1]],
+                                   color='#1A1A1A', linewidth=0.9, zorder=7)
+                self.force_ax.plot([b1[0], b2[0]], [b1[1], b2[1]],
                                    color='#1A1A1A', linewidth=0.9, zorder=7)
             # CG and CP can be within a caliber of each other on a marginally
             # stable rocket - exactly the case worth looking at - so nudge the
@@ -2811,7 +2844,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
             if 'cg_m' in drawn and 'cp_m' in drawn and key == 'cp_m':
                 if abs(drawn['cg_m'] - y) < 0.15:
                     y_label = y - 0.09 if y < drawn['cg_m'] else y + 0.09
-            self.force_ax.text(half_w_label, y_label, tag, fontsize=7,
+            lx, ly = rot(half_w_label, y_label)
+            self.force_ax.text(lx, ly, tag, fontsize=7,
                                color=colour, fontweight='bold', va='center',
                                ha='left', zorder=7)
 
@@ -2820,392 +2854,79 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # A bracket spanning the gap, labelled in calibers.
             y_hi, y_lo = sorted((drawn['cg_m'], drawn['cp_m']), reverse=True)
             x = -geom['half_w'] - 0.14
-            self.force_ax.plot([x, x], [y_lo, y_hi], color='#7FDBFF',
-                               linewidth=1.2, zorder=6)
+            p_lo, p_hi = rot(x, y_lo), rot(x, y_hi)
+            self.force_ax.plot([p_lo[0], p_hi[0]], [p_lo[1], p_hi[1]],
+                               color='#7FDBFF', linewidth=1.2, zorder=6)
             for y in (y_lo, y_hi):
-                self.force_ax.plot([x, x + 0.06], [y, y], color='#7FDBFF',
-                                   linewidth=1.2, zorder=6)
-            self.force_ax.text(x - 0.06, (y_lo + y_hi) / 2,
-                               f"{margin:.2f} cal", fontsize=7,
+                a, b = rot(x, y), rot(x + 0.06, y)
+                self.force_ax.plot([a[0], b[0]], [a[1], b[1]],
+                                   color='#7FDBFF', linewidth=1.2, zorder=6)
+            tx, ty = rot(x - 0.10, (y_lo + y_hi) / 2)
+            # Keep the text the right way up. Following the body all the way
+            # round puts it upside down once the vehicle passes horizontal,
+            # so flip it back through 180 rather than let it read mirrored.
+            rotation = 90 - (state.get('tilt_deg') or 0.0)
+            rotation = (rotation + 180) % 360 - 180
+            if rotation > 90 or rotation < -90:
+                rotation += 180
+            self.force_ax.text(tx, ty, f"{margin:.2f} cal", fontsize=7,
                                color='#7FDBFF', fontweight='bold',
-                               rotation=90, va='center', ha='right', zorder=7)
+                               rotation=rotation,
+                               va='center', ha='center', zorder=7)
 
-    def _draw_force_arrow(self, x_lane, y_anchor, direction, length,
-                          colour, label, value_text, dashed=False,
-                          approach=False):
-        """One vector, drawn in its own column with a leader to where it acts.
+    def _draw_vector(self, origin, direction, length, colour, label,
+                     value_text, dashed=False, approach=False, zorder=5,
+                     offset=0.0):
+        """One arrow, pointing wherever the force actually points.
 
-        Thrust, weight and drag all act along the body axis, so drawn there
-        they would sit on top of each other. Each gets a column beside the
-        rocket and a dotted leader back to its real application point - the
-        usual way a free-body diagram handles forces that share a line.
+        ``direction`` is a unit (dx, dy) on the page, so a force is drawn
+        along its real line of action rather than being forced onto the
+        vertical. ``approach`` puts the head at the application point and the
+        tail out beyond it - how thrust has to be drawn, since an arrow
+        growing forward out of the nozzle would run up through the airframe.
 
-        ``approach`` puts the head at the application point and the tail out
-        beyond it, instead of the other way round. That is how thrust has to
-        be drawn: it acts at the nozzle pointing forward, so an arrow growing
-        outward from that point would run straight up through the airframe.
-        The head-at-the-nozzle version is both the readable one and the one
-        every textbook uses.
+        ``offset`` slides the whole arrow sideways, perpendicular to its own
+        direction, and leaves a dotted leader back to the point it really acts
+        on. Thrust and drag are both along the body axis, and weight and the
+        resultant both start at the centre of gravity, so drawn exactly on
+        their lines of action they land on top of each other and neither the
+        arrows nor their labels can be read. Sliding them apart keeps every
+        arrow's DIRECTION honest, which is the part that carries the physics,
+        and only moves where it is drawn.
         """
         ax = self.force_ax
-        if abs(x_lane) > 1e-9:
-            ax.plot([0, x_lane], [y_anchor, y_anchor], color=colour,
-                    linewidth=0.8, linestyle=':', alpha=0.55, zorder=4)
+        dx, dy = direction
+        norm = math.hypot(dx, dy)
+        if norm < 1e-9 or length <= 0:
+            return
+        dx, dy = dx / norm, dy / norm
+        px, py = -dy, dx                       # unit perpendicular
+        ox, oy = origin
+        ax_, ay = ox + px * offset, oy + py * offset
+        if abs(offset) > 1e-9:
+            ax.plot([ox, ax_], [oy, ay], color=colour, linewidth=0.8,
+                    linestyle=':', alpha=0.5, zorder=4)
         if approach:
-            y_start = y_anchor - direction * length
-            y_text = y_start
-            text_dir = -direction
+            sx, sy_ = ax_ - dx * length, ay - dy * length
+            tx, ty = sx - dx * 0.13, sy_ - dy * 0.13
         else:
-            y_start = y_anchor
-            y_text = y_anchor + direction * length
-            text_dir = direction
-        ax.arrow(x_lane, y_start, 0, direction * length,
+            sx, sy_ = ax_, ay
+            tx, ty = ax_ + dx * (length + 0.13), ay + dy * (length + 0.13)
+        ax.arrow(sx, sy_, dx * length, dy * length,
                  head_width=0.095, head_length=0.085,
-                 fc=colour, ec=colour, linewidth=2.2, zorder=5,
+                 fc=colour, ec=colour, linewidth=2.2, zorder=zorder,
                  length_includes_head=True, alpha=0.95,
                  linestyle=('dashed' if dashed else 'solid'))
-        ax.text(x_lane, y_text + text_dir * 0.10,
-                f"{label}\n{value_text}", ha='center',
-                va='bottom' if text_dir > 0 else 'top',
-                fontsize=7, color=colour, fontweight='bold',
-                linespacing=0.95, zorder=7)
+        ax.text(tx, ty, f"{label}\n{value_text}",
+                ha='center', va='center', fontsize=7, color=colour,
+                fontweight='bold', linespacing=0.95, zorder=7)
 
-
-
-
-    def create_professional_gauge(self, label, value, unit, color):
-        """Create a professional aerospace-style gauge display"""
-        widget = QtWidgets.QFrame()
-        widget.setFrameStyle(QtWidgets.QFrame.StyledPanel)
-        widget.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                    stop: 0 rgba(26, 37, 47, 0.9), 
-                    stop: 1 rgba(15, 20, 25, 0.9));
-                border: 1px solid #34495E;
-                border-radius: 4px;
-                margin: 1px;
-            }}
-            QLabel {{
-                background-color: transparent;
-                color: #ECF0F1;
-            }}
-        """)
-        
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(2)
-        
-        # Label with professional styling
-        label_widget = QtWidgets.QLabel(label)
-        label_widget.setAlignment(QtCore.Qt.AlignCenter)
-        label_widget.setStyleSheet(f"""
-            font-size: 9px; 
-            color: {color}; 
-            font-weight: bold;
-            font-family: 'Consolas', 'Monaco', monospace;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            padding: 2px;
-        """)
-        
-        # Value display with larger, prominent font
-        value_text = f"{value} {unit}" if unit else value
-        value_widget = QtWidgets.QLabel(value_text)
-        value_widget.setAlignment(QtCore.Qt.AlignCenter)
-        value_widget.setStyleSheet(f"""
-            font-size: 16px; 
-            font-weight: bold; 
-            color: {color};
-            font-family: 'Consolas', 'Monaco', monospace;
-            padding: 4px;
-            border-bottom: 1px solid {color};
-        """)
-        
-        layout.addWidget(label_widget)
-        layout.addWidget(value_widget)
-        
-        # Store references for updates
-        widget.value_label = value_widget
-        widget.unit = unit
-        widget.gauge_color = color
-        
-        return widget
-
-    def create_professional_indicator(self, label):
-        """Create a professional status indicator like mission control"""
-        widget = QtWidgets.QFrame()
-        widget.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                    stop: 0 rgba(26, 37, 47, 0.9), 
-                    stop: 1 rgba(15, 20, 25, 0.9));
-                border: 1px solid #34495E;
-                border-radius: 4px;
-                margin: 1px;
-                padding: 4px;
-            }
-        """)
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(4)
-        
-        # Status indicator (LED-style)
-        status_container = QtWidgets.QFrame()
-        status_container.setFixedHeight(20)
-        status_layout = QtWidgets.QHBoxLayout(status_container)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # LED indicator
-        led = QtWidgets.QLabel("●")
-        led.setAlignment(QtCore.Qt.AlignCenter)
-        led.setFixedSize(16, 16)
-        led.setStyleSheet("""
-            color: #555555;
-            font-size: 14px;
-            background: rgba(85, 85, 85, 0.3);
-            border-radius: 8px;
-        """)
-        
-        # Status text
-        status_text = QtWidgets.QLabel("OFFLINE")
-        status_text.setAlignment(QtCore.Qt.AlignCenter)
-        status_text.setStyleSheet("""
-            font-size: 8px;
-            color: #7F8C8D;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-weight: bold;
-            letter-spacing: 0.5px;
-        """)
-        
-        status_layout.addWidget(led)
-        status_layout.addWidget(status_text)
-        
-        # Label
-        label_widget = QtWidgets.QLabel(label)
-        label_widget.setAlignment(QtCore.Qt.AlignCenter)
-        label_widget.setStyleSheet("""
-            font-size: 9px; 
-            color: #00D4FF; 
-            font-weight: bold;
-            font-family: 'Consolas', 'Monaco', monospace;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        """)
-        
-        layout.addWidget(status_container)
-        layout.addWidget(label_widget)
-        
-        # Store references for updates
-        widget.led = led
-        widget.status_text = status_text
-        widget.is_active = False
-        
-        return widget
-
-    def update_professional_indicator(self, widget, active, status_text=None):
-        """Update professional status indicator"""
-        if widget.is_active != active:
-            widget.is_active = active
-            if active:
-                widget.led.setStyleSheet("""
-                    color: #00FF41;
-                    font-size: 14px;
-                    background: rgba(0, 255, 65, 0.2);
-                    border-radius: 8px;
-                    border: 1px solid #00FF41;
-                """)
-                widget.status_text.setStyleSheet("""
-                    font-size: 8px;
-                    color: #00FF41;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-weight: bold;
-                    letter-spacing: 0.5px;
-                """)
-                widget.status_text.setText(status_text or "ACTIVE")
-            else:
-                widget.led.setStyleSheet("""
-                    color: #555555;
-                    font-size: 14px;
-                    background: rgba(85, 85, 85, 0.3);
-                    border-radius: 8px;
-                """)
-                widget.status_text.setStyleSheet("""
-                    font-size: 8px;
-                    color: #7F8C8D;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-weight: bold;
-                    letter-spacing: 0.5px;
-                """)
-                widget.status_text.setText("OFFLINE")
-
-    def create_gauge_display(self, label, value, color):
-        """Create a clean, professional gauge-style display widget"""
-        widget = QtWidgets.QFrame()
-        widget.setFrameStyle(QtWidgets.QFrame.StyledPanel)
-        widget.setStyleSheet(f"""
-            QFrame {{
-                background-color: #FFFFFF;
-                border: 2px solid {color};
-                border-radius: 8px;
-                margin: 2px;
-            }}
-            QLabel {{
-                background-color: transparent;
-                color: #3C2F1E;
-            }}
-        """)
-        
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(2)
-        
-        # Label with icon-style formatting
-        label_widget = QtWidgets.QLabel(label)
-        label_widget.setAlignment(QtCore.Qt.AlignCenter)
-        label_widget.setStyleSheet(f"""
-            font-size: 10px; 
-            color: {color}; 
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        """)
-        
-        # Value with larger, prominent display
-        value_widget = QtWidgets.QLabel(value)
-        value_widget.setAlignment(QtCore.Qt.AlignCenter)
-        value_widget.setStyleSheet("""
-            font-size: 16px; 
-            font-weight: bold; 
-            color: #2C3E50;
-            padding: 4px;
-        """)
-        
-        layout.addWidget(label_widget)
-        layout.addWidget(value_widget)
-        
-        # Store value widget for updates
-        widget.value_label = value_widget
-        widget.gauge_color = color
-        
-        return widget
-
-    def create_status_light(self, label, icon, active):
-        """Create a professional status indicator with icon"""
-        widget = QtWidgets.QFrame()
-        widget.setStyleSheet("""
-            QFrame {
-                background-color: #FFFFFF;
-                border: 1px solid #BCA16A;
-                border-radius: 6px;
-                padding: 4px;
-            }
-        """)
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(2)
-        
-        # Status icon and indicator
-        status_layout = QtWidgets.QHBoxLayout()
-        
-        # Icon
-        icon_label = QtWidgets.QLabel(icon)
-        icon_label.setAlignment(QtCore.Qt.AlignCenter)
-        icon_label.setStyleSheet("font-size: 14px;")
-        
-        # Status circle
-        circle = QtWidgets.QLabel("●")
-        circle.setAlignment(QtCore.Qt.AlignCenter)
-        color = "#32CD32" if active else "#C0C0C0"
-        circle.setStyleSheet(f"color: {color}; font-size: 12px;")
-        
-        status_layout.addWidget(icon_label)
-        status_layout.addWidget(circle)
-        
-        # Label
-        text = QtWidgets.QLabel(label)
-        text.setAlignment(QtCore.Qt.AlignCenter)
-        text.setStyleSheet("""
-            font-size: 9px; 
-            color: #3C2F1E; 
-            font-weight: bold;
-            text-transform: uppercase;
-        """)
-        
-        layout.addLayout(status_layout)
-        layout.addWidget(text)
-        
-        # Store circle for updates
-        widget.status_circle = circle
-        widget.is_active = active
-        
-        return widget
-
-    def update_status_light(self, widget, active):
-        """Update the status of a status light with smooth color transition"""
-        if widget.is_active != active:
-            widget.is_active = active
-            color = "#32CD32" if active else "#C0C0C0"
-            widget.status_circle.setStyleSheet(f"color: {color}; font-size: 12px;")
-
-    def update_telemetry_displays(self):
-        """Update all telemetry displays with current data using theme-aware formatting"""
-        if hasattr(self, 'is_launching') and self.is_launching:
-            # Get current simulation state
-            try:
-                # Update from current animation state
-                altitude = getattr(self, 'launch_altitude', 0.0)
-                velocity = getattr(self, 'launch_velocity', 0.0)
-                time = getattr(self, 'launch_time', 0.0)
-                mass = getattr(self, 'launch_mass', 0.0)
-                
-                # Calculate additional metrics
-                acceleration = getattr(self, 'prev_acceleration', 0.0)
-                g_force = abs(acceleration) / 9.81
-                
-                # Get thrust from thrust curve
-                try:
-                    times_thrust, thrusts, thrust_func, burn_time = self.load_thrust_curve_data()
-                    current_thrust = float(thrust_func(time)) if time <= burn_time else 0.0
-                except:
-                    current_thrust = 0.0
-                
-                # Calculate drag force (approximation)
-                try:
-                    _, Cd, A, rho, _, _, _, _, _, _, _, _ = self.get_inputs_for_simulation()
-                    drag_force = 0.5 * rho * (velocity ** 2) * Cd * A if velocity > 0 else 0.0
-                except:
-                    drag_force = 0.0
-                
-                # Calculate Mach number
-                speed_of_sound = 343.0  # m/s at sea level
-                mach_number = abs(velocity) / speed_of_sound
-                
-                # Determine flight phase
-                if altitude <= 0 and velocity == 0:
-                    phase = "LANDED"
-                elif hasattr(self, 'chute_deployed') and self.chute_deployed:
-                    phase = "CHUTE DESCENT"
-                elif current_thrust > 10:
-                    phase = "POWERED ASCENT"
-                elif velocity > 0:
-                    phase = "COASTING"
-                elif velocity < 0:
-                    phase = "DESCENT"
-                else:
-                    phase = "LIFTOFF"
-                
-                # Telemetry scoreboard removed: suppress metric display updates
-                
-                # Status indicators removed
-                    
-            except Exception as e:
-                pass  # Silently handle any telemetry update errors
-        else:
-            # Reset displays when not launching - theme-appropriate formatting
-            # Telemetry scoreboard removed: no reset actions
-            
-            pass
+    def _pad_rail_angle(self):
+        """Rail angle, for drawing the vehicle on the pad as it really sits."""
+        try:
+            return float(self.launch_angle_input.value())
+        except Exception:
+            return 0.0
 
     def force_state(self, t=None):
         """The forces acting on the rocket at time t, from the real flight.
@@ -3252,6 +2973,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 # anchored to the real stations rather than floating.
                 'cg_m': row.get('cg_m'), 'cp_m': row.get('cp_m'),
                 'stability_cal': row.get('stability_cal'),
+                # Attitude and the wind, so the diagram can be drawn in the
+                # vehicle's real orientation instead of pinned to one axis.
+                'tilt_deg': row.get('angle_from_vertical_deg') or 0.0,
+                'aoa_deg': row.get('angle_of_attack_deg') or 0.0,
+                'v_horizontal': row.get('horizontal_velocity') or 0.0,
+                'wind_speed': row.get('wind_speed') or 0.0,
                 # Scale for the velocity arrow. It is not a force, so it
                 # cannot share the force scale; against the fastest moment of
                 # this flight it grows and shrinks meaningfully.
@@ -3283,7 +3010,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
         return {'time': 0.0, 'thrust': 0.0, 'body_drag': 0.0, 'chute_drag': 0.0,
                 'weight': weight, 'net': 0.0, 'velocity': 0.0, 'mass': mass,
                 'on_pad': True, 'has_flight': False, 'chute_deployed': False,
-                'cg_m': cg, 'cp_m': cp, 'stability_cal': margin, 'v_max': 0.0}
+                'cg_m': cg, 'cp_m': cp, 'stability_cal': margin, 'v_max': 0.0,
+                'tilt_deg': self._pad_rail_angle(), 'aoa_deg': 0.0,
+                'v_horizontal': 0.0,
+                'wind_speed': (self.wind_speed_input.value()
+                               if hasattr(self, 'wind_speed_input') else 0.0)}
 
     def update_force_diagram(self, t=None):
         """Draw the free-body diagram for the current moment of flight."""
@@ -3304,98 +3035,132 @@ class RocketSimulationUI(QtWidgets.QWidget):
         ax.set_aspect('equal')
         ax.axis('off')
 
-        geom = self.draw_rocket_body()
+        tilt = state.get('tilt_deg') or 0.0
+        geom = self.draw_rocket_body(tilt_deg=tilt)
         sy = geom['station_y']
+        rot = self._rotator(tilt)
         self._draw_cg_cp(geom, state)
 
-        # Stations to hang the arrows from. Each force is anchored where it
-        # really acts; if the flight did not report a CG or CP, fall back to
-        # the middle of the airframe rather than dropping the arrow.
+        # Where each force acts, on the rotated airframe.
         mid = sy(geom['length'] * 0.5)
-        y_cg = sy(state['cg_m']) if state.get('cg_m') else mid
-        y_cp = sy(state['cp_m']) if state.get('cp_m') else mid
-        y_tail = sy(geom['length'])
-        y_nose = self.NOSE_Y
+        cg_pt = rot(0, sy(state['cg_m']) if state.get('cg_m') else mid)
+        cp_pt = rot(0, sy(state['cp_m']) if state.get('cp_m') else mid)
+        tail_pt = rot(0, sy(geom['length']))
+        nose_pt = rot(0, self.NOSE_Y)
 
-        v = state['velocity']
-        oppose = -1 if v >= 0 else 1        # drag always opposes motion
+        # Directions on the page. Up the page is up; the body axis leans with
+        # the vehicle, so thrust leans with it too. Weight does not: it is
+        # always straight down however the rocket is lying.
+        ang = math.radians(tilt)
+        axis_dir = (math.sin(ang), math.cos(ang))       # nose-forward
+        down_dir = (0.0, -1.0)
 
-        # Every force arrow is scaled against the largest on screen, so a force
-        # twice as big is twice as long and you can see at a glance which one
-        # dominates. Each sits in its own column beside the rocket with a
-        # leader back to the point it acts on.
-        # Lanes: drag and velocity to the left, weight and the resultant to
-        # the right, thrust below the nozzle and the canopy above the nose -
-        # the two that act on the centreline have clear air there anyway.
-        L = self.LANE
-        forces = [
-            # magnitude, anchor y, lane x, direction, colour, label, approach
-            (state['thrust'], y_tail, 0.0, +1, '#00FF88', 'Thrust', True),
-            (state['body_drag'], y_cp, -L, oppose, '#FF4444', 'Drag', False),
-            (state['chute_drag'], y_nose, 0.0, oppose, '#FF00FF', 'Chute', False),
-            (state['weight'], y_cg, +L, -1, '#FFAA00', 'Weight', False),
-        ]
-        if state['on_pad'] and state['weight'] > 0:
-            # The rail holds the vehicle up; without this the pad diagram shows
-            # weight with nothing balancing it, which is simply wrong.
-            forces.append((state['weight'], y_tail, +2 * L, +1, '#7FDBFF',
-                           'Rail', False))
+        # Drag opposes the AIR-RELATIVE motion, which is the velocity the
+        # rocket has through the air minus the wind - not its ground track.
+        # That difference is the whole reason a crosswind turns a rocket.
+        v_up = state.get('velocity') or 0.0
+        v_side = state.get('v_horizontal') or 0.0
+        wind = state.get('wind_speed') or 0.0
+        rel_x, rel_y = v_side - wind, v_up
+        rel_speed = math.hypot(rel_x, rel_y)
+        if rel_speed > 1e-6:
+            flow_dir = (rel_x / rel_speed, rel_y / rel_speed)
+            drag_dir = (-flow_dir[0], -flow_dir[1])
+        else:
+            flow_dir = (0.0, 1.0)
+            drag_dir = down_dir
 
-        biggest = max([abs(f[0]) for f in forces] + [abs(state['net']), 1.0])
-        span = 0.95                     # longest arrow drawn, in axis units
-        stub = 0.11                     # shortest, so a real force stays visible
+        v_ground = math.hypot(v_side, v_up)
+        vel_dir = ((v_side / v_ground, v_up / v_ground)
+                   if v_ground > 1e-6 else (0.0, 1.0))
+
+        span = 0.95
+        stub = 0.11
 
         def arrow_len(magnitude, reference):
-            """Proportional length, floored so small forces still read.
-
-            Strict proportionality is what makes the picture worth looking at
-            - a force twice as big is twice as long - but a 6 N force beside a
-            1,200 N one comes out a hundredth of an inch and disappears. The
-            floor only bites below about a tenth of the largest arrow, and the
-            number is printed against every arrow regardless, so nothing is
-            misread as bigger than it is.
-            """
+            """Proportional length, floored so small forces still read."""
+            if not reference:
+                return stub
             return max(stub, (abs(magnitude) / reference) * span)
 
-        # A force under half a newton, or under half a percent of the biggest
-        # one, is not worth an arrow: it drew a stub labelled "0 N", which
-        # reads as a force that is there and zero rather than one that is not
-        # there at all.
+        L = self.LANE
+        forces = [
+            # magnitude, origin, direction, colour, label, approach, offset
+            (state['thrust'], tail_pt, axis_dir, '#00FF88', 'Thrust', True, 0.0),
+            (state['body_drag'], cp_pt, drag_dir, '#FF4444', 'Drag', False, -L),
+            (state['chute_drag'], nose_pt, drag_dir, '#FF00FF', 'Chute', False, L),
+            (state['weight'], cg_pt, down_dir, '#FFAA00', 'Weight', False, L),
+        ]
+        if state['on_pad'] and state['weight'] > 0:
+            forces.append((state['weight'], tail_pt, axis_dir, '#7FDBFF',
+                           'Rail', False, 2 * L))
+
+        biggest = max([abs(f[0]) for f in forces] + [abs(state['net']), 1.0])
         floor = max(0.5, biggest * 0.005)
-        for magnitude, y_anchor, lane, direction, colour, label, approach in forces:
+        for magnitude, origin, direction, colour, label, approach, off in forces:
             if magnitude < floor:
                 continue
-            self._draw_force_arrow(
-                lane, y_anchor, direction, arrow_len(magnitude, biggest),
-                colour, label, f"{magnitude:,.0f} N", approach=approach)
+            self._draw_vector(origin, direction, arrow_len(magnitude, biggest),
+                              colour, label, f"{magnitude:,.0f} N",
+                              approach=approach, offset=off)
 
-        # Net force, from the centre of gravity - that is the point the whole
-        # vehicle accelerates about, so it is where the resultant belongs.
-        net = state['net']
-        if abs(net) > floor:
-            self._draw_force_arrow(
-                +2 * L, y_cg, 1 if net > 0 else -1,
-                arrow_len(net, biggest), '#00D4FF', 'Net',
-                f"{net:,.0f} N")
+        # Net force, as the real resultant of the arrows above rather than a
+        # single up-or-down number. Drawn from the centre of gravity, which is
+        # the point the whole vehicle accelerates about.
+        net_x = (state['thrust'] * axis_dir[0]
+                 + (state['body_drag'] + state['chute_drag']) * drag_dir[0])
+        net_y = (state['thrust'] * axis_dir[1]
+                 + (state['body_drag'] + state['chute_drag']) * drag_dir[1]
+                 - state['weight'])
+        if state['on_pad']:
+            net_x = net_y = 0.0
+        net_mag = math.hypot(net_x, net_y)
+        if net_mag > floor:
+            self._draw_vector(cg_pt, (net_x, net_y),
+                              arrow_len(net_mag, biggest), '#00D4FF', 'Net',
+                              f"{net_mag:,.0f} N", zorder=6, offset=-L)
 
-        # Velocity is not a force, so it gets its own scale and a dashed shaft
-        # to keep it visibly a different kind of thing. Drawn from the CG in
-        # the direction the rocket is actually travelling.
+        # Velocity is not a force, so it gets its own scale and a dashed
+        # shaft. Drawn from the CG along the direction of travel.
         v_max = state.get('v_max') or 0.0
-        if abs(v) > 0.5 and v_max > 0:
-            self._draw_force_arrow(
-                -2 * L, y_cg, 1 if v > 0 else -1,
-                arrow_len(v, v_max), '#B388FF', 'Velocity',
-                f"{v:,.1f} m/s", dashed=True)
+        if v_ground > 0.5 and v_max > 0:
+            self._draw_vector(cg_pt, vel_dir, arrow_len(v_ground, v_max),
+                              '#B388FF', 'Velocity', f"{v_ground:,.1f} m/s",
+                              dashed=True, offset=-2 * L)
+
+        # Wind. Not a force on the rocket by itself - it acts by changing the
+        # air-relative flow, which is what the drag arrow already shows - so
+        # it is drawn to one side as the condition it is, in the direction it
+        # blows, not as another arrow on the airframe.
+        if abs(wind) > 0.1:
+            wx = -1.55 if wind > 0 else 1.55
+            wy = 2.95
+            wlen = min(0.55, 0.05 * abs(wind) + 0.12)
+            ax.arrow(wx, wy, math.copysign(wlen, wind), 0,
+                     head_width=0.08, head_length=0.07, fc='#7FDBFF',
+                     ec='#7FDBFF', linewidth=1.8, length_includes_head=True,
+                     alpha=0.9, zorder=5)
+            ax.text(wx + math.copysign(wlen / 2, wind), wy + 0.13,
+                    f"Wind {abs(wind):.0f} m/s", ha='center', va='bottom',
+                    fontsize=7, color='#7FDBFF', fontweight='bold')
+
+        # Angle of attack: the gap between where the nose points and where the
+        # air is coming from. It is the number that says whether the vehicle
+        # is flying or tumbling, so it is worth stating outright.
+        aoa = state.get('aoa_deg') or 0.0
+        if not state['on_pad']:
+            ax.text(1.95, -1.15, f"tilt {tilt:+.0f}\u00b0   AoA {aoa:.0f}\u00b0",
+                    ha='right', va='center', fontsize=7.5,
+                    color=('#FF4444' if abs(aoa) > 15 else '#7A7A86'),
+                    fontweight='bold')
 
         headline = ('On the pad' if state['on_pad'] else
                     f"t = {state['time']:.2f} s")
         ax.set_title(f"Forces on the rocket - {headline}", fontsize=9,
                      fontweight='bold', color='#FFFFFF', pad=6)
-        # One footnote, not two written over each other.
         if not state['has_flight']:
             note = "Run a simulation to scrub through the flight"
-        elif state['on_pad'] and abs(net) <= floor:
+        elif state['on_pad'] and net_mag <= floor:
             note = "Net 0 N - balanced on the rail"
         else:
             note = None
@@ -3580,7 +3345,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
         try:
             rows, summary = self.run_flight_simulation(
                 m, Cd, A, rho, sim_kwargs, time_step,
-                body_diameter=body_diameter)
+                body_diameter=body_diameter,
+                site_override=self._stability_launch_site())
         except Exception:
             traceback.print_exc()
             self._set_stability_note(
@@ -3598,6 +3364,30 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self._report_stability_envelope()
         self.enable_force_scrubber()
         return rows
+
+    def _stability_launch_site(self):
+        """The launch site as set on THIS tab.
+
+        The Wind Speed, Wind Direction and Launch Angle boxes on the Stability
+        Test tab used to change nothing at all: the flight was built from the
+        Aerodynamics tab's launch site, so you could set a 20 m/s crosswind
+        here, press Launch, and watch a rocket fly in dead calm. They are the
+        conditions you are testing stability against, so they are the ones it
+        flies.
+        """
+        try:
+            site = self.vehicle_tab.launch_site()
+        except Exception:
+            return None
+        try:
+            site.wind_speed_ms = float(self.wind_speed_input.value())
+        except Exception:
+            pass
+        try:
+            site.rail_angle_deg = float(self.launch_angle_input.value())
+        except Exception:
+            pass
+        return site
 
     def stability_envelope(self, rows):
         """How the static margin behaved across the ascent.
@@ -4553,7 +4343,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             f"smaller canopy.")
 
     def run_flight_simulation(self, m, Cd, A, rho, sim_kwargs, time_step,
-                              body_diameter=None):
+                              body_diameter=None, site_override=None):
         """Fly the vehicle.
 
         Uses the 2-DOF model (wind, full atmosphere, Mach-5 drag buildup,
@@ -4582,7 +4372,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 points, curve_prop = flight_model.load_thrust_curve(curve_path)
                 if points:
                     airframe = self.vehicle_tab.airframe()
-                    site = self.vehicle_tab.launch_site()
+                    # The Stability Test tab flies its own wind and rail
+                    # angle, set on that tab, rather than the Aerodynamics
+                    # tab's - otherwise its controls change nothing.
+                    site = site_override or self.vehicle_tab.launch_site()
                     recovery_system = self.vehicle_tab.recovery_system()
                     mass_props = self.vehicle_tab.mass_properties()
                     # The Simulation tab's masses win if they were entered:
