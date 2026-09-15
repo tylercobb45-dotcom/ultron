@@ -4,12 +4,26 @@ name: Build the downloadable JARVIS
 # admin rights: download the zip from the Releases page, unzip it onto a
 # flash drive, run it on any computer.
 #
-# Runs on a version tag (and can be started by hand from the Actions tab).
+# Two ways to run it:
+#
+#   * push a version tag (v1.0.0) - builds and publishes the release
+#   * start it by hand from the Actions tab - builds, and publishes too if
+#     you fill in the "version" box
+#
+# The hand-started route exists because pushing a tag is not always possible
+# (a sandboxed or restricted checkout may not be allowed to write refs/tags).
+# Given a version, the release step creates the tag itself at the commit it
+# just built, so the result is identical either way.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. v1.0.0. Leave blank to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write        # needed to attach the builds to a release
@@ -115,7 +129,8 @@ jobs:
   release:
     name: Attach builds to the release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A tag push, or a hand-started run that named a version.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.version != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -133,6 +148,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # On a tag push this is the tag that triggered the run. On a
+          # hand-started run it is the version that was typed in, and the
+          # action creates that tag at the commit it just built.
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
           files: builds/*.zip
           body: |
             Download the zip for your computer, unzip it onto a flash drive,
