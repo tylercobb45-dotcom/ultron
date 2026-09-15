@@ -2650,267 +2650,212 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.force_ax.set_aspect('equal')
         self.force_ax.axis('off')
         
-        # Initialize airflow particles for animation
-        import numpy as np
-        self.airflow_particles = []
-        for i in range(8):  # Create 8 airflow particles
-            particle = {
-                'x': np.random.uniform(-1.8, 1.8),
-                'y': np.random.uniform(0.5, 3.5),
-                'vx': 0.0,
-                'vy': 0.0,
-                'size': np.random.uniform(15, 30)
-            }
-            self.airflow_particles.append(particle)
-        
-        # Draw more realistic rocket shape
         self.draw_rocket_body()
-        
-        # Add labels for vectors
-        theme_color = '#ECF0F1' if self.current_theme == "professional" else '#2C3E50'
-        self.force_ax.text(0, 0.5, 'Forces & Airflow', ha='center', va='center',
-                          fontsize=9, fontweight='bold', color=theme_color)
-        
         self.force_canvas.draw()
 
-    def draw_rocket_body(self):
-        """Draw a more realistic rocket shape"""
+    # -- the free-body diagram -------------------------------------------
+    #
+    # Drawn to the SHAPE OF THE REAL ROCKET, and every arrow starts at the
+    # point on the airframe where that force actually acts: thrust at the
+    # nozzle, weight at the centre of gravity, body drag at the centre of
+    # pressure, parachute drag at the nose. That is the whole point of a
+    # stability test - it is the gap between CG and CP, and which side of it
+    # drag pulls on, that decides whether the rocket flies straight.
+    #
+    # The rocket is always drawn the same height on screen whatever its real
+    # length; only the proportions change. Stations are quoted in metres from
+    # the nose tip, matching how cg_m and cp_m come out of the flight model.
+
+    NOSE_Y = 2.55           # where the nose tip sits in axis units
+    TAIL_Y = 0.35           # where the tail sits
+    LANE = 0.62             # sideways spacing between arrow columns
+
+    def _rocket_geometry(self):
+        """Screen geometry for the current airframe, and station -> y.
+
+        Falls back to a generic slender rocket when no airframe has been set
+        up yet, so the panel draws something honest rather than nothing.
+        """
+        length = diameter = nose_len = boattail = 0.0
+        fin_root = fin_span = 0.0
+        try:
+            af = self.vehicle_tab.airframe()
+            length = af.total_length or 0.0
+            diameter = af.body_diameter_m or 0.0
+            nose_len = af.nose_length_m or 0.0
+            boattail = af.boattail_length_m or 0.0
+            fin_root = af.fin_root_chord_m or 0.0
+            fin_span = af.fin_span_m or 0.0
+        except Exception:
+            pass
+        if length <= 0:
+            length, diameter, nose_len = 2.0, 0.10, 0.45
+            fin_root, fin_span = 0.22, 0.11
+
+        height = self.NOSE_Y - self.TAIL_Y
+        # Half-width, deliberately exaggerated. A real high-power airframe is
+        # 20 to 30 calibers long, so drawn true to scale it is a hairline with
+        # no visible nose, fins or nozzle and nothing for the arrows to point
+        # at. Stations stay exact - it is only the width that is stretched, so
+        # where CG and CP sit along the body is still honest.
+        half_w = max(0.085, min(0.16, 0.5 * (diameter / length) * height))
+
+        def station_y(station_m):
+            """Metres from the nose tip -> y in axis units."""
+            frac = min(1.0, max(0.0, station_m / length))
+            return self.NOSE_Y - frac * height
+
+        return {
+            'length': length, 'diameter': diameter, 'half_w': half_w,
+            'nose_len': nose_len, 'boattail': boattail,
+            'fin_root': fin_root, 'fin_span': fin_span,
+            'station_y': station_y, 'height': height,
+        }
+
+    def draw_rocket_body(self, geom=None):
+        """Draw the airframe in proportion, nose up."""
         import matplotlib.patches as patches
-        
-        # Main body (cylinder)
-        rocket_body = patches.Rectangle((-0.08, 1.5), 0.16, 0.8,
-                                      facecolor='#C0C0C0', edgecolor='black', linewidth=1.5)
-        self.force_ax.add_patch(rocket_body)
-        
-        # Nose cone (triangle)
-        nose_cone = patches.Polygon([(-0.08, 2.3), (0.08, 2.3), (0, 2.6)],
-                                   facecolor='#A0A0A0', edgecolor='black', linewidth=1.5)
-        self.force_ax.add_patch(nose_cone)
-        
-        # Fins (small triangles at base)
-        fin_left = patches.Polygon([(-0.08, 1.5), (-0.15, 1.3), (-0.08, 1.4)],
-                                  facecolor='#808080', edgecolor='black', linewidth=1)
-        fin_right = patches.Polygon([(0.08, 1.5), (0.15, 1.3), (0.08, 1.4)],
-                                   facecolor='#808080', edgecolor='black', linewidth=1)
-        self.force_ax.add_patch(fin_left)
-        self.force_ax.add_patch(fin_right)
-        
-        # Engine nozzle
-        nozzle = patches.Rectangle((-0.04, 1.4), 0.08, 0.1,
-                                 facecolor='#404040', edgecolor='black', linewidth=1)
+
+        g = geom or self._rocket_geometry()
+        sy, w = g['station_y'], g['half_w']
+        y_nose_base = sy(g['nose_len'])
+        y_body_end = sy(g['length'] - g['boattail'])
+        y_tail = sy(g['length'])
+
+        body = patches.Rectangle((-w, y_body_end), 2 * w, y_nose_base - y_body_end,
+                                 facecolor='#C0C0C0', edgecolor='#2B2B2B',
+                                 linewidth=1.4, zorder=3)
+        self.force_ax.add_patch(body)
+
+        nose = patches.Polygon([(-w, y_nose_base), (w, y_nose_base),
+                                (0, self.NOSE_Y)],
+                               facecolor='#A8A8A8', edgecolor='#2B2B2B',
+                               linewidth=1.4, zorder=3)
+        self.force_ax.add_patch(nose)
+
+        if g['boattail'] > 0 and y_body_end > y_tail:
+            boat = patches.Polygon([(-w, y_body_end), (w, y_body_end),
+                                    (w * 0.6, y_tail), (-w * 0.6, y_tail)],
+                                   facecolor='#9A9A9A', edgecolor='#2B2B2B',
+                                   linewidth=1.2, zorder=3)
+            self.force_ax.add_patch(boat)
+
+        # Fins, in proportion to the real root chord and span.
+        if g['fin_root'] > 0 and g['fin_span'] > 0:
+            root_h = (g['fin_root'] / g['length']) * g['height']
+            span_w = min(0.42, (g['fin_span'] / g['length']) * g['height'] * 2.2)
+            y_fin_root = sy(g['length'] - g['boattail'])
+            for side in (-1, 1):
+                fin = patches.Polygon(
+                    [(side * w, y_fin_root + root_h), (side * w, y_fin_root),
+                     (side * (w + span_w), y_fin_root)],
+                    facecolor='#8A8A8A', edgecolor='#2B2B2B',
+                    linewidth=1.1, zorder=2)
+                self.force_ax.add_patch(fin)
+
+        nozzle = patches.Rectangle((-w * 0.5, y_tail - 0.07), w, 0.07,
+                                   facecolor='#404040', edgecolor='#2B2B2B',
+                                   linewidth=1, zorder=3)
         self.force_ax.add_patch(nozzle)
+        return g
 
-    def update_airflow_particles(self):
-        """Update and draw airflow particles showing air movement past rocket"""
-        import numpy as np
-        
-        if not hasattr(self, 'airflow_particles'):
-            return
-        
-        # Get rocket velocity components for airflow simulation
-        v_vertical = getattr(self, 'launch_velocity', 0.0) if hasattr(self, 'is_launching') and self.is_launching else 0.0
-        v_horizontal = getattr(self, 'launch_x_vel', 0.0) if hasattr(self, 'is_launching') and self.is_launching else 0.0
-        v_total = (v_vertical**2 + v_horizontal**2) ** 0.5
-        is_moving = v_total > 0.5
-        
-        # Update particle positions and velocities
-        for particle in self.airflow_particles:
-            if is_moving:
-                # Calculate airflow direction opposite to rocket motion
-                flow_direction_x = -v_horizontal / v_total if v_total > 0 else 0
-                flow_direction_y = -v_vertical / v_total if v_total > 0 else 0
-                
-                # Base flow speed scales with rocket speed
-                base_flow_speed = min(v_total * 0.02, 0.15)
-                
-                # Calculate distance from rocket centerline for flow deflection
-                rocket_center_x = 0.0
-                rocket_center_y = 2.0
-                distance_from_rocket = abs(particle['x'] - rocket_center_x)
-                
-                # Flow patterns around rocket based on rocket's motion direction
-                if particle['y'] > rocket_center_y:
-                    # Above rocket - flow around nose cone
-                    flow_deflection = 0.3 * np.exp(-distance_from_rocket * 3)
-                    particle['vx'] = flow_direction_x * base_flow_speed + np.sign(particle['x'] - rocket_center_x) * flow_deflection
-                    particle['vy'] = flow_direction_y * base_flow_speed * (1 + flow_deflection)
-                elif particle['y'] < rocket_center_y - 0.3:
-                    # Below rocket - wake turbulence
-                    particle['vx'] = flow_direction_x * base_flow_speed * 0.7 + np.random.uniform(-0.05, 0.05)
-                    particle['vy'] = flow_direction_y * base_flow_speed * 0.7
-                else:
-                    # Alongside rocket - fastest flow
-                    particle['vx'] = flow_direction_x * base_flow_speed * 1.2 + np.sign(particle['x'] - rocket_center_x) * base_flow_speed * 0.3
-                    particle['vy'] = flow_direction_y * base_flow_speed * 1.2
-            else:
-                # No airflow when rocket is stationary
-                particle['vx'] = 0
-                particle['vy'] = 0
-            
-            # Update particle position
-            particle['x'] += particle['vx']
-            particle['y'] += particle['vy']
-            
-            # Reset particles that go off screen
-            if particle['y'] < 0.5:
-                particle['x'] = np.random.uniform(-1.8, 1.8)
-                particle['y'] = 3.5
-                particle['size'] = np.random.uniform(15, 30)
-            elif particle['y'] > 3.5:
-                particle['x'] = np.random.uniform(-1.8, 1.8)
-                particle['y'] = 0.5
-                particle['size'] = np.random.uniform(15, 30)
-            elif abs(particle['x']) > 1.8:
-                particle['x'] = np.random.uniform(-1.8, 1.8)
-                particle['y'] = np.random.uniform(0.5, 3.5)
-                particle['size'] = np.random.uniform(15, 30)
-        
-        # Draw airflow particles
-        if is_moving:
-            # Draw particles as small circles with motion trails
-            for particle in self.airflow_particles:
-                # Particle color based on speed
-                speed = np.sqrt(particle['vx']**2 + particle['vy']**2)
-                alpha = min(0.6, 0.3 + speed * 2)  # More visible when moving faster
-                
-                if self.current_theme == "professional":
-                    color = '#00D4FF'  # Cyan for professional theme
-                else:
-                    color = '#BCA16A'  # Gold for retro theme
-                
-                # Draw particle
-                self.force_ax.scatter(particle['x'], particle['y'], 
-                                    s=particle['size'], c=color, alpha=alpha, marker='o')
-                
-                # Draw motion trail
-                if speed > 0.01:
-                    trail_length = min(0.2, speed * 2)
-                    trail_x = particle['x'] - particle['vx'] * trail_length * 10
-                    trail_y = particle['y'] - particle['vy'] * trail_length * 10
-                    self.force_ax.plot([trail_x, particle['x']], [trail_y, particle['y']],
-                                     color=color, alpha=alpha*0.5, linewidth=1.5)
-        else:
-            # Show static air particles when not moving
-            for particle in self.airflow_particles:
-                color = '#808080'  # Gray for static air
-                self.force_ax.scatter(particle['x'], particle['y'],
-                                    s=particle['size']*0.5, c=color, alpha=0.2, marker='o')
+    def _draw_cg_cp(self, geom, state):
+        """Mark the centre of gravity and centre of pressure on the airframe.
 
-    def draw_engine_exhaust(self, thrust_force, max_force):
-        """Draw animated engine exhaust plume"""
-        import numpy as np
+        The standard symbols: CG is the quartered circle, CP the open one.
+        Their separation IS the static margin, so it is drawn to scale and
+        labelled - on a stability test that is the number that matters.
+        """
         import matplotlib.patches as patches
-        
-        # Exhaust parameters based on thrust
-        exhaust_intensity = thrust_force / max_force if max_force > 0 else 0
-        exhaust_length = 0.3 + exhaust_intensity * 0.4  # 0.3 to 0.7 units long
-        exhaust_width = 0.06 + exhaust_intensity * 0.04  # Variable width
-        
-        # Create exhaust plume points (triangle/cone shape)
-        nozzle_center_x = 0.0
-        nozzle_base_y = 1.4
-        
-        # Main exhaust cone
-        exhaust_points = np.array([
-            [nozzle_center_x - exhaust_width/2, nozzle_base_y],
-            [nozzle_center_x + exhaust_width/2, nozzle_base_y],
-            [nozzle_center_x, nozzle_base_y - exhaust_length]
-        ])
-        
-        # Exhaust colors (gradient from yellow to red)
-        exhaust_colors = ['#FFFF00', '#FF8000', '#FF4000']
-        
-        # Draw multiple exhaust layers for realistic effect
-        for i, color in enumerate(exhaust_colors):
-            scale_factor = 1.0 - i * 0.25  # Each layer slightly smaller
-            scaled_points = exhaust_points.copy()
-            
-            # Scale the exhaust cone
-            center_x = nozzle_center_x
-            center_y = nozzle_base_y - exhaust_length/2
-            
-            for j, point in enumerate(scaled_points):
-                if j < 2:  # Only scale width of base points
-                    scaled_points[j][0] = center_x + (point[0] - center_x) * scale_factor
-                scaled_points[j][1] = center_y + (point[1] - center_y) * scale_factor
-            
-            # Draw exhaust layer
-            exhaust_polygon = patches.Polygon(scaled_points, 
-                                            facecolor=color, 
-                                            alpha=0.6 - i*0.1,
-                                            edgecolor=None)
-            self.force_ax.add_patch(exhaust_polygon)
-        
-        # Add flickering exhaust particles
-        for _ in range(3):
-            particle_x = nozzle_center_x + np.random.uniform(-exhaust_width/3, exhaust_width/3)
-            particle_y = nozzle_base_y - np.random.uniform(0.1, exhaust_length * 0.8)
-            
-            self.force_ax.scatter(particle_x, particle_y,
-                                s=np.random.uniform(20, 50),
-                                c='#FFFF00', alpha=0.8, marker='*')
 
-    def draw_parachute(self, rocket_x, rocket_y, open_factor):
-        """Draw animated parachute above the rocket"""
-        import numpy as np
-        import matplotlib.patches as patches
-        
-        # Parachute position (above rocket)
-        chute_x = rocket_x
-        chute_y = rocket_y + 0.8 + (0.3 * open_factor)  # Rise as it opens
-        
-        # Parachute size based on opening factor
-        base_radius = 0.25
-        chute_radius = base_radius * (0.3 + 0.7 * open_factor)  # 30% to 100% size
-        
-        # Draw parachute canopy (circle/arc)
-        if open_factor > 0.1:
-            # Main canopy
-            canopy = patches.Circle((chute_x, chute_y), chute_radius,
-                                  facecolor='#FF6B6B', edgecolor='#D63031',
-                                  alpha=0.7 + 0.3 * open_factor, linewidth=1.5)
-            self.force_ax.add_patch(canopy)
-            
-            # Parachute lines (shroud lines)
-            num_lines = 6
-            for i in range(num_lines):
-                angle = (i * 2 * np.pi / num_lines) - np.pi/2  # Start from top
-                line_end_x = chute_x + chute_radius * 0.8 * np.cos(angle)
-                line_end_y = chute_y + chute_radius * 0.8 * np.sin(angle)
-                
-                # Draw line from rocket to parachute edge
-                self.force_ax.plot([rocket_x, line_end_x], [rocket_y + 0.5, line_end_y],
-                                 color='#2D3436', linewidth=1, alpha=0.8)
-            
-            # Central line from rocket to parachute center
-            self.force_ax.plot([rocket_x, chute_x], [rocket_y + 0.5, chute_y - chute_radius],
-                             color='#2D3436', linewidth=1.5, alpha=0.8)
-            
-            # Add deployment animation details
-            if open_factor < 1.0:
-                # Show parachute "inflating" with some flutter
-                flutter = 0.02 * np.sin(open_factor * 20)  # Small oscillation during opening
-                ripple_radius = chute_radius * (0.9 + 0.1 * np.sin(open_factor * 15))
-                
-                ripple = patches.Circle((chute_x, chute_y), ripple_radius,
-                                      facecolor='none', edgecolor='#FF6B6B',
-                                      alpha=0.3, linewidth=1, linestyle='--')
-                self.force_ax.add_patch(ripple)
-            
-            # Parachute label
-            self.force_ax.text(chute_x + chute_radius + 0.1, chute_y, 'CHUTE',
-                             fontsize=8, color='#D63031', fontweight='bold',
-                             rotation=0, ha='left', va='center')
+        sy = geom['station_y']
+        half_w_label = geom['half_w'] + 0.03
+        drawn = {}
+        for key, colour, filled, tag in (
+                ('cg_m', '#FFAA00', True, 'CG'),
+                ('cp_m', '#FF4444', False, 'CP')):
+            station = state.get(key)
+            if not station or station <= 0:
+                continue
+            y = sy(station)
+            drawn[key] = y
+            self.force_ax.add_patch(patches.Circle(
+                (0, y), 0.062, facecolor=(colour if filled else 'none'),
+                edgecolor=colour, linewidth=1.6, zorder=6, alpha=0.95))
+            if filled:
+                # The quartered look, so CG reads as CG at a glance.
+                self.force_ax.plot([-0.062, 0.062], [y, y], color='#1A1A1A',
+                                   linewidth=0.9, zorder=7)
+                self.force_ax.plot([0, 0], [y - 0.062, y + 0.062],
+                                   color='#1A1A1A', linewidth=0.9, zorder=7)
+            # CG and CP can be within a caliber of each other on a marginally
+            # stable rocket - exactly the case worth looking at - so nudge the
+            # labels apart rather than letting them print on top of each other.
+            y_label = y
+            if 'cg_m' in drawn and 'cp_m' in drawn and key == 'cp_m':
+                if abs(drawn['cg_m'] - y) < 0.15:
+                    y_label = y - 0.09 if y < drawn['cg_m'] else y + 0.09
+            self.force_ax.text(half_w_label, y_label, tag, fontsize=7,
+                               color=colour, fontweight='bold', va='center',
+                               ha='left', zorder=7)
+
+        margin = state.get('stability_cal')
+        if margin and 'cg_m' in drawn and 'cp_m' in drawn:
+            # A bracket spanning the gap, labelled in calibers.
+            y_hi, y_lo = sorted((drawn['cg_m'], drawn['cp_m']), reverse=True)
+            x = -geom['half_w'] - 0.14
+            self.force_ax.plot([x, x], [y_lo, y_hi], color='#7FDBFF',
+                               linewidth=1.2, zorder=6)
+            for y in (y_lo, y_hi):
+                self.force_ax.plot([x, x + 0.06], [y, y], color='#7FDBFF',
+                                   linewidth=1.2, zorder=6)
+            self.force_ax.text(x - 0.06, (y_lo + y_hi) / 2,
+                               f"{margin:.2f} cal", fontsize=7,
+                               color='#7FDBFF', fontweight='bold',
+                               rotation=90, va='center', ha='right', zorder=7)
+
+    def _draw_force_arrow(self, x_lane, y_anchor, direction, length,
+                          colour, label, value_text, dashed=False,
+                          approach=False):
+        """One vector, drawn in its own column with a leader to where it acts.
+
+        Thrust, weight and drag all act along the body axis, so drawn there
+        they would sit on top of each other. Each gets a column beside the
+        rocket and a dotted leader back to its real application point - the
+        usual way a free-body diagram handles forces that share a line.
+
+        ``approach`` puts the head at the application point and the tail out
+        beyond it, instead of the other way round. That is how thrust has to
+        be drawn: it acts at the nozzle pointing forward, so an arrow growing
+        outward from that point would run straight up through the airframe.
+        The head-at-the-nozzle version is both the readable one and the one
+        every textbook uses.
+        """
+        ax = self.force_ax
+        if abs(x_lane) > 1e-9:
+            ax.plot([0, x_lane], [y_anchor, y_anchor], color=colour,
+                    linewidth=0.8, linestyle=':', alpha=0.55, zorder=4)
+        if approach:
+            y_start = y_anchor - direction * length
+            y_text = y_start
+            text_dir = -direction
         else:
-            # Just starting to deploy - show small bundle
-            bundle = patches.Circle((chute_x, chute_y), 0.05,
-                                  facecolor='#FF6B6B', edgecolor='#D63031',
-                                  alpha=0.5, linewidth=1)
-            self.force_ax.add_patch(bundle)
-            
-            # Single line to rocket
-            self.force_ax.plot([rocket_x, chute_x], [rocket_y + 0.5, chute_y],
-                             color='#2D3436', linewidth=1, alpha=0.6)
+            y_start = y_anchor
+            y_text = y_anchor + direction * length
+            text_dir = direction
+        ax.arrow(x_lane, y_start, 0, direction * length,
+                 head_width=0.095, head_length=0.085,
+                 fc=colour, ec=colour, linewidth=2.2, zorder=5,
+                 length_includes_head=True, alpha=0.95,
+                 linestyle=('dashed' if dashed else 'solid'))
+        ax.text(x_lane, y_text + text_dir * 0.10,
+                f"{label}\n{value_text}", ha='center',
+                va='bottom' if text_dir > 0 else 'top',
+                fontsize=7, color=colour, fontweight='bold',
+                linespacing=0.95, zorder=7)
+
+
+
 
     def create_professional_gauge(self, label, value, unit, color):
         """Create a professional aerospace-style gauge display"""
@@ -3287,6 +3232,15 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'velocity': velocity, 'mass': mass,
                 'on_pad': False, 'has_flight': True,
                 'chute_deployed': bool(row.get('chute_deployed')),
+                # Where along the airframe things act, so the arrows can be
+                # anchored to the real stations rather than floating.
+                'cg_m': row.get('cg_m'), 'cp_m': row.get('cp_m'),
+                'stability_cal': row.get('stability_cal'),
+                # Scale for the velocity arrow. It is not a force, so it
+                # cannot share the force scale; against the fastest moment of
+                # this flight it grows and shrinks meaningfully.
+                'v_max': max((abs(r.get('velocity') or 0.0) for r in rows),
+                             default=0.0),
             }
 
         # No flight yet: the rocket is sitting on the rail. Weight is real and
@@ -3297,9 +3251,23 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except Exception:
             mass = 0.0
         weight = mass * 9.80665
+        # The CG and CP are known before any flight is run - they are set right
+        # here on this tab - so mark them on the pad drawing too. Reading the
+        # spin boxes means the diagram answers as they are dragged, which is
+        # what a stability test is for.
+        cg = cp = margin = None
+        try:
+            cg = self.center_of_mass_input.value()
+            cp = self.center_of_pressure_input.value()
+            diameter = self.vehicle_tab.airframe().body_diameter_m
+            if diameter and diameter > 0:
+                margin = (cp - cg) / diameter
+        except Exception:
+            pass
         return {'time': 0.0, 'thrust': 0.0, 'body_drag': 0.0, 'chute_drag': 0.0,
                 'weight': weight, 'net': 0.0, 'velocity': 0.0, 'mass': mass,
-                'on_pad': True, 'has_flight': False, 'chute_deployed': False}
+                'on_pad': True, 'has_flight': False, 'chute_deployed': False,
+                'cg_m': cg, 'cp_m': cp, 'stability_cal': margin, 'v_max': 0.0}
 
     def update_force_diagram(self, t=None):
         """Draw the free-body diagram for the current moment of flight."""
@@ -3315,94 +3283,109 @@ class RocketSimulationUI(QtWidgets.QWidget):
         state = self.force_state(t)
         ax = self.force_ax
         ax.clear()
-        # Tight limits around where the arrows actually live, so the diagram
-        # fills the panel instead of being a small drawing in a large empty
-        # box. Aspect stays equal so a force twice as big looks twice as long.
-        ax.set_xlim(-1.75, 1.75)
-        ax.set_ylim(-2.0, 3.4)
+        ax.set_xlim(-2.0, 2.0)
+        ax.set_ylim(-1.45, 3.35)
         ax.set_aspect('equal')
         ax.axis('off')
 
-        self.draw_rocket_body()
-        try:
-            self.update_airflow_particles()
-        except Exception:
-            pass
+        geom = self.draw_rocket_body()
+        sy = geom['station_y']
+        self._draw_cg_cp(geom, state)
 
-        cx, cy = 0.0, 2.0
-        if state['chute_deployed']:
-            try:
-                self.draw_parachute(cx, cy, getattr(self, 'chute_open_factor', 1.0))
-            except Exception:
-                pass
-        if state['thrust'] > 0:
-            try:
-                self.draw_engine_exhaust(state['thrust'], max(state['thrust'], 1.0))
-            except Exception:
-                pass
+        # Stations to hang the arrows from. Each force is anchored where it
+        # really acts; if the flight did not report a CG or CP, fall back to
+        # the middle of the airframe rather than dropping the arrow.
+        mid = sy(geom['length'] * 0.5)
+        y_cg = sy(state['cg_m']) if state.get('cg_m') else mid
+        y_cp = sy(state['cp_m']) if state.get('cp_m') else mid
+        y_tail = sy(geom['length'])
+        y_nose = self.NOSE_Y
 
-        # Every arrow is scaled against the largest force on screen, so the
-        # picture stays readable whether the numbers are newtons or kilonewtons
-        # and you can still see at a glance which force dominates.
         v = state['velocity']
         oppose = -1 if v >= 0 else 1        # drag always opposes motion
-        arrows = [
-            ('thrust', state['thrust'], 0.0, +1, '#00FF00', 'Thrust'),
-            ('body_drag', state['body_drag'], -0.55, oppose, '#FF4444', 'Drag'),
-            ('chute_drag', state['chute_drag'], -1.05, oppose, '#FF00FF', 'Chute'),
-            ('weight', state['weight'], 0.55, -1, '#FFAA00', 'Weight'),
+
+        # Every force arrow is scaled against the largest on screen, so a force
+        # twice as big is twice as long and you can see at a glance which one
+        # dominates. Each sits in its own column beside the rocket with a
+        # leader back to the point it acts on.
+        # Lanes: drag and velocity to the left, weight and the resultant to
+        # the right, thrust below the nozzle and the canopy above the nose -
+        # the two that act on the centreline have clear air there anyway.
+        L = self.LANE
+        forces = [
+            # magnitude, anchor y, lane x, direction, colour, label, approach
+            (state['thrust'], y_tail, 0.0, +1, '#00FF88', 'Thrust', True),
+            (state['body_drag'], y_cp, -L, oppose, '#FF4444', 'Drag', False),
+            (state['chute_drag'], y_nose, 0.0, oppose, '#FF00FF', 'Chute', False),
+            (state['weight'], y_cg, +L, -1, '#FFAA00', 'Weight', False),
         ]
         if state['on_pad'] and state['weight'] > 0:
             # The rail holds the vehicle up; without this the pad diagram shows
             # weight with nothing balancing it, which is simply wrong.
-            arrows.append(('normal', state['weight'], 1.05, +1, '#7FDBFF', 'Rail'))
+            forces.append((state['weight'], y_tail, +2 * L, +1, '#7FDBFF',
+                           'Rail', False))
 
-        biggest = max([abs(a[1]) for a in arrows] + [abs(state['net']), 1.0])
-        span = 1.15                     # longest arrow drawn, in axis units
+        biggest = max([abs(f[0]) for f in forces] + [abs(state['net']), 1.0])
+        span = 0.95                     # longest arrow drawn, in axis units
+        stub = 0.11                     # shortest, so a real force stays visible
+
+        def arrow_len(magnitude, reference):
+            """Proportional length, floored so small forces still read.
+
+            Strict proportionality is what makes the picture worth looking at
+            - a force twice as big is twice as long - but a 6 N force beside a
+            1,200 N one comes out a hundredth of an inch and disappears. The
+            floor only bites below about a tenth of the largest arrow, and the
+            number is printed against every arrow regardless, so nothing is
+            misread as bigger than it is.
+            """
+            return max(stub, (abs(magnitude) / reference) * span)
 
         # A force under half a newton, or under half a percent of the biggest
         # one, is not worth an arrow: it drew a stub labelled "0 N", which
         # reads as a force that is there and zero rather than one that is not
         # there at all.
         floor = max(0.5, biggest * 0.005)
-        for _key, magnitude, dx, direction, colour, label in arrows:
+        for magnitude, y_anchor, lane, direction, colour, label, approach in forces:
             if magnitude < floor:
                 continue
-            length = (magnitude / biggest) * span
-            ax.arrow(cx + dx, cy, 0, direction * length,
-                     head_width=0.10, head_length=0.09,
-                     fc=colour, ec=colour, linewidth=2.2,
-                     length_includes_head=True, alpha=0.95)
-            ax.text(cx + dx, cy + direction * (length + 0.12),
-                    f"{label}\n{magnitude:,.0f} N", ha='center',
-                    va='bottom' if direction > 0 else 'top',
-                    fontsize=7, color=colour, fontweight='bold',
-                    linespacing=0.95)
+            self._draw_force_arrow(
+                lane, y_anchor, direction, arrow_len(magnitude, biggest),
+                colour, label, f"{magnitude:,.0f} N", approach=approach)
 
+        # Net force, from the centre of gravity - that is the point the whole
+        # vehicle accelerates about, so it is where the resultant belongs.
         net = state['net']
-        if abs(net) > 0.5:
-            length = (abs(net) / biggest) * span
-            direction = 1 if net > 0 else -1
-            ax.arrow(cx, cy - 1.5, 0, direction * max(length, 0.06),
-                     head_width=0.15, head_length=0.11,
-                     fc='#00D4FF', ec='#00D4FF', linewidth=3,
-                     length_includes_head=True, alpha=0.95)
-            ax.text(cx + 0.18, cy - 1.5 + direction * length / 2,
-                    f"Net {net:,.0f} N", fontsize=8, color='#00D4FF',
-                    fontweight='bold', va='center', ha='left')
-        elif state['on_pad']:
-            ax.text(cx, cy - 1.7, "Net 0 N - balanced on the rail",
-                    ha='center', va='center', fontsize=7.5, color='#7A7A86')
+        if abs(net) > floor:
+            self._draw_force_arrow(
+                +2 * L, y_cg, 1 if net > 0 else -1,
+                arrow_len(net, biggest), '#00D4FF', 'Net',
+                f"{net:,.0f} N")
+
+        # Velocity is not a force, so it gets its own scale and a dashed shaft
+        # to keep it visibly a different kind of thing. Drawn from the CG in
+        # the direction the rocket is actually travelling.
+        v_max = state.get('v_max') or 0.0
+        if abs(v) > 0.5 and v_max > 0:
+            self._draw_force_arrow(
+                -2 * L, y_cg, 1 if v > 0 else -1,
+                arrow_len(v, v_max), '#B388FF', 'Velocity',
+                f"{v:,.1f} m/s", dashed=True)
 
         headline = ('On the pad' if state['on_pad'] else
                     f"t = {state['time']:.2f} s")
-        # set_title puts this outside the drawing area; as a text() at the top
-        # of the axes it collided with the label on the longest arrow.
-        ax.set_title(f"Live Forces - {headline}", fontsize=9,
+        ax.set_title(f"Forces on the rocket - {headline}", fontsize=9,
                      fontweight='bold', color='#FFFFFF', pad=6)
+        # One footnote, not two written over each other.
         if not state['has_flight']:
-            ax.text(0, -1.9, "Run a simulation to scrub through the flight",
-                    ha='center', va='center', fontsize=7.5, color='#7A7A86')
+            note = "Run a simulation to scrub through the flight"
+        elif state['on_pad'] and abs(net) <= floor:
+            note = "Net 0 N - balanced on the rail"
+        else:
+            note = None
+        if note:
+            ax.text(0, -1.30, note, ha='center', va='center',
+                    fontsize=7.5, color='#7A7A86')
 
         self._update_force_readouts(state)
         self.force_canvas.draw_idle()
