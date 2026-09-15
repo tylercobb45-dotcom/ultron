@@ -1,1 +1,10 @@
 *.exe filter=lfs diff=lfs merge=lfs -text
+
+# Windows batch files must have CRLF endings. cmd.exe tolerates LF for simple
+# one-liners but mis-parses multi-line blocks - exactly what the launchers
+# use - so pin it rather than leave it to whatever checked the file out.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell launchers stay LF whatever platform they are edited on.
+*.sh text eol=lf

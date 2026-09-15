@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo
-echo "  JARVIS Rocket Simulation - portable launcher"
+echo "  JARVIS Rocket Simulation - running from the drive"
 echo "  -------------------------------------------"
 
 PY=""

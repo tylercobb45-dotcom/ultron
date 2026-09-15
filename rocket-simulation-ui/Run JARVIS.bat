@@ -19,7 +19,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo.
-echo   JARVIS Rocket Simulation - portable launcher
+echo   JARVIS Rocket Simulation - running from the drive
 echo   -------------------------------------------
 
 REM --- find a Python ------------------------------------------------
@@ -41,7 +41,10 @@ if "!PY!"=="" (
 )
 
 REM --- a library folder per platform + python version ----------------
-for /f "delims=" %%v in ('!PY! -c "import sys,platform;print(f\"win-{platform.machine().lower()}-py{sys.version_info.major}.{sys.version_info.minor}\")"') do set TAG=%%v
+REM Single quotes inside, double quotes outside: cmd does not treat \" as an
+REM escape, so a nested double quote here ends the string early and the whole
+REM line breaks. Keep this one-liner free of nested double quotes.
+for /f "delims=" %%v in ('!PY! -c "import sys,platform;print('win-'+platform.machine().lower()+'-py'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))"') do set TAG=%%v
 set LIBDIR=JARVIS-Data\lib\!TAG!
 
 if not exist "!LIBDIR!" (
