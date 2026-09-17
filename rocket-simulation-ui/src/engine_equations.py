@@ -23,6 +23,22 @@ WHAT IS NOT IN HERE
     The integrator is also elsewhere. These are the equations; hybrid_sim's
     EngineModel is the thing that marches them through time.
 
+WHERE THE EQUATIONS COME FROM
+    The motor model follows Humble, Henry & Larson, "Space Propulsion
+    Analysis and Design", Chapter 7 "Hybrid Rocket Propulsion Systems",
+    Section 7.5 "Performance Estimate" (pp. 421-423). Table 7.9 there sets
+    out the simulation algorithm step by step, and the sections below are
+    labelled with the step each one serves, so this file can be read against
+    the book. Equation numbers in the comments - (7.101), (7.102), (1.6),
+    (3.112) and so on - are Humble's.
+
+    Where this file departs from him it says so at the point of departure.
+    The N2O property fits, the Dyer non-homogeneous-equilibrium injector
+    model and the self-pressurising tank blowdown are not in Chapter 7 at
+    all; Humble's oxidiser feed is a pressure-fed liquid, and a
+    self-pressurising nitrous system needs its own saturation physics. Those
+    carry their own sources.
+
 UNITS
     SI throughout, with no exceptions: metres, kilograms, seconds, kelvin,
     pascals, newtons. Every argument and every return value says its unit. If
@@ -86,6 +102,7 @@ N2O_GAMMA_VAPOUR = 1.27
 
 # =============================================================================
 #  S1. THE TANK - nitrous oxide saturation properties
+#      [Humble Table 7.9 step 1: initialise, and the oxidiser history]
 #
 #  N2O in a tank sits as liquid with its own vapour above it, both on the
 #  saturation curve. Everything about the tank follows from its temperature.
@@ -241,6 +258,7 @@ def n2o_tank_cooling_rate(liquid_mass_kg: float, T_k: float,
 
 # =============================================================================
 #  S2. THE INJECTOR - how much oxidiser reaches the chamber
+#      [feeds Humble Table 7.9 step 2's m_dot_ox]
 #
 #  A saturated liquid crossing an orifice into a much lower pressure starts
 #  boiling inside the orifice. Neither of the two simple models describes that
@@ -353,6 +371,7 @@ def vent_mass_flow(vent_cd: float, vent_area_m2: float,
 
 # =============================================================================
 #  S3. THE FUEL GRAIN - how fast the fuel burns back
+#      [Humble Table 7.9, steps 2 and 3: regression rate, then fuel flow]
 #
 #  A hybrid's fuel does not burn at a rate set by pressure the way a solid
 #  does. It burns at a rate set by how hard the oxidiser is blowing down the
@@ -467,6 +486,7 @@ def gas_residence_time(characteristic_length_m: float,
 
 # =============================================================================
 #  S4. COMBUSTION - what the propellant is worth, and the chamber pressure
+#      [Humble Table 7.9 step 4: thermochemistry, O/F -> c*]
 # =============================================================================
 
 def mixture_ratio(mdot_ox_kg_s: float, mdot_fuel_kg_s: float) -> float:
@@ -555,6 +575,7 @@ def chamber_pressure_lag(target_pa: float, current_pa: float,
 
 # =============================================================================
 #  S5. THE NOZZLE - turning chamber pressure into thrust
+#      [Humble Table 7.9 step 5: chamber, nozzle, performance]
 # =============================================================================
 
 def throat_area(throat_diameter_m: float) -> float:
@@ -687,6 +708,7 @@ def gas_constant(molar_mass_g_mol: float) -> float:
 
 # =============================================================================
 #  S6. PERFORMANCE - what comes out of the back
+#      [Humble Table 7.9 steps 5 and 7: F, Isp, and what is stored]
 # =============================================================================
 
 def thrust(thrust_coefficient_value: float, chamber_pressure_pa: float,
@@ -759,3 +781,236 @@ def throat_mass_flux(mdot_total_kg_s: float, throat_area_m2: float) -> float:
     if throat_area_m2 <= 0:
         return 0.0
     return mdot_total_kg_s / throat_area_m2
+
+
+# =============================================================================
+#  HUMBLE Table 7.9 - the simulation algorithm, written out
+#
+#  Humble, Henry & Larson, "Space Propulsion Analysis and Design",
+#  Chapter 7 "Hybrid Rocket Propulsion Systems", Section 7.5 "Performance
+#  Estimate", pp. 421-423. Table 7.9 gives the step order an engine
+#  simulation should follow; the functions below are the steps that were
+#  missing from this file, and the sections above are labelled with the step
+#  each one serves.
+#
+#      1. Initialise            grain, oxidiser history, nozzle, regression
+#                               parameters, throat erosion, ambient history,
+#                               time step, thermochemistry
+#      2. Fuel regression rate  m_dot_ox, A_p, rho, N  ->  G_ox, G, rdot
+#      3. Total mass flow       rdot, S_p, rho, N, m_dot_ox
+#                               ->  m_dot_fuel = rdot*rho*S_p*N
+#                                   m_dot_prop = m_dot_fuel + m_dot_ox
+#      4. Thermochemistry       O/F = m_dot_ox/m_dot_fuel -> T_c, gamma, M, c*
+#      5. Chamber and nozzle    p_c = m_dot_prop*c*/A_t, M_e, p_e, v_e, A_e,
+#                               F = lambda[m_dot_prop*v_e + (p_e-p_a)A_e],
+#                               Isp = F/(m_dot_prop*g0)
+#      6. Update geometry       w = w - rdot*dt, r_t = r_t + edot*dt,
+#                               new A_p and S_p, t = t + dt
+#      7. Store the outputs
+#      8. Repeat from 2 until the burn is done
+# =============================================================================
+
+
+def regression_rate_humble(total_flux_kg_m2_s: float, a: float, n: float,
+                           port_length_m: float = 1.0, m: float = 0.0) -> float:
+    """Humble's full regression law (Table 7.9 step 2, and Eq. 7.101).
+
+        rdot = a * G^n * L_p^m
+
+    Three differences from the short form used elsewhere in this file, all of
+    them Humble's:
+
+    * the flux is the TOTAL mass flux G, oxidiser plus the fuel already
+      picked up, not the oxidiser flux alone. Humble notes on p.423 that this
+      is the harder choice - it is circular, because you need the fuel flow to
+      get the flux and the flux to get the fuel flow - and gives the iteration
+      that resolves it. See ``converge_total_flux`` below.
+    * the port-length term L_p^m. Regression is not uniform down a port: the
+      boundary layer thickens along it, so the fuel further down sees a
+      different rate. m is measured with a; for many fuels it is reported as
+      zero or near it, which collapses this to the familiar form.
+    * ``a`` is defined against g0 in Humble's formulation, so it carries the
+      units that make the product come out in m/s.
+
+    With m = 0 and G = G_ox this is exactly ``regression_rate`` above, which
+    is why both exist: the short one is what the vendored integrator calls,
+    and this is the general form to reach for when a fuel's data includes m
+    or when the total-flux law is wanted.
+    """
+    if total_flux_kg_m2_s <= 0 or a <= 0:
+        return 0.0
+    length_term = (port_length_m ** m) if m else 1.0
+    return a * (total_flux_kg_m2_s ** n) * length_term
+
+
+def converge_total_flux(mdot_ox_kg_s: float, port_area_m2: float,
+                        burn_area_m2: float, fuel_density: float,
+                        a: float, n: float,
+                        port_length_m: float = 1.0, m: float = 0.0,
+                        tolerance: float = 1e-4,
+                        max_iterations: int = 50):
+    """Humble's total-mass-flux iteration, p.423.
+
+    The problem in his words: "We need to know fuel-mass flow to determine
+    fuel regression, which is required to estimate fuel flow - a circular
+    problem." His fix, verbatim in structure:
+
+        1. Start by assuming the total flux is just the oxidiser flux
+        2. Determine fuel regression and flow rate based on this flux
+        3. Add the fuel flow to oxidiser flow to get a new port mass flux
+        4. If the old guess is (nearly) the new guess, stop
+        5. If not, iterate
+
+    He calls it "very robust", and it is - the fuel flow is a fraction of the
+    oxidiser flow, so each pass moves the answer by less than the last and it
+    settles in six to eight passes at the fluxes a hybrid this size runs.
+
+    THE COEFFICIENT IS NOT INTERCHANGEABLE. ``a`` and ``n`` measured against
+    OXIDISER flux are not the same numbers as ``a`` and ``n`` measured against
+    TOTAL flux, and swapping the law while keeping the old coefficient is a
+    quiet way to build a motor that does not exist. Converged total flux runs
+    40-100% above oxidiser flux alone in this range, so an oxidiser-flux
+    coefficient used here inflates the regression rate and drives the O/F
+    ratio far off where the fuel was characterised. Humble flags the choice
+    on p.423 - "if we have chosen the regression-rate expression based only
+    on oxidizer flow, flux is a given and there is no problem" - and the
+    coefficient has to come from whichever expression is being used.
+
+    Returns (total_flux, regression_rate, fuel_mass_flow, iterations).
+    """
+    if port_area_m2 <= 0 or mdot_ox_kg_s <= 0:
+        return 0.0, 0.0, 0.0, 0
+
+    flux = mdot_ox_kg_s / port_area_m2          # step 1: oxidiser flux alone
+    rdot = 0.0
+    mdot_fuel = 0.0
+    for iteration in range(1, max_iterations + 1):
+        # step 2
+        rdot = regression_rate_humble(flux, a, n, port_length_m, m)
+        mdot_fuel = fuel_density * burn_area_m2 * rdot
+        # step 3
+        new_flux = (mdot_ox_kg_s + mdot_fuel) / port_area_m2
+        # step 4
+        if abs(new_flux - flux) <= tolerance * max(new_flux, 1e-12):
+            return new_flux, rdot, mdot_fuel, iteration
+        flux = new_flux                          # step 5
+    return flux, rdot, mdot_fuel, max_iterations
+
+
+def port_diameter_after(initial_diameter_m: float, mdot_ox_kg_s: float,
+                        elapsed_s: float, a: float, n: float,
+                        port_length_m: float = 1.0, m: float = 0.0) -> float:
+    """Port diameter at time t, Humble Eq. (7.102), p.421.
+
+        D_p = [ a(4n+2)(4*m_dot_ox/pi)^n * L_p^m * t + D_pi^(2n+1) ]^(1/(2n+1))
+
+    This is the closed-form integral of the regression law down a circular
+    port, which Humble derives at Eq. (7.101) by separating D and t. It holds
+    for single- and multi-port grains as long as the port is circular, and
+    assumes the oxidiser mass flow and the port length are constant over the
+    interval - so it is an analytic cross-check on a stepped integration
+    rather than a replacement for one.
+
+    ``mdot_ox_kg_s`` is the flow through ONE port, as in the book.
+    """
+    if elapsed_s <= 0 or a <= 0:
+        return max(0.0, initial_diameter_m)
+    exponent = 2.0 * n + 1.0
+    length_term = (port_length_m ** m) if m else 1.0
+    growth = (a * (4.0 * n + 2.0)
+              * (4.0 * mdot_ox_kg_s / math.pi) ** n
+              * length_term * elapsed_s)
+    return (growth + initial_diameter_m ** exponent) ** (1.0 / exponent)
+
+
+def chamber_pressure_humble(mdot_total_kg_s: float, cstar_m_s: float,
+                            throat_area_m2: float) -> float:
+    """Chamber pressure, Humble Table 7.9 step 5.
+
+        p_c = m_dot_prop * c* / A_t
+
+    The same relation as ``chamber_pressure_target`` above, written the way
+    the book writes it. Both are here because this file is meant to be read
+    against the source as well as run.
+    """
+    if throat_area_m2 <= 0:
+        return 0.0
+    return mdot_total_kg_s * cstar_m_s / throat_area_m2
+
+
+def thrust_humble(mdot_total_kg_s: float, exit_velocity_m_s: float,
+                  exit_pressure_pa: float, ambient_pressure_pa: float,
+                  exit_area_m2: float, nozzle_efficiency: float = 1.0) -> float:
+    """Thrust in Humble's momentum-plus-pressure form, Eq. (1.6) via Table 7.9.
+
+        F = lambda * [ m_dot_prop * v_e + (p_e - p_a) * A_e ]
+
+    The same number as the thrust-coefficient form used above - Cf is defined
+    so that it comes out that way - but written with the two physical terms
+    visible: the momentum the exhaust carries away, and the pressure
+    difference acting over the exit plane. The second term is why a nozzle
+    that is right at sea level is wrong at altitude.
+
+    ``lambda`` is the nozzle efficiency, the lumped factor for divergence,
+    friction and the rest of the losses between the ideal and the real
+    nozzle. Humble carries it as an input to the step rather than folding it
+    into Cf.
+    """
+    momentum = mdot_total_kg_s * exit_velocity_m_s
+    pressure = (exit_pressure_pa - ambient_pressure_pa) * exit_area_m2
+    return max(0.0, nozzle_efficiency * (momentum + pressure))
+
+
+def exit_velocity(exit_mach_number: float, gamma: float,
+                  chamber_temperature_k: float,
+                  molar_mass_g_mol: float) -> float:
+    """Nozzle exit velocity [m/s], Humble Table 7.9 step 5 (his Eq. 3.112).
+
+        v_e = M_e * sqrt( gamma * R * T_e ),
+        T_e = T_c / (1 + (gamma-1)/2 * M_e^2)
+
+    The exit static temperature follows from the chamber temperature by the
+    isentropic relation, and the speed of sound is evaluated at THAT
+    temperature - not the chamber's. Using the chamber value here is a common
+    slip and overstates the exhaust speed by a third or more at the area
+    ratios a hybrid runs.
+    """
+    if exit_mach_number <= 0 or chamber_temperature_k <= 0:
+        return 0.0
+    r_specific = gas_constant(molar_mass_g_mol)
+    t_exit = chamber_temperature_k / (1.0 + 0.5 * (gamma - 1.0)
+                                      * exit_mach_number ** 2)
+    return exit_mach_number * math.sqrt(gamma * r_specific * t_exit)
+
+
+def specific_impulse_humble(thrust_n: float, mdot_total_kg_s: float) -> float:
+    """Isp [s], Humble Table 7.9 step 5:  Isp = F / (m_dot_prop * g0)."""
+    if mdot_total_kg_s <= 0:
+        return 0.0
+    return thrust_n / (mdot_total_kg_s * G0)
+
+
+def update_web_and_throat(web_m: float, throat_radius_m: float,
+                          regression_rate_m_s: float,
+                          throat_erosion_rate_m_s: float,
+                          dt_s: float):
+    """Humble Table 7.9 step 6 - march the geometry forward one step.
+
+        w   = w   - rdot * dt        the fuel web gets thinner
+        r_t = r_t + edot * dt        the throat opens up
+
+    Humble flags in the text that the web is the easy half: relating it back
+    to the port cross-section needs the port's own geometry, which is why
+    step 6 asks for "new port geometry (A_p, S_p)" rather than a formula.
+    For a circular port that is just the area and surface of the new radius,
+    which ``port_area`` and ``burn_area`` above already give.
+
+    Throat erosion matters for an ablative nozzle: as the throat opens, the
+    chamber pressure and the thrust both fall away through the burn even with
+    the oxidiser flow held steady.
+
+    Returns (web, throat_radius), both floored at zero.
+    """
+    return (max(0.0, web_m - regression_rate_m_s * dt_s),
+            max(0.0, throat_radius_m + throat_erosion_rate_m_s * dt_s))
+

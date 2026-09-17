@@ -128,5 +128,53 @@ h_ceiling = fl["v_max"]**2/(2*G0) + 0.5*fl["v_max"]*res["t"][-1]
 check("apogee below no-drag energy ceiling", fl["apogee_m"] < h_ceiling,
       f"{fl['apogee_m']:.0f} < {h_ceiling:.0f} m")
 
+print("\n== 8. Humble Table 7.9 forms agree with the ones already validated ==")
+import math as _m
+import engine_equations as _eq
+
+# Humble's regression law reduces to the short form at m = 0.
+_ok = all(abs(_eq.regression_rate(G, a, n)
+              - _eq.regression_rate_humble(G, a, n, 1.0, 0.0)) < 1e-15
+          for G in (50, 200, 540, 900) for a, n in ((1.5e-4, 0.5), (2.3e-5, 0.62)))
+check("Humble rdot = a G^n L^m reduces to a G^n at m=0", _ok)
+
+# Eq. (7.102) closed form against stepping the same law.
+_a, _n, _D0, _mox, _Lp = 1.5e-4, 0.5, 0.05, 0.30, 0.8
+_worst = 0.0
+for _T in (1.0, 5.0, 16.0):
+    _closed = _eq.port_diameter_after(_D0, _mox, _T, _a, _n, _Lp, 0.0)
+    _D, _dt = _D0, 1e-4
+    for _ in range(int(_T / _dt)):
+        _D += 2.0 * _eq.regression_rate_humble(_mox / (_m.pi * (_D / 2) ** 2),
+                                               _a, _n, _Lp, 0.0) * _dt
+    _worst = max(_worst, abs(_closed - _D))
+check("Humble Eq 7.102 closed form matches a stepped burn", _worst < 1e-6,
+      f"worst {_worst*1e6:.3f} um over 16 s")
+
+# F = lambda[mdot ve + (pe-pa)Ae] against F = Cf Pc At, same gas.
+_worst = 0.0
+for _g, _Tc, _M in ((1.22, 3000.0, 25.0), (1.15, 3300.0, 22.0), (1.25, 2800.0, 28.0)):
+    _R = _eq.gas_constant(_M)
+    _cs = _m.sqrt(_R * _Tc) / _eq.vandenkerckhove(_g)
+    _At = _m.pi * (0.03 / 2) ** 2
+    for _eps in (3.0, 6.0, 10.0):
+        _Me = _eq.exit_mach(_eps, _g)
+        _Pe = _eq.exit_pressure(3.0e6, _Me, _g)
+        _ve = _eq.exit_velocity(_Me, _g, _Tc, _M)
+        _mdot = 3.0e6 * _At / _cs
+        _Fh = _eq.thrust_humble(_mdot, _ve, _Pe, 0.0, _eps * _At, 1.0)
+        _Fc = _eq.thrust(_eq.thrust_coefficient(3.0e6, 0.0, _eps, _Me, _g),
+                         3.0e6, _At)
+        _worst = max(_worst, abs(_Fh - _Fc) / _Fc)
+check("Humble thrust form equals the Cf form", _worst < 1e-9,
+      f"worst {_worst*100:.2e}%")
+
+# The total-flux iteration converges.
+_G, _rd, _mf, _it = _eq.converge_total_flux(0.5, _eq.port_area(1, 0.030),
+                                            _eq.burn_area(1, 0.030, 0.8),
+                                            920.0, 1.5e-4, 0.5, 0.8, 0.0)
+check("Humble total-flux iteration converges", 0 < _it < 20 and _G > 0,
+      f"{_it} iterations, G={_G:.0f} kg/m2s")
+
 print(f"\n{'='*46}\n  {PASS} passed, {FAIL} failed\n{'='*46}")
 sys.exit(1 if FAIL else 0)
