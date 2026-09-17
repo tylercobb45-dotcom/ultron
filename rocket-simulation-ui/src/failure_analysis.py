@@ -106,9 +106,122 @@ class VehicleConfig:
     # Operations
     rail_length_m: float = 5.18          # 17 ft rail
     harness_rating_n: float = 4000.0     # shock cord / harness rated load
-    target_altitude_ft: float = 50000.0
+    target_altitude_ft: float = 50000.0   # legacy single goal; see goals below
+    #: The rocket's own goals. Empty means "use target_altitude_ft", so every
+    #: profile saved before goals existed still grades the way it did.
+    goals: list = field(default_factory=list)
     min_pressure_sf: float = 2.0         # required safety factor on pressure parts
     min_structure_sf: float = 1.5        # required safety factor on structure
+
+
+# ---------------------------------------------------------------------------
+# Mission goals
+#
+# A rocket's goal is not always "reach an altitude". A competition airframe
+# has a ceiling it must stay under; a Mach-1 attempt is graded on speed, not
+# height; a recovery test cares about how hard it lands. One target altitude
+# could not express any of those, so a goal is now a row: what to measure,
+# which way the comparison runs, and the number.
+# ---------------------------------------------------------------------------
+
+#: What a goal can be measured against. Each entry is
+#: (key, label, unit shown, how to read it out of a finished flight).
+GOAL_METRICS = {
+    "apogee":        ("Apogee", "ft",
+                      lambda r: r.apogee_ft),
+    "max_speed":     ("Max speed", "ft/s",
+                      lambda r: r.max_speed_ms * FT_PER_M),
+    "max_mach":      ("Max Mach", "",
+                      lambda r: r.max_mach),
+    "max_g":         ("Max acceleration", "g",
+                      lambda r: r.max_g),
+    "landing_speed": ("Landing speed", "ft/s",
+                      lambda r: r.landing_speed_ms * FT_PER_M),
+    "drift":         ("Drift from the pad", "ft",
+                      lambda r: r.drift_m * FT_PER_M),
+    "time_to_apogee": ("Time to apogee", "s",
+                       lambda r: r.time_to_apogee_s),
+    "burnout_alt":   ("Altitude at burnout", "ft",
+                      lambda r: r.burnout_alt_ft),
+}
+
+AT_LEAST = "at_least"
+AT_MOST = "at_most"
+
+
+@dataclass
+class Goal:
+    """One thing the flight is graded on."""
+    metric: str = "apogee"
+    comparison: str = AT_LEAST
+    value: float = 50000.0
+    #: Counts as met, but without margin, inside this fraction of the value.
+    #: A goal cleared by 0.5% is met the way a coin landing on its edge is
+    #: heads, and saying so is more use than a bare pass.
+    margin_pct: float = 5.0
+
+    def label(self):
+        name, unit, _read = GOAL_METRICS.get(self.metric,
+                                             (self.metric, "", None))
+        direction = "at least" if self.comparison == AT_LEAST else "at most"
+        shown = f"{self.value:,.2f}".rstrip("0").rstrip(".")
+        return f"{name} {direction} {shown}{(' ' + unit) if unit else ''}"
+
+    def unit(self):
+        return GOAL_METRICS.get(self.metric, ("", "", None))[1]
+
+    def evaluate(self, rep):
+        """(status, achieved, detail) for a finished report."""
+        entry = GOAL_METRICS.get(self.metric)
+        if entry is None:
+            return NO_DATA, 0.0, f"Unknown goal metric {self.metric!r}."
+        name, unit, read = entry
+        try:
+            achieved = float(read(rep))
+        except Exception:
+            return NO_DATA, 0.0, f"{name} was not produced by this flight."
+
+        unit_s = (" " + unit) if unit else ""
+        if self.value == 0:
+            slack = achieved
+            frac = 0.0
+        else:
+            slack = (achieved - self.value if self.comparison == AT_LEAST
+                     else self.value - achieved)
+            frac = slack / abs(self.value) * 100.0
+
+        met = slack >= 0
+        if not met:
+            status = CRITICAL
+            detail = (f"{name} {achieved:,.1f}{unit_s} misses the goal of "
+                      f"{'at least' if self.comparison == AT_LEAST else 'at most'} "
+                      f"{self.value:,.1f}{unit_s} by {abs(slack):,.1f}{unit_s} "
+                      f"({frac:+.1f}%).")
+        elif frac < self.margin_pct:
+            status = CAUTION
+            detail = (f"{name} {achieved:,.1f}{unit_s} meets the goal, but only "
+                      f"by {slack:,.1f}{unit_s} ({frac:+.1f}%). Wind, a warm "
+                      f"motor or a heavier build could put it the other side.")
+        else:
+            status = OK
+            detail = (f"{name} {achieved:,.1f}{unit_s} meets the goal of "
+                      f"{'at least' if self.comparison == AT_LEAST else 'at most'} "
+                      f"{self.value:,.1f}{unit_s}, by {slack:,.1f}{unit_s} "
+                      f"({frac:+.1f}%).")
+        return status, achieved, detail
+
+    def to_dict(self):
+        return {"metric": self.metric, "comparison": self.comparison,
+                "value": self.value, "margin_pct": self.margin_pct}
+
+    @staticmethod
+    def from_dict(d):
+        d = d or {}
+        return Goal(metric=str(d.get("metric", "apogee")),
+                    comparison=(AT_MOST if str(d.get("comparison")) == AT_MOST
+                                else AT_LEAST),
+                    value=float(d.get("value", 0.0) or 0.0),
+                    margin_pct=float(d.get("margin_pct", 5.0) or 5.0))
 
 
 @dataclass
@@ -122,6 +235,13 @@ class Report:
     max_mach: float = 0.0
     max_q_pa: float = 0.0
     max_g: float = 0.0
+    # Read by the goal metrics above.
+    max_speed_ms: float = 0.0
+    landing_speed_ms: float = 0.0
+    drift_m: float = 0.0
+    time_to_apogee_s: float = 0.0
+    burnout_alt_ft: float = 0.0
+    goals: list = field(default_factory=list)      # (Goal, status, achieved)
     burnout_t: float | None = None
     has_engine_data: bool = False
     not_evaluated: list[str] = field(default_factory=list)
@@ -233,6 +353,19 @@ def analyze(flight, vehicle: VehicleConfig | None = None,
     i_q, rep.max_q_pa = _arg_max(q)
     i_g, max_a = _arg_max(acc)
     rep.max_g = max_a / G0
+
+    # The quantities goals are graded against, read off the same flight as
+    # every other check so a goal can never disagree with what sits beside it.
+    rep.max_speed_ms = max((abs(x) for x in vel), default=0.0)
+    rep.time_to_apogee_s = t[i_ap] if i_ap < len(t) else 0.0
+    rep.drift_m = abs(flight[-1].get("downrange") or 0.0) if flight else 0.0
+    # Landing speed from the last stretch of descent, not the single final
+    # sample, which can land mid-step.
+    tail = [abs(r.get("velocity") or 0.0) for r in flight[-5:]]
+    rep.landing_speed_ms = (sum(tail) / len(tail)) if tail else 0.0
+    burn_i = next((i for i in range(len(thrust) - 1, -1, -1)
+                   if (thrust[i] or 0.0) > 0), None)
+    rep.burnout_alt_ft = (alt[burn_i] * FT_PER_M) if burn_i is not None else 0.0
 
     _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap)
     _events(rep, t, alt, vel, thrust, chute, i_ap, i_q, i_mach, summary)
@@ -516,26 +649,63 @@ def _mass_buildup_check(rep, v, flight, mass_props):
 
 
 def _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap):
+    # Goals the rocket carries itself. A profile with none keeps grading
+    # against target_altitude_ft, which is what every older rocket has.
+    goals = [g if isinstance(g, Goal) else Goal.from_dict(g)
+             for g in (v.goals or [])]
+    if not goals:
+        goals = [Goal(metric="apogee", comparison=AT_LEAST,
+                      value=v.target_altitude_ft)]
+    for n, goal in enumerate(goals, start=1):
+        status, achieved, detail = goal.evaluate(rep)
+        rep.goals.append((goal, status, achieved))
+        unit = (" " + goal.unit()) if goal.unit() else ""
+        rep.checks.append(Check(
+            f"M-{n:02d}", "Mission", goal.label(), status,
+            f"{achieved:,.1f}{unit}",
+            f"{goal.value:,.1f}{unit}", detail,
+            _goal_advice(goal, status, flight, rep),
+            t_event=t[i_ap] if i_ap < len(t) else None))
+    # Every goal has to pass for the flight to have done what it was asked.
+    rep.goal_met = all(st != CRITICAL for _g, st, _a in rep.goals)
+    if rep.goals and rep.goals[0][0].metric == "apogee":
+        rep.target_ft = rep.goals[0][0].value
+
+    _mission_sizing(rep, v, flight, t, alt, thrust, mass, i_ap)
+
+
+def _goal_advice(goal, status, flight, rep):
+    # What to do about a goal that was missed, or only just made.
+    if status == OK:
+        return "Goal met with margin."
+    if goal.metric == "apogee" and goal.comparison == AT_LEAST:
+        return _shortfall_advice(flight, rep, goal.value)
+    if goal.metric == "apogee" and goal.comparison == AT_MOST:
+        return ("Over the ceiling. Add ballast, or move to a smaller motor - "
+                "the same levers as a shortfall, pulled the other way.")
+    if goal.metric in ("max_speed", "max_mach"):
+        if goal.comparison == AT_LEAST:
+            return ("Speed follows thrust-to-weight and drag. A punchier "
+                    "motor or a finer nose buys Mach; ballast costs it.")
+        return ("Too fast. A longer, softer burn reaches the same altitude "
+                "at a lower peak speed.")
+    if goal.metric == "landing_speed":
+        return ("Descent rate scales with the square root of wing loading: a "
+                "canopy 40% wider drops the landing speed by about 30%.")
+    if goal.metric == "drift":
+        return ("Drift is wind times hang time. A smaller drogue, or a main "
+                "deployed lower, cuts it more than anything else.")
+    if goal.metric == "max_g":
+        return ("Peak g is set by thrust at ignition against liftoff mass. A "
+                "motor with a softer initial spike lowers it.")
+    return "Goal not met."
+
+
+def _mission_sizing(rep, v, flight, t, alt, thrust, mass, i_ap):
+    # The target-altitude check that used to live here is gone: the
+    # goal loop above grades it, along with every other kind of goal,
+    # and two checks under the same ID is worse than one.
     target_ft = v.target_altitude_ft
-    shortfall_ft = rep.apogee_ft - target_ft
-    pct = (shortfall_ft / target_ft * 100.0) if target_ft else 0.0
-    if rep.goal_met:
-        status = OK if pct >= 5 else CAUTION
-        detail = (f"Apogee {rep.apogee_ft:,.0f} ft clears the {target_ft:,.0f} ft goal "
-                  f"by {shortfall_ft:,.0f} ft ({pct:+.1f}%).")
-        rec = ("Margin is under 5% - wind, a warm motor, or a heavier build could "
-               "put this back under the goal." if status == CAUTION else
-               "Goal met with margin.")
-    else:
-        status = CRITICAL
-        detail = (f"Apogee {rep.apogee_ft:,.0f} ft falls {abs(shortfall_ft):,.0f} ft "
-                  f"({pct:+.1f}%) short of the {target_ft:,.0f} ft goal.")
-        rec = _shortfall_advice(flight, rep, target_ft)
-    rep.checks.append(Check(
-        "M-01", "Mission", "Target altitude", status,
-        f"{rep.apogee_ft:,.0f} ft", f"{target_ft:,.0f} ft",
-        detail, rec, t_event=t[i_ap],
-        margin=(rep.apogee_ft - target_ft) / target_ft if target_ft else None))
 
     # Sizing sanity: ideal delta-v available vs. delta-v the goal needs.
     m0 = mass[0] if mass else 0.0

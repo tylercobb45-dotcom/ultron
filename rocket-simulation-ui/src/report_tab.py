@@ -171,6 +171,9 @@ class FlightReportWidget(QtWidgets.QWidget):
                 form.addRow(self._binder.label_for(attr, label) + ":", edit)
             vbox.addWidget(group)
 
+        # Goals sit under the fields they are graded against.
+        self._build_goals(vbox)
+
         vbox.addStretch()
         scroll.setWidget(host)
         outer.addWidget(scroll)
@@ -293,9 +296,130 @@ class FlightReportWidget(QtWidgets.QWidget):
                 except ValueError:
                     continue
             setattr(cfg, attr, int(round(value)) if attr == "fin_count" else value)
+        cfg.goals = self.goals()
         for _label, attr, _lib in _MATERIAL_FIELDS:
             setattr(cfg, attr, self._material_combos[attr].currentText())
         return cfg
+
+    # ---- goals -------------------------------------------------------------
+    def _build_goals(self, parent_layout):
+        # A rocket's goal is not always "reach an altitude": a competition
+        # airframe has a ceiling to stay under, a Mach attempt is graded on
+        # speed, a recovery test on how hard it lands. Each row is one goal,
+        # and they travel with the rocket.
+        box = QtWidgets.QGroupBox("Mission goals")
+        outer = QtWidgets.QVBoxLayout(box)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        hint = QtWidgets.QLabel(
+            "What this rocket is trying to do. Every goal has to be met for "
+            "the flight to pass. With none set, it is graded against the "
+            "target altitude above.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{theme.PALETTE['text_dim']}; font-size:9pt;")
+        outer.addWidget(hint)
+
+        self.goal_table = QtWidgets.QTableWidget(0, 4)
+        self.goal_table.setHorizontalHeaderLabels(
+            ["Measure", "Must be", "Value", "Unit"])
+        head = self.goal_table.horizontalHeader()
+        head.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        head.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        self.goal_table.verticalHeader().setVisible(False)
+        self.goal_table.setMaximumHeight(160)
+        outer.addWidget(self.goal_table)
+
+        row = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton("Add goal")
+        add.clicked.connect(lambda: self._add_goal_row(fa.Goal()))
+        remove = QtWidgets.QPushButton("Remove selected")
+        remove.clicked.connect(self._remove_goal_row)
+        row.addWidget(add)
+        row.addWidget(remove)
+        row.addStretch(1)
+        outer.addLayout(row)
+        parent_layout.addWidget(box)
+
+    def _add_goal_row(self, goal):
+        table = self.goal_table
+        r = table.rowCount()
+        table.insertRow(r)
+
+        metric = QtWidgets.QComboBox()
+        for key, (label, _unit, _read) in fa.GOAL_METRICS.items():
+            metric.addItem(label, key)
+        idx = metric.findData(goal.metric)
+        metric.setCurrentIndex(idx if idx >= 0 else 0)
+        table.setCellWidget(r, 0, metric)
+
+        comparison = QtWidgets.QComboBox()
+        comparison.addItem("at least", fa.AT_LEAST)
+        comparison.addItem("at most", fa.AT_MOST)
+        comparison.setCurrentIndex(0 if goal.comparison == fa.AT_LEAST else 1)
+        table.setCellWidget(r, 1, comparison)
+
+        value = QtWidgets.QDoubleSpinBox()
+        value.setDecimals(2)
+        value.setRange(0.0, 1e7)
+        value.setValue(float(goal.value))
+        table.setCellWidget(r, 2, value)
+
+        unit = QtWidgets.QLabel()
+        unit.setStyleSheet(f"color:{theme.PALETTE['text_dim']};")
+        table.setCellWidget(r, 3, unit)
+
+        def sync_unit():
+            key = metric.currentData()
+            unit.setText(fa.GOAL_METRICS.get(key, ("", "", None))[1] or "-")
+        metric.currentIndexChanged.connect(lambda _i: (sync_unit(),
+                                                       self._goals_changed()))
+        comparison.currentIndexChanged.connect(lambda _i: self._goals_changed())
+        value.valueChanged.connect(lambda _v: self._goals_changed())
+        sync_unit()
+        self._goals_changed()
+
+    def _remove_goal_row(self):
+        rows = sorted({i.row() for i in self.goal_table.selectedIndexes()},
+                      reverse=True)
+        if not rows and self.goal_table.rowCount():
+            rows = [self.goal_table.rowCount() - 1]
+        for r in rows:
+            self.goal_table.removeRow(r)
+        self._goals_changed()
+
+    def _goals_changed(self):
+        # Re-grade the flight already on screen, so editing a goal shows its
+        # effect at once instead of waiting for the next run.
+        if getattr(self, "_flight", None):
+            self._reanalyze()
+
+    def goals(self):
+        """The goals as set in the table."""
+        out = []
+        table = getattr(self, "goal_table", None)
+        if table is None:
+            return out
+        for r in range(table.rowCount()):
+            metric = table.cellWidget(r, 0)
+            comparison = table.cellWidget(r, 1)
+            value = table.cellWidget(r, 2)
+            if not (metric and comparison and value):
+                continue
+            out.append(fa.Goal(metric=metric.currentData(),
+                               comparison=comparison.currentData(),
+                               value=float(value.value())))
+        return out
+
+    def set_goals(self, goals):
+        table = getattr(self, "goal_table", None)
+        if table is None:
+            return
+        table.setRowCount(0)
+        for g in goals or []:
+            self._add_goal_row(g)
 
     def get_config(self) -> dict:
         """Vehicle geometry, materials and limits as plain values, for saving
@@ -310,6 +434,8 @@ class FlightReportWidget(QtWidgets.QWidget):
                     for attr, (edit, _f, _d) in self._fields.items()})
         for _label, attr, _lib in _MATERIAL_FIELDS:
             cfg[attr] = self._material_combos[attr].currentText()
+        # The rocket's own goals travel with it.
+        cfg["goals"] = [g.to_dict() for g in self.goals()]
         return cfg
 
     def apply_config(self, cfg: dict):
@@ -334,6 +460,12 @@ class FlightReportWidget(QtWidgets.QWidget):
                     self._binder.set(attr, number, dec)
                 else:
                     edit.setText(str(value))
+        # Goals: a profile that carries none falls back to its target
+        # altitude, which is what every rocket saved before goals existed has.
+        if "goals" in cfg:
+            self.set_goals([fa.Goal.from_dict(g) for g in (cfg.get("goals") or [])])
+        else:
+            self.set_goals([])
         self._update_material_note()
         if self._flight:
             self._reanalyze()
