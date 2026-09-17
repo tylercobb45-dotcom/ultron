@@ -78,6 +78,9 @@ _SITE_FIELDS = [
     ("Relative humidity (%)", "humidity_pct", 1.0, 0, ""),
     ("Wind speed (m/s)", "wind_speed_ms", 1.0, 1,
      "Steady wind at the reference height."),
+    ("Wind direction (deg)", "wind_dir_deg", 1.0, 0,
+     "The direction the wind blows TOWARD. Only the Stability Test tab used "
+     "to hold this, so it never reached the flight."),
     ("Wind measured at (m)", "wind_ref_height_m", 1.0, 1, ""),
     ("Wind shear exponent", "wind_shear_exp", 1.0, 3,
      "0.143 is the open-terrain 1/7 power law. Higher over trees or buildings."),
@@ -439,6 +442,29 @@ class VehicleTabWidget(QtWidgets.QWidget):
             self._refresh_summary()
 
     # ---- building the model objects ---------------------------------------
+    def set_value(self, attr, value):
+        """Write one field, in the unit the attribute is stored in.
+
+        The counterpart to _value(). Launch conditions are shown in more than
+        one place in the app - the launch site here, and the wind and rail
+        angle again on the Stability Test tab, where you are setting up a
+        launch. They are ONE value with several views, so the views need a
+        way to write back to it rather than keeping copies that drift.
+        """
+        entry = self._fields.get(attr)
+        if not entry:
+            return False
+        edit, factor, dec = entry
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        if isinstance(edit, unit_fields.UnitField):
+            self._binder.set(attr, number, dec)
+        else:
+            edit.setText(f"{number * factor:.{dec}f}")
+        return True
+
     def _value(self, attr, fallback=0.0):
         """Value in the unit this attribute is stored in."""
         entry = self._fields.get(attr)
@@ -490,6 +516,7 @@ class VehicleTabWidget(QtWidgets.QWidget):
         site = atmosphere_mod.LaunchSite()
         for attr in ("elevation_m", "latitude_deg", "temperature_c",
                      "pressure_pa", "humidity_pct", "wind_speed_ms",
+                     "wind_dir_deg",
                      "wind_ref_height_m", "wind_shear_exp", "rail_length_m",
                      "rail_angle_deg"):
             setattr(site, attr, self._value(attr, getattr(site, attr)))

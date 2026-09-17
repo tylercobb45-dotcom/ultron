@@ -1630,7 +1630,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.tabs.addTab(_scrollable(self.engine_section), "Engine")
 
         # --- Aerodynamics: airframe shape, recovery, and the drag it makes ---
-        self.vehicle_tab = VehicleTabWidget()
+        # on_changed keeps the Stability Test tab's view of the launch
+        # conditions in step when they are edited on this one.
+        self.vehicle_tab = VehicleTabWidget(
+            on_changed=self.refresh_shared_launch_views)
         self.aero_tab = AeroAnalysisWidget(
             get_airframe=lambda: self.vehicle_tab.airframe(),
             # effective_dry_cg(), not the typed field: when mass components
@@ -1771,32 +1774,43 @@ class RocketSimulationUI(QtWidgets.QWidget):
         settings_layout.addStretch()
         self.tabs.addTab(_scrollable(settings_widget), "Settings")
 
-        # Launch Conditions Tab
-        launch_tab = QtWidgets.QWidget()
-        launch_layout = QtWidgets.QFormLayout(launch_tab)
-        self.start_altitude_input = QtWidgets.QLineEdit()
-        self.start_altitude_input.setPlaceholderText("Start Altitude (m)")
-        self.start_altitude_input.setText("0")
-        launch_layout.addRow("Start Altitude (m):", self.start_altitude_input)
-        self.temperature_input = QtWidgets.QLineEdit()
-        self.temperature_input.setPlaceholderText("Temperature (°C)")
-        self.temperature_input.setText("15")
-        launch_layout.addRow("Temperature (°C):", self.temperature_input)
-        self.humidity_input = QtWidgets.QLineEdit()
-        self.humidity_input.setPlaceholderText("Humidity (%)")
-        self.humidity_input.setText("50")
-        launch_layout.addRow("Humidity (%):", self.humidity_input)
+        # The standalone "Launch Conditions" tab is gone.
+        #
+        # Field elevation, temperature and humidity were set there, AGAIN on
+        # the Aerodynamics tab's launch site, and the wind and rail angle a
+        # third time on the Stability Test tab. Three places for one set of
+        # conditions, and only the launch site reached the flight model - so
+        # the other two could say something different from what flew.
+        #
+        # The launch site is now the single copy. These three widgets stay
+        # alive because the air-density readout and the profile format use
+        # them, but they are views onto the launch site rather than a second
+        # set of values: writing one writes through, and they follow when the
+        # site changes.
+        self.start_altitude_input = QtWidgets.QLineEdit("0")
+        self.temperature_input = QtWidgets.QLineEdit("15")
+        self.humidity_input = QtWidgets.QLineEdit("50")
+        for widget in (self.start_altitude_input, self.temperature_input,
+                       self.humidity_input):
+            widget.setVisible(False)
         self.start_altitude_input.textChanged.connect(self.update_air_density)
         self.temperature_input.textChanged.connect(self.update_air_density)
         self.humidity_input.textChanged.connect(self.update_air_density)
-        self.tabs.addTab(_scrollable(launch_tab), "Launch Conditions")
 
         # Add the Stability Test tab last (to the right)
         launch_anim_tab = QtWidgets.QWidget()
         launch_anim_layout = QtWidgets.QVBoxLayout(launch_anim_tab)
 
-        wind_group = QtWidgets.QGroupBox("Wind Simulation")
+        wind_group = QtWidgets.QGroupBox(
+            "Launch conditions - shared with the Aerodynamics tab")
         wind_layout = QtWidgets.QFormLayout(wind_group)
+        shared_note = QtWidgets.QLabel(
+            "One set of conditions, shown here and on the Aerodynamics tab's "
+            "launch site. Change either and both follow, and it is what flies.")
+        shared_note.setWordWrap(True)
+        shared_note.setStyleSheet(
+            f"color:{app_theme.PALETTE['text_dim']}; font-size:9pt;")
+        wind_layout.addRow(shared_note)
 
         self.wind_speed_input = QtWidgets.QDoubleSpinBox()
         self.wind_speed_input.setRange(0, 100)
@@ -2180,6 +2194,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # "Launch" said nothing about that and sat confusingly next to
         # "Launch Conditions", which is the atmosphere and the pad.
         self.tabs.addTab(_scrollable(launch_anim_tab), "Stability Test")
+
+        # Wire the shared launch conditions together. Everything below is one
+        # value with two views; nothing here keeps its own copy.
+        self._bind_shared_launch_conditions()
 
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -3629,28 +3647,18 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 'cp_override': self.center_of_pressure_input.value()}
 
     def _stability_launch_site(self):
-        """The launch site as set on THIS tab.
+        """The launch site the stability test flies.
 
-        The Wind Speed, Wind Direction and Launch Angle boxes on the Stability
-        Test tab used to change nothing at all: the flight was built from the
-        Aerodynamics tab's launch site, so you could set a 20 m/s crosswind
-        here, press Launch, and watch a rocket fly in dead calm. They are the
-        conditions you are testing stability against, so they are the ones it
-        flies.
+        This used to copy the Stability Test tab's wind and rail angle over
+        the launch site, because those boxes were a separate set of values
+        that otherwise changed nothing. They are now VIEWS of the launch site
+        rather than copies of it, so there is nothing left to override - the
+        site already carries whatever was typed on either tab.
         """
         try:
-            site = self.vehicle_tab.launch_site()
+            return self.vehicle_tab.launch_site()
         except Exception:
             return None
-        try:
-            site.wind_speed_ms = float(self.wind_speed_input.value())
-        except Exception:
-            pass
-        try:
-            site.rail_angle_deg = float(self.launch_angle_input.value())
-        except Exception:
-            pass
-        return site
 
     def stability_envelope(self, rows):
         """How the static margin behaved across the ascent.
@@ -4471,6 +4479,89 @@ class RocketSimulationUI(QtWidgets.QWidget):
             return float(value) * factors[unit_idx]
         except Exception:
             return 0.0
+
+    def _bind_shared_launch_conditions(self):
+        """Make every view of the launch conditions the same value.
+
+        The wind, the wind direction and the rail angle are set on the
+        Stability Test tab, where you are setting up a launch, and on the
+        Aerodynamics tab's launch site, which is what the flight model reads.
+        Field elevation, temperature and humidity used to have a third home
+        of their own. They are all one set of conditions, so each pair is
+        bound both ways here: editing either view writes the launch site, and
+        the other view follows.
+
+        Guarded against the obvious loop - a write that came from the binding
+        does not bounce back.
+        """
+        self._binding_shared = False
+
+        def bind(widget, attr, to_widget=None, from_widget=None):
+            signal = (widget.valueChanged if hasattr(widget, "valueChanged")
+                      else widget.textChanged)
+
+            def push(_value=None):
+                if self._binding_shared:
+                    return
+                self._binding_shared = True
+                try:
+                    raw = (widget.value() if hasattr(widget, "value")
+                           else widget.text())
+                    value = from_widget(raw) if from_widget else raw
+                    self.vehicle_tab.set_value(attr, value)
+                except Exception:
+                    pass
+                finally:
+                    self._binding_shared = False
+
+            signal.connect(push)
+            self._shared_views.append((widget, attr, to_widget))
+
+        self._shared_views = []
+        bind(self.wind_speed_input, "wind_speed_ms")
+        bind(self.wind_direction_input, "wind_dir_deg")
+        bind(self.launch_angle_input, "rail_angle_deg")
+        bind(self.start_altitude_input, "elevation_m",
+             from_widget=lambda t: float(t or 0))
+        bind(self.temperature_input, "temperature_c",
+             from_widget=lambda t: float(t or 0))
+        bind(self.humidity_input, "humidity_pct",
+             from_widget=lambda t: float(t or 0))
+        # And pull the other way whenever the vehicle tab changes.
+        try:
+            self.vehicle_tab.changed.connect(self.refresh_shared_launch_views)
+        except Exception:
+            pass
+        self.refresh_shared_launch_views()
+
+    def refresh_shared_launch_views(self):
+        """Push the launch site back out to the views that show it."""
+        if getattr(self, "_binding_shared", False):
+            return
+        site = None
+        try:
+            site = self.vehicle_tab.launch_site()
+        except Exception:
+            return
+        self._binding_shared = True
+        try:
+            for widget, attr, _to in getattr(self, "_shared_views", []):
+                value = getattr(site, attr, None)
+                if value is None:
+                    continue
+                if hasattr(widget, "setValue"):
+                    lo = widget.minimum() if hasattr(widget, "minimum") else None
+                    hi = widget.maximum() if hasattr(widget, "maximum") else None
+                    v = float(value)
+                    if lo is not None:
+                        v = max(lo, min(hi, v))
+                    widget.setValue(type(widget.value())(v))
+                else:
+                    widget.setText(f"{float(value):g}")
+        except Exception:
+            pass
+        finally:
+            self._binding_shared = False
 
     def _engine_preview_vehicle(self):
         """The loaded rocket, for the Engine tab's quick flight preview.
