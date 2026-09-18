@@ -183,7 +183,10 @@ class Goal:
 
         unit_s = (" " + unit) if unit else ""
         if self.value == 0:
-            slack = achieved
+            # A zero goal still has a direction. "at most 0" is met only by
+            # zero or less; treating the slack as the achieved value passed
+            # every positive result against a ceiling of nothing.
+            slack = (achieved if self.comparison == AT_LEAST else -achieved)
             frac = 0.0
         else:
             slack = (achieved - self.value if self.comparison == AT_LEAST
@@ -661,7 +664,9 @@ def _mission_checks(rep, v, flight, t, alt, thrust, mass, i_ap):
         rep.goals.append((goal, status, achieved))
         unit = (" " + goal.unit()) if goal.unit() else ""
         rep.checks.append(Check(
-            f"M-{n:02d}", "Mission", goal.label(), status,
+            # G-nn, not M-nn: M-02 is the delta-v check and M-03 the mass
+            # buildup, so a second goal used to land on top of one of them.
+            f"G-{n:02d}", "Mission", goal.label(), status,
             f"{achieved:,.1f}{unit}",
             f"{goal.value:,.1f}{unit}", detail,
             _goal_advice(goal, status, flight, rep),
@@ -679,6 +684,12 @@ def _goal_advice(goal, status, flight, rep):
     if status == OK:
         return "Goal met with margin."
     if goal.metric == "apogee" and goal.comparison == AT_LEAST:
+        if status == CAUTION:
+            # Met, but inside the margin - it did not fall short, so the
+            # shortfall advice ("closing this gap needs ~1.0x the current
+            # altitude") is nonsense here.
+            return ("Margin is under 5% - wind, a warm motor or a heavier "
+                    "build could put this back under the goal.")
         return _shortfall_advice(flight, rep, goal.value)
     if goal.metric == "apogee" and goal.comparison == AT_MOST:
         return ("Over the ceiling. Add ballast, or move to a smaller motor - "
@@ -721,8 +732,13 @@ def _mission_sizing(rep, v, flight, t, alt, thrust, mass, i_ap):
         dv_ideal = isp * G0 * math.log(m0 / mf)
         dv_gravity_loss = G0 * burn_t
         dv_available = dv_ideal - dv_gravity_loss
-        # Drag-free burnout speed needed to coast to the target altitude.
-        dv_needed = math.sqrt(2 * G0 * (v.target_altitude_ft / FT_PER_M))
+        # Drag-free burnout speed needed to coast to the altitude the rocket
+        # is actually aiming for. rep.target_ft is the first apogee goal when
+        # there is one and falls back to target_altitude_ft otherwise - using
+        # the raw field told a goal-driven rocket its motor was undersized
+        # against a 50,000 ft target it had never been given.
+        goal_alt_ft = rep.target_ft or v.target_altitude_ft
+        dv_needed = math.sqrt(2 * G0 * (goal_alt_ft / FT_PER_M))
         ratio = dv_available / dv_needed if dv_needed else 0.0
         # Drag makes the real requirement higher than the drag-free number,
         # so anything under ~1.3x is already in trouble.
@@ -732,7 +748,7 @@ def _mission_sizing(rep, v, flight, t, alt, thrust, mass, i_ap):
             f"{dv_available:,.0f} m/s", f"{dv_needed:,.0f} m/s (drag-free)",
             f"Ideal delta-v {dv_ideal:,.0f} m/s minus {dv_gravity_loss:,.0f} m/s gravity "
             f"loss over a {burn_t:.1f} s burn leaves {dv_available:,.0f} m/s. A drag-free "
-            f"coast to {v.target_altitude_ft:,.0f} ft needs {dv_needed:,.0f} m/s, and drag "
+            f"coast to {goal_alt_ft:,.0f} ft needs {dv_needed:,.0f} m/s, and drag "
             f"raises that materially.",
             "Ratio under 1.3 means the motor is undersized for the goal even before "
             "drag is counted - add total impulse or take mass out."

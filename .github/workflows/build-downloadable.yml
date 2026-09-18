@@ -41,7 +41,6 @@ jobs:
           - os: windows-latest
             label: Windows
             asset: JARVIS-Downloadable-Windows
-            release: true
           # Linux is kept as a TEST, not a download. It is the only runner
           # where the frozen app can actually be launched and checked that it
           # stays up - Windows and macOS runners cannot do that headless.
@@ -50,7 +49,6 @@ jobs:
           - os: ubuntu-latest
             label: Linux (smoke test only)
             asset: JARVIS-SmokeTest-Linux
-            release: false
 
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +147,20 @@ jobs:
         # job and is not something anyone downloads.
         run: |
           cd builds
-          rm -rf JARVIS-SmokeTest-Linux
+          # Only the downloadable build is published. Anything staged as a
+          # smoke test is dropped here rather than zipped. Matching on the
+          # name means a job has to be NAMED JARVIS-Downloadable-* to reach
+          # the Releases page - the previous version carried release:true and
+          # release:false matrix keys that nothing read, so the exclusion
+          # rested on a literal folder name and renaming an asset would have
+          # silently published it.
+          for d in */; do
+            name="${d%/}"
+            case "$name" in
+              JARVIS-Downloadable-*) ;;
+              *) echo "not a download, skipping: $name"; rm -rf "$name" ;;
+            esac
+          done
           for d in */; do
             name="${d%/}"
             (cd "$name" && zip -qr "../${name}.zip" .)

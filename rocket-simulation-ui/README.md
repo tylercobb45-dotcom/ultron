@@ -306,10 +306,13 @@ the airframe, the run says so rather than silently picking a side.
 
 The downloadable builds are made by
 [`.github/workflows/build-downloadable.yml`](../.github/workflows/build-downloadable.yml),
-which runs both physics suites and then `build_simple.py` on Windows, macOS
-and Linux runners. Pushing a `v*` tag builds all three and attaches the zips
-to a GitHub release; the workflow can also be started by hand from the Actions
-tab. To build one locally:
+which runs both physics suites and then `build_simple.py`. **Windows is the
+only download** - `JARVIS-Downloadable-Windows.zip` is the single release
+asset. A Linux job also runs, but purely as a smoke test: it is the only
+runner that can launch the frozen app headless and confirm it stays up, and
+it publishes nothing. Pushing a `v*` tag builds and attaches the Windows zip;
+the workflow can also be started by hand from the Actions tab, and given a
+version there it creates the tag itself. To build one locally:
 
 ```
 pip install pyinstaller

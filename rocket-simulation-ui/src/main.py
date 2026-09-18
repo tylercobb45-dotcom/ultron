@@ -21,6 +21,8 @@ from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
+import recovery as recovery_mod
+import failure_analysis as fa
 from aero_tab import AeroAnalysisWidget  # Cd vs Mach analysis tab
 from sections import EngineSection, AerodynamicsSection, AssemblyPanel
 import theme as app_theme
@@ -4824,10 +4826,24 @@ class RocketSimulationUI(QtWidgets.QWidget):
                             max(0.0, mass_props.propellant_mass_kg))
                         shift = float(cg_override) - loaded
                         if abs(shift) > 1e-9:
-                            mass_props.dry_cg_m = (mass_props.effective_dry_cg()
-                                                   + shift)
+                            # Slide the components along rather than deleting
+                            # them. Dropping the buildup took the component
+                            # MASS with it - dry mass fell back to the typed
+                            # field, 5 kg became 20 kg - and took the real
+                            # pitch inertia too, so the vehicle both weighed
+                            # the wrong amount and turned at the wrong rate.
+                            # The override is about where the CG sits, not
+                            # about how much the rocket weighs.
+                            buildup = mass_props.buildup
+                            if buildup is not None and mass_props._has_components():
+                                for component in getattr(buildup, "components",
+                                                         None) or []:
+                                    component.position_m = (
+                                        component.position_m + shift)
+                            else:
+                                mass_props.dry_cg_m = (
+                                    mass_props.effective_dry_cg() + shift)
                             mass_props.propellant_cg_m += shift
-                            mass_props.buildup = None   # the shift replaces it
                     results, summary = flight_model.run_flight(
                         points, airframe, site, recovery_system, mass_props,
                         output_dt=max(0.02, float(time_step or 0.05)),
@@ -5449,7 +5465,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
             mass_a = result_a['mass']
             mass_b = result_b['mass']
             if self.unit_select.currentIndex() == 1:  # Imperial
-                alt_disp = y_pos * 3.28084
+                # y_pos rides the plotted curve, which is already in feet when
+                # the display is Imperial - so it is NOT converted again here.
+                # Velocity, mass and the forces are still raw SI and are.
+                alt_disp = y_pos
                 alt_unit = 'ft'
                 vel_disp = (vel_a + (vel_b - vel_a) * frac) * 3.28084
                 vel_unit = 'ft/s'
@@ -5537,45 +5556,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 idx = min(range(len(times)), key=lambda i: abs(times[i] - xdata))
                 xval = times[idx]
                 yval = tooltip_values[idx]
-                # Unit conversion for tooltip
-                unit_label = tooltip_label
+                # tooltip_values are ALREADY in the displayed unit - the plot
+                # converted them before drawing. Converting again here showed
+                # altitude at 10.76x in Imperial, feet turned into feet a
+                # second time. Take the series and its unit as they are.
+                unit_label = f"{tooltip_label} ({tooltip_unit})" if tooltip_unit \
+                    else tooltip_label
                 unit_value = yval
                 unit_time = xval
-                if self.unit_select.currentIndex() == 1:  # Imperial
-                    if tooltip_label == 'Altitude':
-                        unit_value = yval * 3.28084
-                        unit_label = 'Altitude (ft)'
-                    elif tooltip_label == 'Velocity':
-                        unit_value = yval * 3.28084
-                        unit_label = 'Velocity (ft/s)'
-                    elif tooltip_label == 'Mass':
-                        unit_value = yval * 2.20462
-                        unit_label = 'Mass (lb)'
-                    elif tooltip_label == 'Acceleration':
-                        unit_value = yval * 3.28084
-                        unit_label = 'Acceleration (ft/s²)'
-                    elif tooltip_label in ('Thrust','Drag','Net Force'):
-                        unit_value = yval * 0.224809
-                        unit_label = f'{tooltip_label} (lbf)'
-                    elif tooltip_label == 'G-Load':
-                        unit_label = 'G-Load (g)'
-                        unit_value = yval
-                    unit_time = xval  # Time stays in seconds
-                else:
-                    # Metric
-                    if tooltip_label == 'Altitude':
-                        unit_label = 'Altitude (m)'
-                    elif tooltip_label == 'Velocity':
-                        unit_label = 'Velocity (m/s)'
-                    elif tooltip_label == 'Mass':
-                        unit_label = 'Mass (kg)'
-                    elif tooltip_label == 'Acceleration':
-                        unit_label = 'Acceleration (m/s²)'
-                    elif tooltip_label in ('Thrust','Drag','Net Force'):
-                        unit_label = f'{tooltip_label} (N)'
-                    elif tooltip_label == 'G-Load':
-                        unit_label = 'G-Load (g)'
-                        unit_value = yval
                 tooltip_text = f"Time: {unit_time:.2f} s\n{unit_label}: {unit_value:.2f}"
                 QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), tooltip_text, self.canvas)
             else:
@@ -5755,7 +5743,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 factor = table[0]
             return value * factor
 
-        LEN = [1.0, 0.01, 0.0254]          # m, cm, in - the legacy order
+        # These index the Simulation tab's own combos, so they must match them
+        # exactly: ["m", "mm", "in"] and ["kg", "g", "lb"]. This said cm for
+        # index 1 where the combo says mm, so every legacy profile storing a
+        # millimetre loaded ten times too big - a 76.2 mm body came in as
+        # 762 mm. Read the combo, do not assume the order.
+        LEN = [1.0, 0.001, 0.0254]         # m, mm, in - matches the combo
         diameter = si('body_diameter', 'body_diameter_unit', LEN, 0.10)
         fin_len = si('fin_length', 'fin_length_unit', LEN, diameter)
         fin_thick = si('fin_thickness', 'fin_thickness_unit', LEN, 0.003)
@@ -5783,7 +5776,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
         except (TypeError, ValueError):
             cd = 0.0
 
-        MASS = [1.0, 0.001, 0.45359237]        # kg, g, lb - the legacy order
+        lc = (config or {}).get('launch_conditions') or {}
+        ws = (config or {}).get('wind_settings') or {}
+        st_angle = st.get('launch_angle', 0.0)
+
+        def number(value, fallback):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        MASS = [1.0, 0.001, 0.45359237]    # kg, g, lb - matches the combo
         liftoff = si('mass', 'mass_unit', MASS, 0.0)
         prop_mass = si('prop_mass', 'prop_mass_unit', MASS, 0.0)
         if prop_mass >= liftoff > 0:
@@ -5796,15 +5799,6 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         # Launch conditions come from the profile too, so the site does not
         # stay set to the previous rocket's field and wind.
-        lc = (config or {}).get('launch_conditions') or {}
-        ws = (config or {}).get('wind_settings') or {}
-        st_angle = st.get('launch_angle', 0.0)
-
-        def number(value, fallback):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return fallback
 
         # Start from a COMPLETE set of defaults, then overlay what the
         # profile gives. Listing only the fields that can be derived leaves
@@ -5824,6 +5818,10 @@ class RocketSimulationUI(QtWidgets.QWidget):
         fields.update({"fin_count": 3, "cd_override": 0.0,
                        "dry_mass_kg": 1.0, "propellant_mass_kg": 0.0,
                        "dry_cg_m": 0.0, "propellant_cg_m": 0.0})
+        # Wind direction reads off the profile like the speed does. It is not
+        # a LaunchSite float that the defaults sweep picks up automatically,
+        # so leaving it out silently reset a legacy profile's 270 deg to 0.
+        fields["wind_dir_deg"] = number(ws.get('wind_direction'), 0.0)
         fields.update({
                 "nose_length_m": nose_length,
                 "body_diameter_m": diameter,
@@ -5859,7 +5857,32 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # No components: the legacy mass is a single typed number, and a
             # stale buildup from the previous rocket would override it.
             "mass_components": [],
+            # Recovery from the profile's own parachute fields. Without this
+            # the PREVIOUS rocket's canopies stayed rigged, so a legacy rocket
+            # came down under someone else's main.
+            "recovery": self._legacy_recovery_config(config),
         }
+
+    def _legacy_recovery_config(self, config):
+        """A recovery system from a legacy profile's parachute fields."""
+        rp = (config or {}).get('rocket_parameters') or {}
+
+        def number(value, fallback=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        # chute_size is stored as an AREA in the legacy format; the recovery
+        # model wants a diameter.
+        area = number(rp.get('chute_size'))
+        diameter = math.sqrt(4.0 * area / math.pi) if area > 0 else 0.0
+        deploy_alt = number(rp.get('chute_height'))
+        cd = number(rp.get('chute_cd'), 1.5) or 1.5
+        if diameter <= 0:
+            return recovery_mod.RecoverySystem().to_dict()
+        return recovery_mod.RecoverySystem.single_deploy(
+            diameter_m=diameter, cd=cd, altitude_m=deploy_alt).to_dict()
 
     def _legacy_vehicle_config(self, config):
         """A goal for a profile that carries none.
@@ -5870,9 +5893,22 @@ class RocketSimulationUI(QtWidgets.QWidget):
         profile with no goal of its own gets the app default rather than
         inheriting one.
         """
-        cfg = dict(self.flight_report.default_config()
-                   if hasattr(self.flight_report, 'default_config') else {})
+        # Every vehicle field, at its default, not just the target. The old
+        # version asked for a default_config() that does not exist, so the
+        # hasattr was always False and this returned a dict carrying ONLY the
+        # target altitude - every other vehicle field (materials, wall
+        # thicknesses, rail length, safety factors) went on leaking from the
+        # previous rocket, which is exactly the leak it was written to close.
+        defaults = fa.VehicleConfig()
+        cfg = {}
+        for name in dir(defaults):
+            if name.startswith('_'):
+                continue
+            value = getattr(defaults, name, None)
+            if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+                cfg[name] = value
         cfg['target_altitude_ft'] = 50000.0
+        cfg['goals'] = []
         return cfg
 
     def get_profiles_dir(self):
