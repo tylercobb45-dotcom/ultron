@@ -1658,6 +1658,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.flight_report = FlightReportWidget()
         self.tabs.addTab(self.flight_report, "Flight Report")
 
+        # What these three tabs hold before any rocket is loaded. A profile
+        # that omits a section - or carries one only partly filled, as the
+        # v1.0 presets do with a vehicle section holding nothing but
+        # target_altitude_ft - is completed from this, so loading a rocket
+        # second gives the same machine as loading it first.
+        self._pristine_sections = {
+            'engine': self.engine_lab.get_config(),
+            'vehicle': self.flight_report.get_config(),
+            'airframe': self.vehicle_tab.get_config(),
+        }
+
         # --- Rockets: the saved-rocket library. First tab, because picking a
         # rocket is where a session starts. ---
         self.rocket_library = RocketLibraryWidget(
@@ -5884,6 +5895,37 @@ class RocketSimulationUI(QtWidgets.QWidget):
         return recovery_mod.RecoverySystem.single_deploy(
             diameter_m=diameter, cd=cd, altitude_m=deploy_alt).to_dict()
 
+    def _apply_section(self, tab, name, stored, legacy=None):
+        """Load one section so nothing of the previous rocket survives it.
+
+        Two passes, because a section that is PRESENT is not a section that is
+        COMPLETE. The v1.0 presets carry a vehicle section holding one key,
+        target_altitude_ft; applying only that left body length, wall
+        thicknesses, materials and safety factors at the previous rocket's
+        value. So:
+
+          1. a complete base - what the tab held before any rocket was
+             loaded, with whatever this profile's older fields imply laid
+             over it - which puts every field the tab owns at a known value;
+          2. the section as actually stored, over the top.
+
+        The two are applied separately rather than merged into one dict
+        because they do not share a unit convention. `_units` is the marker
+        that says which convention a section's numbers are written in, so it
+        belongs to the layer its numbers came from. Merging it across layers
+        hands a profile's numbers to the wrong reader: dropping an SI marker
+        onto the stored v2.0 sections, which carry none, read every one of
+        their metres as a display figure and loaded a 98 mm body as 98 m.
+        """
+        base = dict((getattr(self, '_pristine_sections', None) or {}).get(name)
+                    or {})
+        if legacy:
+            base.update(legacy)
+        if base:
+            tab.apply_config(base)
+        if stored:
+            tab.apply_config(stored)
+
     def _legacy_vehicle_config(self, config):
         """A goal for a profile that carries none.
 
@@ -6152,26 +6194,30 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # flies 5,198 ft as itself, with a goal inherited from a third
             # state. That is how one rocket reports three different apogees.
             #
-            # So a missing section is now filled from what the profile does
-            # carry, rather than left as whatever was there before.
-            if hasattr(self, 'engine_lab') and config.get('engine'):
-                self.engine_lab.apply_config(config['engine'])
+            # And a section that is PRESENT is not one that is COMPLETE: the
+            # v1.0 presets carry a vehicle section holding a single key,
+            # target_altitude_ft, so applying only what is stored left body
+            # length, wall thicknesses, materials and safety factors at the
+            # previous rocket's value - a 2.5 m rocket kept a 3.1 m body from
+            # whatever was loaded before it. A profile with no engine section
+            # at all kept the previous motor outright, grain and tank and
+            # injector: the same failure by another route.
+            #
+            # So every section is laid over a complete base rather than
+            # trusted whole. See _apply_section.
+            if hasattr(self, 'engine_lab'):
+                self._apply_section(self.engine_lab, 'engine',
+                                    config.get('engine'))
 
             if hasattr(self, 'flight_report'):
-                vehicle_cfg = config.get('vehicle')
-                if vehicle_cfg:
-                    self.flight_report.apply_config(vehicle_cfg)
-                else:
-                    self.flight_report.apply_config(
-                        self._legacy_vehicle_config(config))
+                self._apply_section(self.flight_report, 'vehicle',
+                                    config.get('vehicle'),
+                                    self._legacy_vehicle_config(config))
 
             if hasattr(self, 'vehicle_tab'):
-                airframe_cfg = config.get('airframe')
-                if airframe_cfg:
-                    self.vehicle_tab.apply_config(airframe_cfg)
-                else:
-                    self.vehicle_tab.apply_config(
-                        self._legacy_airframe_config(config))
+                self._apply_section(self.vehicle_tab, 'airframe',
+                                    config.get('airframe'),
+                                    self._legacy_airframe_config(config))
 
             # Thrust curve. Shipped presets store a project-relative path so
             # they work on any machine; anything the user picked themselves is
