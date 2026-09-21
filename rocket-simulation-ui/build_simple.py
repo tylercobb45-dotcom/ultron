@@ -93,6 +93,12 @@ def main():
         f"--paths={src_dir}",
         "--hidden-import=engine_equations",
         "--hidden-import=flight_equations",
+        # The motor sizing solver. engine_lab imports it normally so the
+        # analysis should find it, but it is named here beside the other two
+        # physics modules for the same reason they are: so a refactor that
+        # moves an import behind a path insert cannot silently drop it, and
+        # the Engine tab die on the Generate button in the frozen build only.
+        "--hidden-import=motor_designer",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",
         "--hidden-import=scipy.optimize",

@@ -126,6 +126,24 @@ FIELDS: dict[str, U.Quantity] = {q.key: q for q in [
     _q("molar_mass", "Molar mass",
        dimension="mass", metric="g", imperial="g", decimals=2,
        help="Per mole; grams per mole is universal in both systems."),
+    # --- motor requirements ------------------------------------------------
+    # What a motor has to DELIVER, as opposed to what it is made of. These
+    # feed the requirements-driven motor designer, and they are the numbers a
+    # team writes on a requirements sheet - so they get unit selectors like
+    # everything else, because half of that sheet will be in pounds.
+    _q("req_total_impulse", "Total impulse required", dimension="impulse",
+       metric="N.s", imperial="lbf.s", decimals=0),
+    _q("req_avg_thrust", "Average thrust required", dimension="force",
+       metric="N", imperial="lbf", decimals=0),
+    _q("req_peak_thrust", "Peak thrust limit", dimension="force",
+       metric="N", imperial="lbf", decimals=0),
+    _q("req_burn_time", "Burn time required", dimension="time",
+       metric="s", imperial="s", decimals=2),
+    _q("req_min_isp", "Minimum specific impulse"),     # seconds either system
+    _q("req_max_pc", "Chamber pressure limit", dimension="pressure",
+       metric="MPa", imperial="psi", decimals=2),
+    _q("req_max_diameter", "Maximum motor diameter", **_LEN_SMALL),
+    _q("req_max_length", "Maximum motor length", **_LEN_SMALL),
     # --- simulation --------------------------------------------------------
     _q("timestep", "Time step", dimension="time", metric="s",
        imperial="s", decimals=4),
@@ -185,6 +203,24 @@ class UnitField(QtWidgets.QWidget):
         self._si = float(si)
         self._render()
 
+    # -- optional fields ---------------------------------------------------
+    # Most fields here are geometry and always hold a number. A few are
+    # requirements, where "nothing typed" has to stay distinguishable from
+    # "zero": a blank thrust box means "size it for whatever the rest
+    # implies", and a zero one would mean "design a motor that does not
+    # push". Rendering 0.00 into an empty box erases that difference, so
+    # these two keep it.
+    def clear(self):
+        """Empty the box, so it reads as no value rather than as zero."""
+        self._updating = True
+        self._si = 0.0
+        self.edit.setText("")
+        self._rendered_text = ""
+        self._updating = False
+
+    def is_blank(self) -> bool:
+        return not self.edit.text().strip()
+
     def _render(self):
         self._updating = True
         shown = self.quantity.from_si(self._si, self.unit())
@@ -222,6 +258,12 @@ class UnitField(QtWidgets.QWidget):
         happened to move a combo.
         """
         if self._updating:
+            return
+        if self.is_blank():
+            # Changing the unit on an empty optional box must not fill it in.
+            # Rendering here would put a 0.00 in every requirement the user
+            # deliberately left alone, and the designer would then read those
+            # as real requirements of zero.
             return
         self._render()
 

@@ -29,7 +29,7 @@ BUNDLE = os.path.join(ROOT, "dist", "JARVIS_Rocket_Simulation")
 # running program imports, with the two physics files first because they are
 # the ones PyInstaller cannot see for itself.
 REQUIRED_MODULES = [
-    "engine_equations", "flight_equations",
+    "engine_equations", "flight_equations", "motor_designer",
     "aero", "aero_tab", "atmosphere", "component_library", "datasheet",
     "engine_lab", "failure_analysis", "flight_model", "graphs_tab",
     "live_code_viewer", "mass_model", "mass_tab", "materials",

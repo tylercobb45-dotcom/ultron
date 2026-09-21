@@ -1626,7 +1626,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
             # So the Engine tab's flight preview describes the rocket the app
             # is actually configured for, instead of its own three boxes that
             # nothing updates when a vehicle is loaded.
-            get_vehicle=self._engine_preview_vehicle)
+            get_vehicle=self._engine_preview_vehicle,
+            # A generated motor knows what its tank and chamber have to be
+            # made of and how thick. Those fields live on the Flight Report,
+            # which is where they get graded, so hand them over instead of
+            # printing a recommendation the user has to retype.
+            on_materials=self._apply_motor_materials)
         self.engine_section = EngineSection(self.engine_lab,
                                             self.get_profiles_dir)
         self.tabs.addTab(_scrollable(self.engine_section), "Engine")
@@ -4575,6 +4580,31 @@ class RocketSimulationUI(QtWidgets.QWidget):
             pass
         finally:
             self._binding_shared = False
+
+    def _apply_motor_materials(self, mats):
+        """Put a generated motor's pressure parts onto the Flight Report.
+
+        set_values, not apply_config: apply_config reads a missing "goals"
+        key as "this rocket has no goals" and would wipe the ones the user
+        set, which is right for a whole profile load and wrong for dropping
+        in three materials.
+        """
+        if not mats or not hasattr(self, 'flight_report'):
+            return
+        values = {}
+        for part, attr, wall_attr in (
+                ("tank", "tank_material", "tank_wall_m"),
+                ("chamber", "chamber_material", "chamber_wall_m"),
+                ("nozzle", "nozzle_material", None)):
+            info = mats.get(part) or {}
+            if info.get("name"):
+                values[attr] = info["name"]
+            if wall_attr and info.get("wall_m"):
+                values[wall_attr] = float(info["wall_m"])
+        if values:
+            self.flight_report.set_values(values)
+            self.invalidate_flight_results(
+                "Motor materials changed - run a simulation to re-grade it.")
 
     def _engine_preview_vehicle(self):
         """The loaded rocket, for the Engine tab's quick flight preview.

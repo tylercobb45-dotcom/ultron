@@ -58,6 +58,7 @@ def _generated_curves_dir():
 
 from hybrid_sim import Engine, Rocket, EngineModel, FlightModel, FUELS, metrics as hs_metrics  # noqa: E402
 from hybrid_sim.config import INJECTOR_TYPES  # noqa: E402
+import motor_designer  # noqa: E402  (after the hybrid_sim path insert)
 
 # (label, Engine field, display factor [shown = field * factor], decimals, tooltip)
 # The form is generated from these lists, so adding a field to the physics and
@@ -155,6 +156,42 @@ _GAS_FIELDS = [
      "Ratio of specific heats of the combustion products."),
     ("Molar mass (g/mol)", "MW", 1.0, 1,
      "Mean molar mass of the exhaust."),
+]
+
+
+# The requirements brief: what the motor has to DO, as opposed to what it is
+# made of. Same (label, key, quantity, tooltip) shape as the geometry tables
+# above, so the form is generated the same way and every box gets a unit
+# selector. An empty box means "no requirement", never "requires zero" - see
+# motor_designer.Requirements.
+_REQ_FIELDS = [
+    ("Total impulse", "total_impulse_ns", "req_total_impulse",
+     "The size of the motor, and the single most useful requirement. Area "
+     "under the whole thrust curve. Leave the rest blank and a motor will "
+     "still be sized around this."),
+    ("Average thrust", "avg_thrust_n", "req_avg_thrust",
+     "Mean thrust over the burn. With the total impulse this fixes the burn "
+     "time, since impulse is thrust times time."),
+    ("Burn time", "burn_time_s", "req_burn_time",
+     "How long it burns. Any two of impulse, thrust and burn time fix the "
+     "third - give two and leave the other blank."),
+    ("Minimum Isp", "min_isp_s", "req_min_isp",
+     "Specific impulse floor, in seconds. N2O with a hydrocarbon grain "
+     "realistically delivers 180-200 s at sea level; asking for much more "
+     "than that cannot be met by geometry alone."),
+    ("Peak thrust limit", "max_peak_thrust_n", "req_peak_thrust",
+     "Structural ceiling on the thrust spike. A blowdown hybrid starts hard "
+     "and decays, so the peak runs well above the average - this is what "
+     "protects the airframe, and it wins over the thrust requirement."),
+    ("Chamber pressure limit", "max_chamber_pressure_pa", "req_max_pc",
+     "Ceiling on chamber pressure, which is what sizes the case wall. "
+     "Leave blank to let the designer sit it below tank pressure."),
+    ("Maximum diameter", "max_diameter_m", "req_max_diameter",
+     "Outside diameter of the finished motor, walls and nozzle exit "
+     "included. Normally the inside of the airframe."),
+    ("Maximum length", "max_length_m", "req_max_length",
+     "Overall length of the assembled motor: forward hardware, tank, "
+     "bulkhead, chamber, grain and bell."),
 ]
 
 
@@ -333,7 +370,8 @@ class EngineLabWidget(QtWidgets.QWidget):
     """Design a hybrid engine, run its internal-ballistics model, and (optionally)
     hand the resulting thrust curve off to the main Simulation tab."""
 
-    def __init__(self, on_send_to_simulation=None, get_vehicle=None, parent=None):
+    def __init__(self, on_send_to_simulation=None, get_vehicle=None,
+                 on_materials=None, parent=None):
         super().__init__(parent)
         self._on_send_to_simulation = on_send_to_simulation
         # Returns the rocket the rest of the app is configured for, as
@@ -345,7 +383,10 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._last_metrics = None
         self._last_engine = None      # the Engine dataclass that produced it
         self._fields = {}             # field name -> QLineEdit
+        self._req_fields = {}         # requirement name -> UnitField
         self._loading = False         # suppress "helpful" edits while loading
+        self._on_materials = on_materials
+        self._last_design = None      # last motor_designer.DesignResult
         self._build_ui()
         self._apply_preset("Goddard baseline")
 
@@ -358,7 +399,15 @@ class EngineLabWidget(QtWidgets.QWidget):
         splitter.setChildrenCollapsible(False)
 
         left = QtWidgets.QWidget()
-        left.setMinimumWidth(330)
+        # Wide enough that the unit selector beside each field is actually on
+        # screen. At 330 the form fitted the label and the number and clipped
+        # the dropdown clean off the right edge, so every dimension in the
+        # motor was showing without the unit it was in - and the requirements
+        # panel, whose labels are longer, made it worse. This is the form's
+        # own minimum (measured, not guessed) plus the scrollbar and margins;
+        # below it the panel grows a horizontal scrollbar and hides the units
+        # again.
+        left.setMinimumWidth(560)
         left_layout = QtWidgets.QVBoxLayout(left)
         left_layout.setSpacing(6)
 
@@ -380,6 +429,12 @@ class EngineLabWidget(QtWidgets.QWidget):
         scroll.setWidgetResizable(True)
         form_host = QtWidgets.QWidget()
         form_layout = QtWidgets.QVBoxLayout(form_host)
+
+        # Requirements first: this is the top-down way in, where you say what
+        # the motor has to do and the geometry below is filled in for you.
+        # Everything it writes lands in the ordinary fields, so the form stays
+        # the thing you edit afterwards.
+        form_layout.addWidget(self._build_requirements())
 
         self.fuel_combo = QtWidgets.QComboBox()
         self.fuel_combo.addItems(list(FUELS.keys()))
@@ -441,7 +496,10 @@ class EngineLabWidget(QtWidgets.QWidget):
 
         form_layout.addStretch()
         scroll.setWidget(form_host)
-        left_layout.addWidget(scroll)
+        # Stretch 1 so the form - the thing being edited - keeps the spare
+        # height. Without it the design report, which is also expanding,
+        # takes an equal share and squeezes the form down to a few rows.
+        left_layout.addWidget(scroll, 1)
 
         self.run_button = QtWidgets.QPushButton("Run Engine Simulation")
         self.run_button.clicked.connect(self._run_engine)
@@ -486,13 +544,286 @@ class EngineLabWidget(QtWidgets.QWidget):
         # window until the first run, which reads as a broken panel.
         theme.style_figure(self.figure)
         self.canvas = FigureCanvas(self.figure)
-        right_layout.addWidget(self.canvas)
+
+        # The plots and the design report share this side rather than the
+        # report living in the left column. It is a wide table - requirement,
+        # asked, delivered, verdict, margin - and in a 560 px column every row
+        # wrapped onto four lines while squeezing the form it was meant to
+        # explain down to three visible fields. Here it gets the full width,
+        # and the curve it was measured from is one tab away.
+        self.right_tabs = QtWidgets.QTabWidget()
+        self.right_tabs.addTab(self.canvas, "Thrust Curve")
+        self.right_tabs.addTab(self._build_design_report(), "Design Report")
+        self.right_tabs.setTabEnabled(1, False)
+        right_layout.addWidget(self.right_tabs)
         splitter.addWidget(right)
 
         # Roughly a third for the form, two thirds for the plots, and draggable.
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter)
+
+    # ---- requirements-driven design --------------------------------------
+    def _build_requirements(self):
+        """The 'say what you need, get a motor' panel."""
+        group = QtWidgets.QGroupBox("Design a Motor to Requirements")
+        outer = QtWidgets.QVBoxLayout(group)
+
+        blurb = QtWidgets.QLabel(
+            "Fill in what the motor has to do and how much room it has. "
+            "Every box is optional except giving it some idea of size - a "
+            "total impulse, or a thrust and a burn time. What you leave "
+            "blank is not a requirement and will not be treated as one. "
+            "The generated motor lands in the fields below, where you can "
+            "change anything you like.")
+        blurb.setWordWrap(True)
+        outer.addWidget(blurb)
+
+        form = QtWidgets.QFormLayout()
+        for label, key, qkey, tip in _REQ_FIELDS:
+            widget = unit_fields.UnitField(unit_fields.FIELDS[qkey])
+            widget.setToolTip(tip)
+            widget.clear()
+            self._req_fields[key] = widget
+            row_label = QtWidgets.QLabel(label + ":")
+            row_label.setToolTip(tip)
+            form.addRow(row_label, widget)
+
+        # "Choose for me" is the first entry on both, and the default. A team
+        # that has already settled on a fuel says so; one that has not should
+        # not have to guess, which is the whole point of the panel.
+        self.req_fuel_combo = QtWidgets.QComboBox()
+        self.req_fuel_combo.addItem("Choose the best fuel")
+        self.req_fuel_combo.addItems(list(FUELS.keys()))
+        self.req_fuel_combo.setToolTip(
+            "Left on 'choose', the designer sizes a motor with each of the "
+            "well-characterised fuels and keeps whichever meets the brief.")
+        form.addRow("Fuel:", self.req_fuel_combo)
+
+        self.req_inj_combo = QtWidgets.QComboBox()
+        self.req_inj_combo.addItem("Choose for me")
+        self.req_inj_combo.addItems(list(INJECTOR_TYPES.keys()))
+        self.req_inj_combo.setToolTip(
+            "Injector style. It sets the discharge coefficient and how many "
+            "holes the pattern is allowed to have.")
+        form.addRow("Injector:", self.req_inj_combo)
+
+        self.req_sf_edit = QtWidgets.QLineEdit("2.0")
+        self.req_sf_edit.setToolTip(
+            "Safety factor on the yield strength of the tank and chamber. "
+            "This sizes the walls and so decides how much bore is left "
+            "inside the diameter you allowed.")
+        form.addRow("Pressure safety factor:", self.req_sf_edit)
+        outer.addLayout(form)
+
+        self.generate_button = QtWidgets.QPushButton("Generate Motor")
+        self.generate_button.setToolTip(
+            "Size a complete motor against these requirements and fill in "
+            "every field below.")
+        self.generate_button.clicked.connect(self._generate_motor)
+        outer.addWidget(self.generate_button)
+
+        self.req_status = QtWidgets.QLabel("No motor generated yet.")
+        self.req_status.setWordWrap(True)
+        self.req_status.setTextFormat(QtCore.Qt.RichText)
+        outer.addWidget(self.req_status)
+        return group
+
+    def _build_design_report(self):
+        """Where the compliance table lives: visible, and out of the scroll.
+
+        It started inside the requirements group, which put the one thing the
+        user actually needs to read - did this motor meet the brief? - below
+        the fold of a scrolling form, behind the button they had just pressed.
+        Out here it is always on screen, and it gets its own scrollbar so a
+        long list of caveats cannot squash the buttons above it.
+        """
+        self.design_group = QtWidgets.QGroupBox("Motor design report")
+        box = QtWidgets.QVBoxLayout(self.design_group)
+        box.setContentsMargins(6, 6, 6, 6)
+        self.design_report = QtWidgets.QLabel()
+        self.design_report.setWordWrap(True)
+        self.design_report.setTextFormat(QtCore.Qt.RichText)
+        self.design_report.setAlignment(QtCore.Qt.AlignTop)
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(self.design_report)
+        box.addWidget(area)
+        return self.design_group
+
+    def _si_to_form(self, cfg: dict) -> dict:
+        """An all-SI engine dict in the convention this form actually stores.
+
+        The form is not uniformly SI and cannot be made so without breaking
+        every profile already saved. The unit-aware fields hold SI; the plain
+        line edits hold DISPLAY text, and one of them - fill fraction - is a
+        percentage. Handing that field an SI 0.85 puts "0.85" in a box that
+        means percent, and _read_engine then divides by 100 and fills the
+        tank to 0.85%: a motor sized for 11,600 N.s fired 1,084 N.s and
+        reported itself a J instead of an L.
+
+        So the conversion happens here, at the one boundary where an outside
+        SI dict meets the form, driven by the same display-factor table the
+        form is generated from - a new plain field with a factor cannot
+        reintroduce this by being forgotten.
+        """
+        out = dict(cfg)
+        decimals = {spec[1]: spec[3] for spec in _ALL_FIELDS}
+        for key, value in cfg.items():
+            widget = self._fields.get(key)
+            if widget is None or isinstance(widget, unit_fields.UnitField):
+                continue                    # unit fields genuinely take SI
+            factor = _LEGACY_DISPLAY_FACTOR.get(key, 1.0)
+            if abs(factor - 1.0) < 1e-12:
+                continue
+            try:
+                out[key] = f"{float(value) * factor:.{decimals.get(key, 3)}f}"
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _read_requirements(self):
+        """The brief as the designer wants it, in SI."""
+        req = motor_designer.Requirements()
+        for _label, key, _qkey, _tip in _REQ_FIELDS:
+            widget = self._req_fields.get(key)
+            if widget is None:
+                continue
+            # An empty box is "no requirement". UnitField reads blank as 0.0,
+            # which is the same number the dataclass uses for "not asked for",
+            # so the two agree - but be explicit rather than relying on it.
+            value = 0.0 if widget.is_blank() else widget.value_si()
+            setattr(req, key, max(0.0, float(value)))
+
+        fuel = self.req_fuel_combo.currentText()
+        req.fuel = fuel if fuel in FUELS else ""
+        inj = self.req_inj_combo.currentText()
+        req.injector = inj if inj in INJECTOR_TYPES else ""
+
+        # Tank fill temperature comes from the form rather than a box of its
+        # own: it is already an engine field, and having it in two places is
+        # how the two drift apart.
+        req.tank_temp_k = self._field_si("T_tank_0", 293.0) or 293.0
+        try:
+            req.structural_sf = max(1.0, float(self.req_sf_edit.text()))
+        except (TypeError, ValueError):
+            req.structural_sf = 2.0
+        return req
+
+    def _generate_motor(self):
+        self.error_label.setText("")
+        try:
+            req = self._read_requirements()
+        except Exception as exc:
+            self.req_status.setText(
+                f"<b style='color:{theme.PALETTE['critical']}'>"
+                f"Could not read the requirements: {exc}</b>")
+            return
+
+        self.generate_button.setEnabled(False)
+        self.req_status.setText("Sizing...")
+        QtWidgets.QApplication.processEvents()
+
+        def progress(frac, message):
+            self.req_status.setText(
+                f"Sizing... {message} ({frac * 100:.0f}%)")
+            QtWidgets.QApplication.processEvents()
+
+        try:
+            design = motor_designer.design_motor(req, progress=progress)
+        except Exception as exc:
+            self.req_status.setText(
+                f"<b style='color:{theme.PALETTE['critical']}'>"
+                f"Could not size a motor: {exc}</b>")
+            traceback.print_exc()
+            return
+        finally:
+            self.generate_button.setEnabled(True)
+
+        self._last_design = design
+        # Into the ordinary form, through the ordinary loader - so a generated
+        # motor is in exactly the state a loaded one would be, and saving the
+        # rocket saves it like any other.
+        self.apply_config(self._si_to_form(design.engine_fields))
+        pal = theme.PALETTE
+        self.req_status.setText(
+            f"<b style='color:{pal.get('good', '#3fb950')}'>Motor generated "
+            f"and filled in below &mdash; it meets every requirement.</b> "
+            f"See the design report."
+            if design.met_all else
+            f"<b style='color:{pal['critical']}'>Motor generated, but it "
+            f"does not meet every requirement.</b> The design report says "
+            f"which, and by how much.")
+        self.design_report.setText(self._design_report(design))
+        self.right_tabs.setTabEnabled(1, True)
+        # Show the answer to what was asked, not the curve. The curve is the
+        # evidence and it is one tab away; the verdict is the point.
+        self.right_tabs.setCurrentIndex(1)
+
+        # Hand the pressure-vessel choices to whatever owns the vehicle's
+        # material fields, if anything does. The motor knows what it is made
+        # of; the Flight Report is where that gets graded.
+        if self._on_materials is not None:
+            try:
+                self._on_materials(design.materials)
+            except Exception:
+                traceback.print_exc()
+
+        # Run it straight away. A generated motor with an empty plot beside it
+        # looks like it has not been checked, and it has - this just shows the
+        # curve the compliance table was measured from.
+        self._run_engine()
+
+    def _design_report(self, design) -> str:
+        """The compliance table, the length budget and the materials."""
+        pal = theme.PALETTE
+        ok_col, bad_col = pal.get('good', '#3fb950'), pal['critical']
+        rows = []
+        for c in design.compliance:
+            colour = ok_col if c.met else bad_col
+            mark = "meets" if c.met else "MISSES"
+            rows.append(
+                f"<tr><td>{c.label}</td><td>{c.required}</td>"
+                f"<td><b>{c.achieved}</b></td>"
+                f"<td style='color:{colour}'>{mark}</td>"
+                f"<td><i>{c.note}</i></td></tr>")
+        table = ("<table cellspacing='0' cellpadding='3'>"
+                 "<tr><th align='left'>Requirement</th><th align='left'>Asked"
+                 "</th><th align='left'>Delivered</th><th align='left'></th>"
+                 "<th align='left'></th></tr>" + "".join(rows) + "</table>")
+
+        headline = ("<b>Motor meets every requirement.</b>"
+                    if design.met_all else
+                    f"<b style='color:{bad_col}'>Motor does not meet every "
+                    f"requirement.</b> The closest fit is below; the rows "
+                    f"marked MISSES say by how much.")
+
+        parts = "".join(
+            f"<tr><td>{k}</td><td align='right'>{v * 1000:.0f} mm</td></tr>"
+            for k, v in design.envelope.items() if not k.startswith("_"))
+        length = ("<table cellspacing='0' cellpadding='2'>" + parts
+                  + "</table>")
+
+        mats = []
+        for part in ("tank", "chamber", "nozzle"):
+            info = design.materials.get(part) or {}
+            wall = (f" &mdash; {info['wall_m'] * 1000:.2f} mm wall"
+                    if info.get("wall_m") else "")
+            mats.append(
+                f"<li><b>{part.title()}:</b> {info.get('name', '?')}{wall}"
+                f"<br><i>{info.get('note', '')}</i></li>")
+
+        notes = "".join(f"<li>{n}</li>" for n in design.notes)
+        notes_html = f"<br><b>Worth knowing</b><ul>{notes}</ul>" if notes else ""
+
+        return (
+            f"{headline}<br><br>{table}"
+            f"<br><b>Chosen fuel:</b> {design.fuel_name} &nbsp; "
+            f"<b>Injector:</b> {design.injector_name} &nbsp; "
+            f"<i>({design.runs} simulations)</i>"
+            f"<br><br><b>Length budget</b>{length}"
+            f"<br><b>Pressure parts</b><ul>{''.join(mats)}</ul>"
+            f"{notes_html}")
 
     def get_config(self) -> dict:
         """The engine design as plain values, for saving into a rocket profile."""

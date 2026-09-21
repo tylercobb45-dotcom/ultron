@@ -438,6 +438,31 @@ class FlightReportWidget(QtWidgets.QWidget):
         cfg["goals"] = [g.to_dict() for g in self.goals()]
         return cfg
 
+    def set_values(self, values: dict):
+        """Set a few named fields without disturbing anything else.
+
+        apply_config is not a substitute for this: it treats a missing
+        "goals" key as "this rocket has no goals" and clears them, which is
+        right when a whole profile is being loaded and destructive when
+        something just wants to drop in a wall thickness. Dimensioned values
+        are SI, like everywhere else.
+        """
+        for attr, value in (values or {}).items():
+            if attr in self._material_combos:
+                idx = self._material_combos[attr].findText(str(value))
+                if idx >= 0:
+                    self._material_combos[attr].setCurrentIndex(idx)
+            elif attr in self._fields:
+                edit, _factor, dec = self._fields[attr]
+                if isinstance(edit, unit_fields.UnitField):
+                    try:
+                        self._binder.set(attr, float(value), dec)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    edit.setText(str(value))
+        self._update_material_note()
+
     def apply_config(self, cfg: dict):
         """Restore a vehicle configuration saved by get_config()."""
         if not cfg:

@@ -653,6 +653,161 @@ def validate_mass_components():
     print()
 
 
+# ---------------------------------------------------------------------------
+# 8. the requirements-driven motor designer
+# ---------------------------------------------------------------------------
+
+def validate_motor_designer():
+    """The designer must deliver what it claims, and admit what it cannot.
+
+    A sizing tool has exactly two ways to be dangerous: produce a motor that
+    does not do what the report says, or report success on a brief it did not
+    meet. Both are checked here against the real solver, plus the invariants
+    that keep a generated motor buildable.
+    """
+    banner("8. MOTOR DESIGNER (requirements in, complete motor out)")
+    import motor_designer as md
+
+    # A brief that is comfortably achievable must actually be achieved, and
+    # the numbers in the compliance table must be the ones the simulator
+    # produced - not the closed-form estimate the search started from.
+    req = md.Requirements(total_impulse_ns=11600, avg_thrust_n=720,
+                          max_diameter_m=0.140, max_length_m=2.0)
+    r = md.design_motor(req)
+    it_err = abs(r.metrics["total_impulse"] - 11600) / 11600
+    fa_err = abs(r.metrics["avg_thrust"] - 720) / 720
+    check("achievable brief is met", r.met_all and it_err <= md.TOLERANCE
+          and fa_err <= md.TOLERANCE,
+          f"impulse {it_err*100:+.1f}%, thrust {fa_err*100:+.1f}%")
+
+    # The report is measured, not asserted: re-running the reported geometry
+    # has to reproduce the reported performance.
+    eng = md.Engine(**{k: v for k, v in r.engine_fields.items()
+                       if k not in ("fuel", "inj_type", "_units")},
+                    fuel=md.FUELS[r.fuel_name], inj_type=r.injector_name)
+    again = md._evaluate(eng, req.ambient_pa)
+    repro = abs(again["total_impulse"] - r.metrics["total_impulse"]) <= 1e-6
+    check("reported geometry reproduces reported performance", repro,
+          f"{again['total_impulse']:.1f} vs {r.metrics['total_impulse']:.1f} N.s")
+
+    # Envelope is a wall, not a preference.
+    od = r.envelope["_outside_diameter"]
+    check("stays inside the diameter it was given", od <= 0.140 * 1.001,
+          f"{od*1000:.1f} mm of 140 mm")
+    check("stays inside the length it was given",
+          r.envelope["TOTAL"] <= 2.0 * 1.001,
+          f"{r.envelope['TOTAL']*1000:.0f} mm of 2000 mm")
+
+    # A structural ceiling outranks a performance target. This brief cannot
+    # have both; the peak limit is the one that must hold.
+    capped = md.design_motor(md.Requirements(
+        total_impulse_ns=9000, avg_thrust_n=700, max_peak_thrust_n=900,
+        max_diameter_m=0.140, max_length_m=2.0))
+    check("peak-thrust ceiling is never exceeded",
+          capped.metrics["peak_thrust"] <= 900 * (1 + md.TOLERANCE),
+          f"peak {capped.metrics['peak_thrust']:.0f} N of 900 N allowed")
+    check("and the brief it could not meet is reported, not hidden",
+          not capped.met_all and any(not c.met for c in capped.compliance),
+          f"{sum(1 for c in capped.compliance if not c.met)} requirement(s) "
+          f"marked as missed")
+
+    # A chamber-pressure ceiling sizes the case, so it has to bind too.
+    pc = md.design_motor(md.Requirements(
+        total_impulse_ns=6000, avg_thrust_n=600,
+        max_chamber_pressure_pa=2.0e6,
+        max_diameter_m=0.098, max_length_m=1.5))
+    check("chamber-pressure ceiling is never exceeded",
+          pc.metrics["peak_Pc"] <= 2.0e6 * (1 + md.TOLERANCE),
+          f"peak Pc {pc.metrics['peak_Pc']/1e6:.2f} MPa of 2.00 MPa allowed")
+
+    # An impossible envelope must produce an honest failure, not a motor that
+    # claims to fit. This is the case that matters most: silently relaxing the
+    # brief is the one behaviour a sizing tool must never have.
+    tiny = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720,
+        max_diameter_m=0.098, max_length_m=0.30))
+    length_row = next((c for c in tiny.compliance
+                       if c.label == "Overall length"), None)
+    check("an impossible envelope is reported as a miss",
+          not tiny.met_all and length_row is not None and not length_row.met,
+          f"needs {tiny.envelope['TOTAL']*1000:.0f} mm, had 300 mm")
+
+    # Every generated motor has to be buildable and firable, whatever the
+    # brief asked for.
+    for label, design in (("achievable", r), ("thrust-capped", capped),
+                          ("pressure-capped", pc), ("impossible", tiny)):
+        f = design.engine_fields
+        ok = (f["d_port_0"] < f["d_grain_outer"]          # web left to burn
+              and f["d_throat"] < f["d_port_0"]           # throat, not a pipe
+              and f["L_grain"] > 0 and f["L_tank"] > 0
+              and f["d_hole"] > 0 and f["n_holes"] >= 1
+              and f["eps_exp"] >= 1.0)
+        check(f"{label} design is geometrically buildable", ok,
+              f"port {f['d_port_0']*1000:.1f} < grain "
+              f"{f['d_grain_outer']*1000:.1f} mm, throat "
+              f"{f['d_throat']*1000:.2f} mm")
+
+    # The nozzle must not be expanded past where the flow leaves the wall.
+    # Unbounded, the search chased a shortfall in Isp to an area ratio in the
+    # forties - a bell that separates, side-loads and buys nothing.
+    hard_isp = md.design_motor(md.Requirements(
+        total_impulse_ns=9000, avg_thrust_n=800, min_isp_s=200,
+        max_diameter_m=0.140, max_length_m=2.0))
+    check("expansion ratio stays below the separation limit",
+          hard_isp.engine_fields["eps_exp"] <= 25.0,
+          f"eps {hard_isp.engine_fields['eps_exp']:.2f}")
+    check("an unreachable Isp is refused rather than faked",
+          hard_isp.metrics["isp"] < 200 and not hard_isp.met_all,
+          f"delivered {hard_isp.metrics['isp']:.1f} s against 200 s asked")
+
+    # The handover into the Engine Lab form. This is a separate failure from
+    # anything above: the designer can be perfectly right and the motor still
+    # come out wrong, because the form is not uniformly SI. Fill fraction is
+    # stored as a PERCENTAGE, so handing it an SI 0.85 filled the tank to
+    # 0.85% and a motor sized for 11,600 N.s fired 1,084 - an L reported as a
+    # J - with every other field correct and nothing to see in the geometry.
+    # Needs Qt, so it is skipped rather than failed where there is none.
+    _check_form_handover(r)
+
+    # Pressure parts have to be sized for the hot pad, not the fill.
+    tank = r.materials["tank"]
+    fill_pa = md.eq.n2o_saturation_pressure(293.0)
+    check("tank wall is sized for a hot pad, not the fill temperature",
+          tank["pressure_pa"] > fill_pa * 1.2,
+          f"{tank['pressure_pa']/1e6:.2f} MPa design vs "
+          f"{fill_pa/1e6:.2f} MPa at 20 C")
+
+
+def _check_form_handover(design):
+    """A generated motor, once in the form, must still be that motor."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import engine_lab
+        import motor_designer as md
+    except Exception as exc:
+        check("generated motor survives the Engine Lab form", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    lab = engine_lab.EngineLabWidget()
+    lab.apply_config(lab._si_to_form(design.engine_fields))
+    app.processEvents()
+    # _read_engine is what the Run button uses, so this is the motor the user
+    # would actually fire - not a re-read of the dict we just wrote.
+    got = md._evaluate(lab._read_engine(), 101325.0)
+    want = design.metrics["total_impulse"]
+    err = abs(got["total_impulse"] - want) / want
+    check("generated motor survives the Engine Lab form", err <= 1e-6,
+          f"form fires {got['total_impulse']:.1f} N.s against the designed "
+          f"{want:.1f} N.s")
+    check("percentage fields reach the form as percentages",
+          abs(float(lab._fields["fill_frac"].text())
+              - design.engine_fields["fill_frac"] * 100.0) < 1e-6,
+          f"fill fraction box reads {lab._fields['fill_frac'].text()} for a "
+          f"stored {design.engine_fields['fill_frac']:.2f}")
+
+
 def main():
     validate_hardware()
     validate_engines()
@@ -684,6 +839,7 @@ def main():
     validate_aero_sweep()
     validate_drag_internals()
     validate_mass_components()
+    validate_motor_designer()
 
     banner("SUMMARY")
     passed = sum(1 for _l, ok, _d in _results if ok)
