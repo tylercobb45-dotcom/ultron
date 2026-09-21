@@ -1,100 +1,44 @@
 @echo off
-echo 🚀 Building JARVIS Rocket Simulation Executable...
-echo.
+REM Build the JARVIS Windows executable.
+REM
+REM This is a thin wrapper around build_simple.py ON PURPOSE. It used to carry
+REM its own copy of the PyInstaller command line, and that copy rotted: it
+REM built --onefile under the name JARVIS, while the real build is --onedir
+REM under JARVIS_Rocket_Simulation, and it had none of the data files, the
+REM --paths entries or the hidden imports the app has needed since. It then
+REM looked for dist\JARVIS.exe, which no build has ever produced, so it
+REM printed "not found after build" every single time.
+REM
+REM One build definition. If the flags need changing, change build_simple.py -
+REM that is what CI runs and what the release is cut from.
 
-REM Change to the project directory
 cd /d "%~dp0"
 
-REM Clean previous builds
-if exist "build" rmdir /s /q "build"
-if exist "dist" rmdir /s /q "dist"
-if exist "*.spec" del "*.spec"
+REM Prefer the project virtual environment, fall back to whatever python is on
+REM PATH so a fresh clone can still build.
+set "PYTHON_EXE=..\..\.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 
-echo 🧹 Cleaned previous builds
+echo Building JARVIS Rocket Simulation...
+echo Using: %PYTHON_EXE%
 echo.
 
-REM Use the virtual environment Python
-set PYTHON_EXE=..\..\.venv\Scripts\python.exe
-set PYINSTALLER_EXE=..\..\.venv\Scripts\pyinstaller.exe
-
-REM Check if virtual environment exists
-if not exist "%PYTHON_EXE%" (
-    echo ❌ Virtual environment Python not found at %PYTHON_EXE%
-    echo Please make sure the virtual environment is set up correctly.
-    pause
-    exit /b 1
-)
-
-if not exist "%PYINSTALLER_EXE%" (
-    echo ❌ PyInstaller not found at %PYINSTALLER_EXE%
-    echo Installing PyInstaller...
-    "%PYTHON_EXE%" -m pip install pyinstaller
-)
-
-echo 🔨 Building executable...
-echo.
-
-REM Build the executable
-"%PYINSTALLER_EXE%" ^
-    --onefile ^
-    --windowed ^
-    --name=JARVIS ^
-    --icon=src\JARVIS.ico ^
-    --clean ^
-    --noconfirm ^
-    --add-data "src\JARVIS.ico;." ^
-    --add-data "src\jarvis.gif;." ^
-    --add-data "src\Rocket.png;." ^
-    --add-data "src\crash.jpg;." ^
-    --add-data "src\profiles;profiles" ^
-    --add-data "thrust_curves;thrust_curves" ^
-    --add-data "hybrid_sim;hybrid_sim" ^
-    --paths "hybrid_sim" ^
-    --hidden-import=PyQt5.QtCore ^
-    --hidden-import=PyQt5.QtGui ^
-    --hidden-import=PyQt5.QtWidgets ^
-    --hidden-import=matplotlib.backends.backend_qt5agg ^
-    --hidden-import=hybrid_sim ^
-    --hidden-import=scipy.integrate ^
-    --hidden-import=scipy.optimize ^
-    src\main.py
-
+"%PYTHON_EXE%" -m pip install --quiet --upgrade pyinstaller
 if %ERRORLEVEL% NEQ 0 (
-    echo ❌ Build failed!
-    echo Check the error messages above.
+    echo ERROR: Could not install PyInstaller.
     pause
     exit /b 1
 )
 
-REM Check if executable was created
-if exist "dist\JARVIS.exe" (
-    echo ✅ Build completed successfully!
+"%PYTHON_EXE%" build_simple.py %*
+if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo 📁 Executable location: dist\JARVIS.exe
-    
-    REM Get file size
-    for %%A in ("dist\JARVIS.exe") do (
-        set /a "size=%%~zA / 1048576"
-        echo 📏 File size: !size! MB
-    )
-    
-    echo.
-    echo 🎉 Your JARVIS Rocket Simulation app is ready!
-    echo 💡 To test: Right-click the .exe file and select "Run as administrator" if needed
-    echo 🚀 To run normally: Double-click the .exe file
-    
-    REM Ask if user wants to test it
-    set /p test="🤖 Would you like to test the executable now? (y/n): "
-    if /i "%test%"=="y" (
-        echo.
-        echo 🧪 Testing executable...
-        start "" "dist\JARVIS.exe"
-        echo ✅ Executable launched! Check if the app window opens properly.
-    )
-) else (
-    echo ❌ JARVIS.exe not found after build!
-    echo Something went wrong during the build process.
+    echo ERROR: Build failed. The messages above say why.
+    pause
+    exit /b 1
 )
 
 echo.
+echo Done. Copy the whole dist\JARVIS_Rocket_Simulation folder to the drive.
 pause

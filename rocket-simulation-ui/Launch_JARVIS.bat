@@ -1,6 +1,6 @@
 @echo off
 echo.
-echo 🚀 JARVIS Rocket Simulation App
+echo JARVIS Rocket Simulation App
 echo ===============================
 echo.
 echo Starting application...
@@ -31,6 +31,6 @@ if exist "dist\JARVIS_Rocket_Simulation\%EXE%" (
 )
 
 echo.
-echo 🎯 Tip: You can also run the .exe directly by double-clicking it
+echo Tip: You can also run the .exe directly by double-clicking it
 echo.
 timeout /t 3 >nul

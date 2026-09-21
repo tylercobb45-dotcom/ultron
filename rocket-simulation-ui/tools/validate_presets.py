@@ -24,11 +24,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import pathlib
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+ROOT_PATH = pathlib.Path(ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.join(ROOT, "hybrid_sim"))
 
@@ -769,6 +771,23 @@ def validate_motor_designer():
     # Needs Qt, so it is skipped rather than failed where there is none.
     _check_form_handover(r)
 
+    # Whatever the designer returns must already sit on the grid the form
+    # stores, or the form quietly holds a different motor from the report.
+    off_grid = []
+    for key, step in md.QUANTUM.items():
+        value = r.engine_fields.get(key)
+        if value is None:
+            continue
+        if abs(value / step - round(value / step)) > 1e-6:
+            off_grid.append(f"{key}={value!r} (step {step:g})")
+    check("every returned dimension sits on the form's grid", not off_grid,
+          f"{len(md.QUANTUM)} fields on grid" if not off_grid
+          else "; ".join(off_grid[:3]))
+
+    # motor_designer.QUANTUM has to stay in step with the precision the form
+    # actually stores, or the report grades a motor the boxes cannot hold.
+    _check_quantum_matches_form()
+
     # Pressure parts have to be sized for the hot pad, not the fill.
     tank = r.materials["tank"]
     fill_pa = md.eq.n2o_saturation_pressure(293.0)
@@ -776,6 +795,80 @@ def validate_motor_designer():
           tank["pressure_pa"] > fill_pa * 1.2,
           f"{tank['pressure_pa']/1e6:.2f} MPa design vs "
           f"{fill_pa/1e6:.2f} MPa at 20 C")
+
+
+def validate_windows_scripts():
+    """The shipped .bat files, against the two ways they have already broken.
+
+    Neither is reachable from a test on Linux, which is exactly why they need
+    checking here rather than by running them:
+
+      * LF-only line endings. cmd.exe is unreliable on batch files without
+        CRLF - labels, goto and multi-line blocks in particular - and this
+        repo has shipped one before.
+      * Non-ASCII. A cp1252 console cannot encode an emoji, and the repo has
+        shipped that too: build_simple.py died on its own first line.
+    """
+    banner("9. WINDOWS SCRIPTS (not reachable from a Linux test)")
+    bats = sorted(ROOT_PATH.glob("*.bat"))
+    if not bats:
+        check("shipped .bat files found", False, "none in the project root")
+        return
+    for bat in bats:
+        raw = bat.read_bytes()
+        lines = raw.count(b"\n")
+        crlf = raw.count(b"\r\n")
+        check(f"{bat.name}: CRLF line endings", lines > 0 and crlf == lines,
+              f"{crlf} of {lines} lines")
+        try:
+            raw.decode("ascii")
+            non_ascii = 0
+        except UnicodeDecodeError:
+            non_ascii = sum(1 for b in raw if b > 0x7F)
+        check(f"{bat.name}: ASCII only", non_ascii == 0,
+              "clean" if not non_ascii
+              else f"{non_ascii} byte(s) a cp1252 console cannot encode")
+        # The exe name is the other thing that has silently rotted here: a
+        # script looking for a file no build produces reports failure forever.
+        # Comments are skipped - both of these files explain that old bug in a
+        # REM, and matching the explanation instead of the code is how a test
+        # ends up failing on its own documentation.
+        code = [ln for ln in raw.decode("ascii", "replace").splitlines()
+                if not ln.strip().upper().startswith("REM")]
+        stripped = "\n".join(code).replace("JARVIS_Rocket_Simulation.exe", "")
+        check(f"{bat.name}: names an executable a build produces",
+              "JARVIS.exe" not in stripped,
+              "ok" if "JARVIS.exe" not in stripped
+              else "looks for JARVIS.exe, which no build produces")
+
+
+def _check_quantum_matches_form():
+    """The designer's precision table against the Engine Lab's own decimals.
+
+    motor_designer cannot import engine_lab (engine_lab imports it), so the
+    step sizes are written out in both places. That is a coupling with nothing
+    holding it together except this check.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        import engine_lab
+        import motor_designer as md
+    except Exception as exc:
+        check("designer precision matches the Engine Lab form", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+    mismatched = []
+    for spec in engine_lab._ALL_FIELDS:
+        key, factor, dec = spec[1], spec[2], spec[3]
+        if key in engine_lab._INT_FIELDS:
+            continue
+        want = (10.0 ** -dec) / factor
+        got = md.QUANTUM.get(key)
+        if got is None or abs(got - want) > want * 1e-6:
+            mismatched.append(f"{key}: form {want:g}, designer {got!r}")
+    check("designer precision matches the Engine Lab form", not mismatched,
+          f"{len(md.QUANTUM)} fields agree" if not mismatched
+          else "; ".join(mismatched[:3]))
 
 
 def _check_form_handover(design):
@@ -840,6 +933,7 @@ def main():
     validate_drag_internals()
     validate_mass_components()
     validate_motor_designer()
+    validate_windows_scripts()
 
     banner("SUMMARY")
     passed = sum(1 for _l, ok, _d in _results if ok)

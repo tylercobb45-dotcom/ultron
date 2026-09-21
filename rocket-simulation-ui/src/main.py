@@ -51,6 +51,23 @@ def user_settings_path():
 # Theme application is now handled per-widget via apply_theme().
 # === END RETRO STYLE ===
 
+def _wind_dir_text(degrees):
+    """Label for the wind dial: bearing plus the compass point it means.
+
+    The bearing is the direction the wind blows TOWARD, which is what
+    LaunchSite.wind_at resolves - at 0 degrees it returns pure north, at 90
+    pure east. The dial used to be labelled "0 (East)", which is the wrong
+    quarter of the compass, and it only named a direction at all before the
+    dial was first moved; after that it showed a bare number. Getting this
+    backwards points the drift the wrong way, and drift is a range-safety
+    number.
+    """
+    points = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+    idx = int((float(degrees) % 360.0) / 22.5 + 0.5) % 16
+    return f"Wind Direction: {int(degrees)}\u00b0 (toward {points[idx]})"
+
+
 class CrashImageDialog(QtWidgets.QDialog):
     def __init__(self, image_path, error_text, parent=None):
         super().__init__(parent)
@@ -1732,12 +1749,18 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.unit_select.currentIndexChanged.connect(self.on_unit_system_changed)
         units_layout.addWidget(QtWidgets.QLabel("Select Unit System:"))
         units_layout.addWidget(self.unit_select)
-        units_layout.addWidget(QtWidgets.QLabel(
+        units_note = QtWidgets.QLabel(
             "<span style='font-size:9pt'>Every field keeps its value in SI "
             "internally, so switching systems never changes the rocket - only "
             "how it is written. Individual fields can still be set to any unit "
             "of their own dimension. Dimensionless values (Cd, Mach, O/F, "
-            "efficiencies) have no unit and are unaffected.</span>"))
+            "efficiencies) have no unit and are unaffected.</span>")
+        # Without this the label is one unbreakable line, and a QLabel's
+        # minimum width is whatever its longest line needs - which pushed the
+        # whole Settings tab wider than the window and cut the last profile
+        # button off the right-hand edge.
+        units_note.setWordWrap(True)
+        units_layout.addWidget(units_note)
 
         settings_layout.addWidget(units_group)
         
@@ -1840,9 +1863,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.wind_direction_input.setMinimum(0)
         self.wind_direction_input.setMaximum(359)
         self.wind_direction_input.setNotchesVisible(True)
-        wind_dir_label = QtWidgets.QLabel("Wind Direction: 0° (East)")
+        self.wind_direction_input.setToolTip(
+            "The direction the wind blows TOWARD, as a compass bearing: 0 is "
+            "north, 90 is east. This is what sets which way the rocket "
+            "weathercocks and which way it drifts under canopy.")
+        wind_dir_label = QtWidgets.QLabel(_wind_dir_text(0))
         wind_dir_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.wind_direction_input.valueChanged.connect(lambda v: wind_dir_label.setText(f"Wind Direction: {v}°"))
+        self.wind_direction_input.valueChanged.connect(
+            lambda v: wind_dir_label.setText(_wind_dir_text(v)))
         wind_layout.addRow(wind_dir_label, self.wind_direction_input)
 
         launch_anim_layout.addWidget(wind_group)
@@ -3418,6 +3446,15 @@ class RocketSimulationUI(QtWidgets.QWidget):
         # The Simulation tab keeps its own combos rather than UnitFields,
         # because a saved profile stores the selected index.
         self._apply_sim_unit_system(system)
+        # The results summary is written in whatever system was current when
+        # the flight ran, so it has to be rebuilt too - otherwise it is the
+        # only panel left in the old units.
+        results = getattr(self, '_last_display_results', None)
+        if results:
+            try:
+                self.display_results(results)
+            except Exception:
+                traceback.print_exc()
 
     def on_theme_changed(self, theme_name):
         """Handle theme selection change"""
@@ -5143,6 +5180,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
             break
 
     def display_results(self, results):
+        # Kept so the summary can be redrawn when the unit system changes.
+        # It is built from the flight inline, so without this the panel stayed
+        # in whichever system was current when the simulation ran: every other
+        # number on screen switched to feet and the summary went on saying
+        # 2795.85 m, which is the one place a units mix-up is least obvious.
+        self._last_display_results = results
         if results:
             self.populate_datasheets(results)
             # Find max values and their times
@@ -5220,12 +5263,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
     <table style='border-collapse:collapse;'>
         <tr><th style='text-align:left;padding:2px 8px;border-bottom:1px solid #BCA16A;'>Metric</th>
                 <th style='text-align:right;padding:2px 8px;border-bottom:1px solid #BCA16A;'>Value</th></tr>
-        <tr><td style='padding:2px 8px;'>Apogee</td><td style='padding:2px 8px;text-align:right;'>{max_alt_disp:.2f} {alt_unit.upper()}</td></tr>
-        <tr><td style='padding:2px 8px;'>Max Velocity</td><td style='padding:2px 8px;text-align:right;'>{max_vel_disp:.2f} {vel_unit.upper()}</td></tr>
+        <tr><td style='padding:2px 8px;'>Apogee</td><td style='padding:2px 8px;text-align:right;'>{max_alt_disp:.2f} {alt_unit}</td></tr>
+        <tr><td style='padding:2px 8px;'>Max Velocity</td><td style='padding:2px 8px;text-align:right;'>{max_vel_disp:.2f} {vel_unit}</td></tr>
         <tr><td style='padding:2px 8px;'>Max Mach</td><td style='padding:2px 8px;text-align:right;'>{max_mach:.2f}</td></tr>
-        <tr><td style='padding:2px 8px;'>Max Thrust</td><td style='padding:2px 8px;text-align:right;'>{max_thrust_disp:.2f} {thrust_unit.upper()}</td></tr>
-        <tr><td style='padding:2px 8px;'>Max Drag</td><td style='padding:2px 8px;text-align:right;'>{max_drag_disp:.2f} {drag_unit.upper()}</td></tr>
-    <tr><td style='padding:2px 8px;'>Final Mass</td><td style='padding:2px 8px;text-align:right;'>{final_mass_disp:.2f} {mass_unit.upper()}</td></tr>
+        <tr><td style='padding:2px 8px;'>Max Thrust</td><td style='padding:2px 8px;text-align:right;'>{max_thrust_disp:.2f} {thrust_unit}</td></tr>
+        <tr><td style='padding:2px 8px;'>Max Drag</td><td style='padding:2px 8px;text-align:right;'>{max_drag_disp:.2f} {drag_unit}</td></tr>
+    <tr><td style='padding:2px 8px;'>Final Mass</td><td style='padding:2px 8px;text-align:right;'>{final_mass_disp:.2f} {mass_unit}</td></tr>
     </table>
 </div>
 """
@@ -5557,18 +5600,18 @@ class RocketSimulationUI(QtWidgets.QWidget):
         <tr>
             <th style='text-align:left;padding:1px 6px;border-bottom:1px solid #BCA16A;'>t (s)</th>
             <th style='text-align:right;padding:1px 6px;border-bottom:1px solid #BCA16A;'>{x_pos:.2f}</th>
-            <th style='text-align:left;padding:1px 6px;border-bottom:1px solid #BCA16A;'>Alt ({alt_unit.upper()})</th>
+            <th style='text-align:left;padding:1px 6px;border-bottom:1px solid #BCA16A;'>Alt ({alt_unit})</th>
             <th style='text-align:right;padding:1px 6px;border-bottom:1px solid #BCA16A;'>{alt_disp:.2f}</th>
-            <th style='text-align:left;padding:1px 6px;border-bottom:1px solid #BCA16A;'>Vel ({vel_unit.upper()})</th>
+            <th style='text-align:left;padding:1px 6px;border-bottom:1px solid #BCA16A;'>Vel ({vel_unit})</th>
             <th style='text-align:right;padding:1px 6px;border-bottom:1px solid #BCA16A;'>{vel_disp:.2f}</th>
         </tr>
         <tr>
             <td style='padding:1px 6px;'>Mach</td><td style='padding:1px 6px;text-align:right;'>{mach:.2f}</td>
-            <td style='padding:1px 6px;'>Thrust ({thrust_unit.upper()})</td><td style='padding:1px 6px;text-align:right;'>{thrust_disp:.2f}</td>
-            <td style='padding:1px 6px;'>Drag ({drag_unit.upper()})</td><td style='padding:1px 6px;text-align:right;'>{drag_disp:.2f}</td>
+            <td style='padding:1px 6px;'>Thrust ({thrust_unit})</td><td style='padding:1px 6px;text-align:right;'>{thrust_disp:.2f}</td>
+            <td style='padding:1px 6px;'>Drag ({drag_unit})</td><td style='padding:1px 6px;text-align:right;'>{drag_disp:.2f}</td>
         </tr>
         <tr>
-            <td style='padding:1px 6px;'>Mass ({mass_unit.upper()})</td><td style='padding:1px 6px;text-align:right;'>{mass_disp:.2f}</td>
+            <td style='padding:1px 6px;'>Mass ({mass_unit})</td><td style='padding:1px 6px;text-align:right;'>{mass_disp:.2f}</td>
             <td style='padding:1px 6px;'>Max Alt (t)</td><td style='padding:1px 6px;text-align:right;'>{get_max_time('altitude'):.2f}</td>
             <td style='padding:1px 6px;'>Max Vel (t)</td><td style='padding:1px 6px;text-align:right;'>{get_max_time('velocity'):.2f}</td>
         </tr>
@@ -5726,6 +5769,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
             area_in_current_unit = app_units.DIMENSIONS['area'].unit(
                 symbol).from_si(total_area)
             self.area_input.setText(f"{area_in_current_unit:.12g}")
+            # Show the START of the number. setText leaves the cursor at the
+            # end, so a value too long for the box scrolls and the user sees
+            # its TAIL: 0.0153938040026 m2 displayed as "153938040026", which
+            # reads as an area of 1.5e11 m2. The value was always right; what
+            # was on screen was not.
+            self.area_input.setCursorPosition(0)
         except (ValueError, ZeroDivisionError):
             self.area_input.setText("0")
 

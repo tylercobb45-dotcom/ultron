@@ -538,6 +538,25 @@ def seed_engine(req: Requirements, fuel_name: str, injector_name: str,
         notes.append(
             f"Grain outside diameter was capped at the case bore "
             f"({case_id * 1000:.1f} mm).")
+        # Capping the OD without moving the port leaves the port wider than
+        # the grain it is bored through - a negative web, which is not a thin
+        # grain but a nonexistent one. In a narrow tube the flux-derived port
+        # can easily exceed the whole case bore, so shrink the port to leave
+        # a real wall and say that the flux target had to give.
+        min_web = 0.003
+        if d_port > d_outer - 2.0 * min_web:
+            d_port = max(0.006, d_outer - 2.0 * min_web)
+            a_port = _area(d_port)
+            g_ox = mdot_ox / max(1e-9, a_port)
+            rdot = eq.regression_rate(g_ox, fuel.a, fuel.n)
+            mdot_fuel = mdot_ox / of
+            l_grain = mdot_fuel / max(1e-12, fuel.rho * 2.0 * math.pi
+                                      * (d_port / 2.0) * rdot)
+            notes.append(
+                f"Initial port was cut to {d_port * 1000:.1f} mm to leave a "
+                f"{min_web * 1000:.0f} mm web inside that bore, which puts "
+                f"the oxidiser flux at {g_ox:,.0f} kg/m2/s rather than the "
+                f"{DESIGN_G_OX:,.0f} aimed for.")
 
     # Throat, from the flow it has to pass at the chamber pressure it has to
     # hold. This is the most sensitive dimension in the motor.
@@ -630,6 +649,38 @@ TOLERANCE = 0.03
 MAX_SWEEPS = 22
 
 
+# The precision a dimension is actually specified to. Two things force this
+# to exist. A throat is machined to a micron at best, so reporting the
+# performance of a bore given to fifteen decimal places is reporting the
+# performance of a motor nobody can make. And the Engine Lab form stores each
+# field to a fixed number of decimals, so anything finer is lost the moment
+# the design lands in it - which left the report describing a motor half a
+# newton-second away from the one in the boxes.
+#
+# These MUST match engine_lab's display factors and decimals; the preset suite
+# checks that they still do.
+QUANTUM = {
+    "d_tank": 1e-5, "L_tank": 1e-5, "fill_frac": 1e-3, "T_tank_0": 0.1,
+    "d_vent": 1e-5, "Cd_vent": 1e-2, "cooling_coeff": 1e-4,
+    "d_hole": 1e-6, "Cd_inj": 1e-4,
+    "L_grain": 1e-4, "d_grain_outer": 1e-4, "d_port_0": 1e-4,
+    "fuel_a": 1e-8, "fuel_n": 1e-4, "L_pre": 1e-4, "L_post": 1e-4,
+    "d_throat": 1e-6, "eps_exp": 1e-2, "alpha_deg": 0.1,
+    "beta_conv_deg": 0.1, "erosion_rate": 1e-7,
+    "eta_cstar": 1e-3, "eta_nozzle": 1e-3, "gamma": 1e-3, "MW": 0.1,
+}
+
+
+def quantise(eng: Engine) -> Engine:
+    """Snap every dimension to the precision it is really specified to."""
+    changes = {}
+    for key, step in QUANTUM.items():
+        value = getattr(eng, key, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            changes[key] = round(round(value / step) * step, 12)
+    return _clone(eng, **changes)
+
+
 def _clone(eng: Engine, **changes) -> Engine:
     """A copy of an engine with some dimensions changed.
 
@@ -679,15 +730,21 @@ def _targets(m: dict, req: Requirements, duty: tuple) -> list:
     return errs
 
 
-def _violation(m: dict, req: Requirements) -> float:
+def _violation(m: dict, req: Requirements, eng=None, work=None) -> float:
     """How far this motor is OVER its ceilings, as a fraction. 0 = legal.
 
     Ceilings are kept apart from targets because they are not the same kind of
     thing. Missing a target by 5% is a worse motor; exceeding a structural
-    limit by 5% is a motor that breaks something. A design that busts a
+    limit by 5% is a motor that breaks something, and exceeding the envelope
+    by 5% is a motor that does not go in the rocket. A design that busts a
     ceiling must never win on a better average, however good the rest of it
     looks - so feasibility is checked first and the score only separates
     designs that are already legal.
+
+    The envelope belongs here for exactly that reason. Left out, a 2,375 mm
+    motor with a slightly better impulse score outranked four candidates that
+    fitted the 2,000 mm it was given, and the tool then reported the length as
+    MISSED - having had designs in hand that did not miss it.
     """
     worst = 0.0
     if req.max_peak_thrust_n > 0 and m["peak_thrust"] > req.max_peak_thrust_n:
@@ -697,6 +754,18 @@ def _violation(m: dict, req: Requirements) -> float:
             and m["peak_Pc"] > req.max_chamber_pressure_pa:
         worst = max(worst, (m["peak_Pc"] - req.max_chamber_pressure_pa)
                     / req.max_chamber_pressure_pa)
+    if eng is not None and work is not None:
+        if req.max_length_m > 0:
+            total = motor_length(eng, work["case_id"])["TOTAL"]
+            if total > req.max_length_m:
+                worst = max(worst, (total - req.max_length_m) / req.max_length_m)
+        if req.max_diameter_m > 0:
+            # Bores were sized inward from the limit, so this can only be
+            # exceeded by the nozzle exit - which is precisely the part the
+            # search is allowed to grow.
+            if eng.d_exit > req.max_diameter_m:
+                worst = max(worst, (eng.d_exit - req.max_diameter_m)
+                            / req.max_diameter_m)
     return worst
 
 
@@ -763,6 +832,16 @@ def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
     eps_capped = False
     stalled = 0
 
+    # Clamp the seed before it is ever evaluated. Every candidate the loop
+    # builds goes through these, but the seed went straight to the simulator -
+    # so a brief where the seed is the best thing found returned the seed's
+    # raw geometry. In a 20 mm tube that was a 27.7 mm port in an 18.0 mm
+    # grain (a web of MINUS 4.9 mm) and a 12.17 m tank against a 1.5 m limit,
+    # written into the Engine Lab form as though it were a design.
+    eng = _apply_limits(eng, req, work)
+    eng, gave = _fit_envelope(eng, req, work)
+    notes.extend(gave)
+
     for sweep in range(MAX_SWEEPS):
         if progress is not None:
             progress(sweep / float(MAX_SWEEPS),
@@ -781,7 +860,7 @@ def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
         # design that breaks a ceiling can only ever win against another that
         # breaks it worse, never against a legal one.
         s = _score(m, req, duty)
-        key = (_violation(m, req), s)
+        key = (_violation(m, req, eng, work), s)
         if best_key is None or key < best_key:
             best_eng, best_m, best_key = eng, m, key
             stalled = 0
@@ -877,6 +956,21 @@ def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
         raise ValueError(
             "No runnable motor came out of these requirements - check that "
             "the diameter and length leave room for a tank.")
+
+    # Report the motor as it will actually be specified, not as the search
+    # happened to leave it. Snapping afterwards and re-measuring means the
+    # compliance table describes the numbers that end up in the form, so the
+    # form cannot fire a different motor from the one the report graded.
+    # Clamp FIRST, then snap. The other way round, _apply_limits recomputes
+    # the pre- and post-chamber lengths from the grain diameter and puts them
+    # back off the grid, so the engine handed to the form is not quite the one
+    # that was measured. Rounding cannot undo the clamps: they carry millimetre
+    # margins and the largest step here is a tenth of a millimetre.
+    snapped = quantise(_apply_limits(best_eng, req, work))
+    snapped_m = _evaluate(snapped, req.ambient_pa)
+    if snapped_m is not None:
+        best_eng, best_m = snapped, snapped_m
+        runs += 1
     return best_eng, best_m, runs, notes
 
 
@@ -1010,16 +1104,22 @@ def _compliance(m: dict, req: Requirements, duty: tuple,
             "" if got >= req.min_isp_s else
             "Isp is set by the propellant and the expansion ratio; a bigger "
             "bell is the only lever, and the airframe caps it.")
+    # Ceilings are graded STRICTLY, unlike targets. TOLERANCE exists because
+    # hitting a target to better than a few percent is beyond what the c*
+    # table and the regression coefficients can support - but a limit is not a
+    # target. "Peak thrust: 927 N against 900 N maximum - meets" is a case
+    # badly enough sized to hurt somebody, printed in green. Only float noise
+    # is forgiven.
     if req.max_peak_thrust_n > 0:
         got = m["peak_thrust"]
         add("Peak thrust", f"{req.max_peak_thrust_n:,.0f} N maximum",
-            f"{got:,.0f} N", got <= req.max_peak_thrust_n * (1.0 + TOLERANCE))
+            f"{got:,.0f} N", got <= req.max_peak_thrust_n * (1.0 + 1e-9))
     if req.max_chamber_pressure_pa > 0:
         got = m["peak_Pc"]
         add("Chamber pressure",
             f"{req.max_chamber_pressure_pa / 1e6:.2f} MPa maximum",
             f"{got / 1e6:.2f} MPa",
-            got <= req.max_chamber_pressure_pa * (1.0 + TOLERANCE))
+            got <= req.max_chamber_pressure_pa * (1.0 + 1e-9))
     if req.max_length_m > 0:
         got = length_parts["TOTAL"]
         add("Overall length", f"{req.max_length_m * 1000:.0f} mm maximum",
@@ -1064,7 +1164,7 @@ def design_motor(req: Requirements, progress=None) -> DesignResult:
                 best = ("__error__", exc, None, None, None, None)
             continue
         total_runs += runs
-        key = (_violation(m, req), _score(m, req, duty))
+        key = (_violation(m, req, eng, work), _score(m, req, duty))
         if best is None or best[0] == "__error__" or key < best[0]:
             best = (key, fuel_name, eng, m, work, seed_notes + ref_notes)
         # A fuel that meets the whole brief ends the search. Trying the other

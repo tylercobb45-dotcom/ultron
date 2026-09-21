@@ -636,7 +636,17 @@ class FlightReportWidget(QtWidgets.QWidget):
                     item.setFont(font)
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        # Cap the free-text columns before letting "Check" stretch. Sizing
+        # every column to its contents first gives Measured and Limit whatever
+        # their longest row needs, and those rows are long - which left the
+        # Check column, the one that says WHAT was tested, stretched into
+        # nothing and showing "Apo...", "Fuel...", "Oxi...". The table is only
+        # readable if the description survives.
+        header = self.table.horizontalHeader()
+        for col, cap in ((2, 110), (5, 210), (6, 210)):
+            if self.table.columnWidth(col) > cap:
+                self.table.setColumnWidth(col, cap)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         if rep.checks:
             self.table.selectRow(0)
         self._plot(rep)

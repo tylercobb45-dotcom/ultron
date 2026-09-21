@@ -271,6 +271,17 @@ class UnitField(QtWidgets.QWidget):
     def set_system(self, system: str):
         """Switch to this system's preferred unit, keeping the value."""
         self._system = system
+        if self.is_blank():
+            # Same reason as _unit_changed: an optional box left empty must
+            # stay empty. Without this, flipping the app between metric and
+            # imperial on the Settings tab wrote "0" into every requirement
+            # the user had deliberately not set, and the motor designer then
+            # read those zeros as real requirements.
+            if self.combo is not None:
+                self.combo.blockSignals(True)
+                self.combo.setCurrentText(self.quantity.preferred(system))
+                self.combo.blockSignals(False)
+            return
         if self.combo is None:
             return
         preferred = self.quantity.preferred(system)

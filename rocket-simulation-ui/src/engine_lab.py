@@ -674,12 +674,19 @@ class EngineLabWidget(QtWidgets.QWidget):
             if widget is None or isinstance(widget, unit_fields.UnitField):
                 continue                    # unit fields genuinely take SI
             factor = _LEGACY_DISPLAY_FACTOR.get(key, 1.0)
-            if abs(factor - 1.0) < 1e-12:
-                continue
             try:
-                out[key] = f"{float(value) * factor:.{decimals.get(key, 3)}f}"
+                number = float(value) * factor
             except (TypeError, ValueError):
                 continue
+            if key in _INT_FIELDS:
+                out[key] = str(int(round(number)))
+            else:
+                # Format even when the factor is 1. These boxes declare a
+                # number of decimals and every other route into them honours
+                # it; passing a raw float through showed a generated motor's
+                # expansion ratio as 7.574912532440119 where the same engine
+                # loaded from a profile showed 7.57.
+                out[key] = f"{number:.{decimals.get(key, 3)}f}"
         return out
 
     def _read_requirements(self):

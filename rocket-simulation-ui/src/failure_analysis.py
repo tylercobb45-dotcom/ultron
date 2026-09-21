@@ -758,20 +758,42 @@ def _mission_sizing(rep, v, flight, t, alt, thrust, mass, i_ap):
 
 def _shortfall_advice(flight, rep, target_ft):
     """Point at the dominant lever for closing an altitude shortfall."""
-    need = target_ft / rep.apogee_ft if rep.apogee_ft > 0 else float("inf")
-    bits = [f"Apogee scales roughly with burnout energy: closing this gap needs "
-            f"on the order of {need:.1f}x the current altitude."]
-    drag_imp = _trapz(_series(flight, "drag"), _series(flight, "time"))
-    thr_imp = _trapz(_series(flight, "thrust"), _series(flight, "time"))
+    if rep.apogee_ft > 0:
+        short = (target_ft - rep.apogee_ft) / rep.apogee_ft
+        bits = [f"Apogee scales roughly with burnout energy: closing this gap "
+                f"needs about {short*100:.0f}% more altitude."]
+    else:
+        bits = ["The rocket did not leave the pad, so there is no shortfall "
+                "to size - fix the liftoff thrust first."]
+
+    # Drag only counts while the rocket is still trying to go up. Integrating
+    # it over the WHOLE flight added the descent under canopy, which is the
+    # parachute doing its job and not drag stealing altitude - and it is by
+    # far the larger number. That is how a rocket losing 47% of its impulse
+    # to drag was told it was losing 343%, a figure that cannot be true of
+    # anything and quietly discredits the rest of the advice.
+    time = _series(flight, "time")
+    alt = _series(flight, "altitude")
+    thr = _series(flight, "thrust")
+    drag = _series(flight, "drag")
+    if len(alt) > 1:
+        apogee_i = max(range(len(alt)), key=lambda i: alt[i])
+    else:
+        apogee_i = len(alt) - 1
+    ascent = slice(0, max(2, apogee_i + 1))
+
+    drag_imp = _trapz(drag[ascent], time[ascent])
+    thr_imp = _trapz(thr, time)
     if thr_imp > 0:
         frac = drag_imp / thr_imp
         if frac > 0.25:
-            bits.append(f"Drag is eating {frac*100:.0f}% of total impulse - a smaller "
-                        f"frontal area or lower Cd is the cheapest win before adding motor.")
+            bits.append(f"Drag costs {frac*100:.0f}% of total impulse on the way up - "
+                        f"a smaller frontal area or lower Cd is the cheapest win "
+                        f"before adding motor.")
         else:
-            bits.append(f"Drag costs only {frac*100:.0f}% of total impulse, so this is an "
-                        f"impulse/mass problem, not an aerodynamics one: more total "
-                        f"impulse or less dry mass.")
+            bits.append(f"Drag costs only {frac*100:.0f}% of total impulse on the way "
+                        f"up, so this is an impulse/mass problem, not an aerodynamics "
+                        f"one: more total impulse or less dry mass.")
     return " ".join(bits)
 
 
