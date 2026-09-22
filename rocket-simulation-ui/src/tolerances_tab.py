@@ -15,8 +15,43 @@ import traceback
 
 from PyQt5 import QtWidgets, QtCore
 
+import datasheet
 import theme
 import tolerances as tol
+
+
+class TrialSheetDialog(QtWidgets.QDialog):
+    """One trial's flight and motor data, in the app's own spreadsheet."""
+
+    def __init__(self, title, summary, flight_rows, engine_rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(1100, 700)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        head = QtWidgets.QLabel(f"<b>{title}</b><br>{summary}")
+        head.setWordWrap(True)
+        head.setTextFormat(QtCore.Qt.RichText)
+        layout.addWidget(head)
+
+        tabs = QtWidgets.QTabWidget()
+        # The app's own DataSheet, with the same column spec the Simulation
+        # tab uses - so this reads like the sheets beside it and exports the
+        # same way, rather than being a third kind of table.
+        flight = datasheet.DataSheet(datasheet.FLIGHT_COLUMNS,
+                                     title="tolerance_flight")
+        flight.set_rows(flight_rows)
+        tabs.addTab(flight, "Flight Data")
+
+        engine = datasheet.DataSheet(datasheet.ENGINE_COLUMNS,
+                                     title="tolerance_engine")
+        engine.set_rows(engine_rows)
+        tabs.addTab(engine, "Engine Data")
+        layout.addWidget(tabs)
+
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, alignment=QtCore.Qt.AlignRight)
 
 
 class TolerancesTab(QtWidgets.QWidget):
@@ -31,6 +66,8 @@ class TolerancesTab(QtWidgets.QWidget):
         self._cancel = False
         self._running = False
         self._last_run = None
+        self._replay = None
+        self._open_dialogs = []
         self._build_ui()
 
     # ---- construction ----------------------------------------------------
@@ -150,11 +187,27 @@ class TolerancesTab(QtWidgets.QWidget):
 
         log_group = QtWidgets.QGroupBox("Every flight it ran")
         lg = QtWidgets.QVBoxLayout(log_group)
-        self.log = QtWidgets.QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(4000)
-        self.log.setPlaceholderText(
-            "Each line is one complete engine burn and trajectory.")
+        hint = QtWidgets.QLabel(
+            "Each row is one complete engine burn and trajectory. "
+            "<b>Double-click a row</b> to open its spreadsheet.")
+        hint.setWordWrap(True)
+        lg.addWidget(hint)
+        self.log = QtWidgets.QTableWidget()
+        self.log.setColumnCount(6)
+        self.log.setHorizontalHeaderLabels(
+            ["#", "What was varied", "Way", "Setting", "Result", "Apogee"])
+        self.log.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.log.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows)
+        self.log.verticalHeader().setVisible(False)
+        self.log.itemDoubleClicked.connect(self._open_trial)
+        # Let the description take the slack and pin the rest to their
+        # contents, so the column saying WHAT was varied is not the one that
+        # gets squeezed to "Throat ..." while empty space sits to its right.
+        _hdr = self.log.horizontalHeader()
+        _hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        _hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        _hdr.setStretchLastSection(False)
         lg.addWidget(self.log)
         rv.addWidget(log_group, stretch=1)
         splitter.addWidget(right)
@@ -199,11 +252,12 @@ class TolerancesTab(QtWidgets.QWidget):
         self.run_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.table.setRowCount(0)
-        self.log.clear()
+        self.log.setRowCount(0)
         self.note.setText("")
         goals = tol.goal_list(ctx.vehicle)
-        self.log.appendPlainText(
-            "Graded against: " + "; ".join(g.label() for g in goals))
+        # Kept so a double-clicked row can be flown again exactly as it was.
+        self._replay = {"engine": engine, "ctx": ctx, "goals": goals,
+                        "knobs": {k.key: k for k in knobs}, "baselines": {}}
         # Roughly: one baseline, then a far-end probe plus a bisection each
         # way per component. Only a guide for the bar - a component that
         # survives its whole range finishes in one flight.
@@ -218,18 +272,29 @@ class TolerancesTab(QtWidgets.QWidget):
             done["n"] += 1
             self.progress.setValue(min(done["n"], est))
             arrow = "down" if downward else "up"
-            self.log.appendPlainText(
-                "  %-14s %-4s x%.4f  %-4s  apogee %8.0f ft%s"
-                % (knob.key, arrow, trial.factor,
-                   "ok" if trial.passed else "MISS", trial.apogee_ft,
-                   ("   missed: " + "; ".join(trial.failed_goals))
-                   if trial.failed_goals else ""))
+            row = self.log.rowCount()
+            self.log.insertRow(row)
+            cells = [str(row + 1), knob.quantity, arrow,
+                     f"x{trial.factor:.4f}",
+                     "ok" if trial.passed else "MISS",
+                     f"{trial.apogee_ft:,.0f} ft"]
+            for col, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if trial.failed_goals:
+                    item.setToolTip("Missed: " + "; ".join(trial.failed_goals))
+                if col == 0:
+                    # Everything needed to fly this one again lives on the
+                    # row, so opening it later does not depend on the search
+                    # still being in progress.
+                    item.setData(QtCore.Qt.UserRole,
+                                 (knob.key, float(trial.factor)))
+                self.log.setItem(row, col, item)
+            self.log.scrollToBottom()
             self._say(f"{knob.component}: {knob.quantity} &mdash; "
                       f"{arrow} at {trial.factor * 100:.1f}% of baseline "
                       f"({done['n']} flights so far)")
 
         def on_progress(_i, _n, message):
-            self.log.appendPlainText(message)
             QtWidgets.QApplication.processEvents()
 
         try:
@@ -248,8 +313,72 @@ class TolerancesTab(QtWidgets.QWidget):
             self.stop_button.setEnabled(False)
 
         self._last_run = run
+        if self._replay is not None:
+            self._replay["baselines"] = dict(run.baselines)
         self.progress.setValue(self.progress.maximum())
         self._show(run)
+
+    # ---- opening one flight ----------------------------------------------
+    def _open_trial(self, item):
+        """Fly the double-clicked trial again, this time keeping every row.
+
+        The sweep throws per-sample data away on purpose - that is most of
+        why it is quick. So a flight somebody wants to look at is simply
+        flown again, with capture on. It is one flight, it is deterministic,
+        and it comes back identical to the one in the table.
+        """
+        if self._running:
+            self._say("Wait for the search to finish before opening a flight.")
+            return
+        replay = self._replay
+        if not replay:
+            self._say("Run a search first - there are no flights to open.")
+            return
+        row = item.row()
+        key_item = self.log.item(row, 0)
+        payload = key_item.data(QtCore.Qt.UserRole) if key_item else None
+        if not payload:
+            return
+        knob_key, factor = payload
+        knob = replay["knobs"].get(knob_key)
+        if knob is None:
+            return
+        baseline = replay["baselines"].get(knob_key)
+        if not baseline:
+            self._say("That flight's baseline is no longer available - "
+                      "run the search again.")
+            return
+
+        self._say(f"Re-flying {knob.component} at "
+                  f"{factor * 100:.2f}% to collect its data...")
+        try:
+            engine, scales = knob.apply(replay["engine"], baseline, factor)
+            outcome, burn = tol.capture_trial(engine, replay["ctx"], scales)
+        except Exception as exc:
+            self._say(f"<b style='color:{theme.PALETTE['critical']}'>"
+                      f"Could not re-fly that trial: {exc}</b>")
+            traceback.print_exc()
+            return
+        if outcome is None:
+            self._say("That trial does not produce a flight to tabulate - "
+                      "the motor did not run.")
+            return
+
+        met, missed = tol.grade(outcome, replay["goals"])
+        title = (f"{knob.component} \u2014 {knob.quantity} at "
+                 f"{factor * 100:.2f}% of as-modelled "
+                 f"({tol.display_value(knob, baseline * factor)})")
+        summary = (f"Apogee {outcome.apogee_ft:,.0f} ft, max Mach "
+                   f"{outcome.max_mach:.2f}, max {outcome.max_g:.1f} g, "
+                   f"landing {outcome.landing_speed_ms:.1f} m/s. "
+                   + ("Meets the goals." if met
+                      else "MISSES: " + "; ".join(missed)))
+        dialog = TrialSheetDialog(title, summary, outcome.rows, burn.rows,
+                                  parent=self)
+        self._open_dialogs.append(dialog)      # keep it alive, non-modal
+        dialog.show()
+        self._say(f"Opened the spreadsheet for {knob.quantity} at "
+                  f"{factor * 100:.2f}%.")
 
     # ---- results ---------------------------------------------------------
     def _show(self, run):

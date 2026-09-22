@@ -179,13 +179,18 @@ class Burn:
     mean_of: float = 0.0
     total_impulse: float = 0.0
     burn_time: float = 0.0
+    #: Per-sample motor internals, only when the caller asked for them.
+    #: Throwing these away is most of why this module is worth having, so
+    #: nothing collects them unless somebody is about to look at them.
+    rows: list = field(default_factory=list)
 
     def ok(self):
         return len(self.t) > 1 and self.total_impulse > 0.0
 
 
 def burn_engine(eng, scales=None, dt: float = 0.01,
-                cfg: SimConfig | None = None, ambient_pa: float = P_SL) -> Burn:
+                cfg: SimConfig | None = None, ambient_pa: float = P_SL,
+                capture: bool = False) -> Burn:
     """Integrate the motor on this module's own right-hand side.
 
     ``dt`` is the interval the finished burn is SAMPLED at for the thrust
@@ -323,6 +328,26 @@ def burn_engine(eng, scales=None, dt: float = 0.01,
         for key, value in (("cstar", cstar), ("cf", cf), ("rdot", rdot),
                            ("of", of), ("pc", pc), ("mdot_ox", mdot_ox)):
             series[key].append(value)
+        if capture:
+            # Keys chosen to match datasheet.ENGINE_COLUMNS, so this sheet
+            # carries the same headings and units as the Engine Data sheet
+            # the rest of the app shows rather than a parallel vocabulary.
+            p_tank = eq.n2o_saturation_pressure(state[1])
+            out.rows.append({
+                "t": t, "thrust": out.thrust[-1],
+                "Pc": pc, "P_tank": p_tank, "T_tank": state[1],
+                "inj_dP": max(0.0, p_tank - pc),
+                "inj_stiffness": eq.injector_stiffness(p_tank, pc),
+                "Pc_over_Pt": (pc / p_tank) if p_tank > 0 else 0.0,
+                "mdot_ox": mdot_ox, "mdot_fuel": mdot_f,
+                "mdot_tot": mdot_ox + mdot_f,
+                "OF": of, "cstar": cstar, "c_star_eff": cstar * eng.eta_cstar,
+                "cf": cf,
+                "G_ox": eq.oxidiser_flux(mdot_ox, eng.A_port(state[2])),
+                "rdot": rdot, "r_port": state[2],
+                "web_left": max(0.0, eng.R_outer - state[2]),
+                "m_ox": state[0], "m_fuel": state[3],
+            })
     y_end = list(sol.y[:, -1])
     m_start = y0[0] + y0[3]
     y = y_end
@@ -375,6 +400,8 @@ class Outcome:
     max_q_pa: float = 0.0
     flew: bool = False
     landed: bool = False
+    #: Per-sample trajectory, only when the caller asked for it.
+    rows: list = field(default_factory=list)
 
 
 # Step sizes by phase. The ascent decides apogee and every speed the goals
@@ -389,11 +416,20 @@ DT_CANOPY = 0.2
 
 
 
-def fly(cond: Conditions, burn: Burn) -> Outcome:
-    """Integrate one trajectory. Same physics as the main model, own stepper."""
+def fly(cond: Conditions, burn: Burn, capture: bool = False,
+        output_dt: float = 0.05) -> Outcome:
+    """Integrate one trajectory. Same physics as the main model, own stepper.
+
+    ``capture`` fills Outcome.rows with per-sample trajectory data in the
+    shape datasheet.FLIGHT_COLUMNS reads. It is off for the sweep - a hundred
+    and fifty flights' worth of rows nobody asked to see is most of the cost
+    this module exists to avoid - and on when one particular flight is opened
+    to be looked at.
+    """
     out = Outcome()
     if not burn.ok():
         return out
+    next_sample = 0.0
 
     times, thrusts = burn.t, burn.thrust
     n_pts = len(times)
@@ -525,6 +561,26 @@ def fly(cond: Conditions, burn: Burn) -> Outcome:
         out.max_q_pa = max(out.max_q_pa, q)
         out.max_g = max(out.max_g, math.hypot(ax, az) / G0)
 
+        if capture and t >= next_sample - 1e-12:
+            next_sample = t + output_dt
+            out.rows.append({
+                "time": t, "altitude": z, "altitude_ft": z * FT_PER_M,
+                "downrange": x, "velocity": vz, "horizontal_velocity": vx,
+                "ground_speed": speed_ground, "airspeed": speed_rel,
+                "Mach": mach, "acceleration": az,
+                "accel_total": math.hypot(ax, az),
+                "accel_g": math.hypot(ax, az) / G0,
+                "thrust": thrust, "drag": drag_mag, "mass": mass,
+                "propellant_remaining": prop_left,
+                "q": q, "rho_local": rho, "temperature_k": _T,
+                "pressure_pa": _P,
+                "Cd_eff": (cda_total / a_ref) if a_ref > 0 else 0.0,
+                "Cd_body_eff": cd_body, "A_eff": a_ref,
+                "cda_recovery": cda_recovery,
+                "chute_deployed": cda_recovery > 0,
+                "tilt_deg": math.degrees(theta),
+            })
+
         dt = _dt_for(thrusting, past_apogee, rec)
         vx += ax * dt
         vz += az * dt
@@ -572,8 +628,9 @@ def _dt_for(thrusting, past_apogee, rec):
     return DT_DESCENT
 
 
-def simulate(eng, cond: Conditions, scales=None, burn_dt: float = 0.01):
+def simulate(eng, cond: Conditions, scales=None, burn_dt: float = 0.01,
+             capture: bool = False):
     """The whole thing: burn the motor, fly it, hand back the metrics."""
     burn = burn_engine(eng, scales=scales, dt=burn_dt,
-                       ambient_pa=cond.site.pressure_pa)
-    return fly(cond, burn), burn
+                       ambient_pa=cond.site.pressure_pa, capture=capture)
+    return fly(cond, burn, capture=capture), burn

@@ -319,6 +319,24 @@ def fly(engine: Engine, ctx: FlightContext, scales=None):
     return outcome, burn
 
 
+def capture_trial(engine: Engine, ctx: FlightContext, scales=None):
+    """Fly one trial again, keeping every sample this time.
+
+    The sweep discards per-sample data deliberately; this is the way back to
+    it for a single flight somebody wants to read. Deterministic, so what
+    comes out is the same flight the table reported, not a near neighbour.
+    """
+    cond = ctx.conditions or ctx.prepare()
+    try:
+        outcome, burn = sim.simulate(engine, cond, scales=scales,
+                                     capture=True)
+    except Exception:
+        return None, None
+    if not outcome.flew:
+        return None, None
+    return outcome, burn
+
+
 def agreement(engine: Engine, ctx: FlightContext, reference_apogee_ft: float):
     """How far the tolerance simulator is from the flight the app flies.
 
@@ -538,6 +556,9 @@ class ToleranceRun:
     error: str = ""
     trials: int = 0
     ranking: list = field(default_factory=list)   # [(knob, apogee % change)]
+    #: knob key -> the as-modelled value each factor is a fraction of. Needed
+    #: to fly any single trial again from its factor alone.
+    baselines: dict = field(default_factory=dict)
     #: Fractional apogee difference between this simulator and the main one
     #: at the baseline. None if there was nothing to compare against.
     agreement: float | None = None
@@ -655,6 +676,8 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
             baselines[knob.key] = float(knob.observe(burn, base_engine))
         except Exception:
             baselines[knob.key] = 0.0
+
+    run.baselines = dict(baselines)
 
     if on_progress is not None:
         on_progress(1, len(knobs) + 2,

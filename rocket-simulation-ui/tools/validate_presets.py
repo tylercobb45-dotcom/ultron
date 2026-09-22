@@ -922,6 +922,29 @@ def validate_tolerances():
               f"impulse {base_burn.total_impulse:,.0f} -> "
               f"{scaled.total_impulse:,.0f} N.s")
 
+    # Opening a trial's spreadsheet re-flies it with per-sample capture on.
+    # That is only honest if the re-flight is the SAME flight: if capture
+    # changed the answer, the sheet would describe a neighbour of the row the
+    # user clicked rather than the row itself.
+    knob = next(k for k in tol.default_knobs() if k.key == "throat")
+    base = run.baselines.get("throat") or knob.observe(
+        tsim.burn_engine(engine), engine)
+    mismatch = []
+    for factor in (0.7, 1.0, 1.3):
+        eng_f, scales = knob.apply(engine, base, factor)
+        plain, _b = tol.fly(eng_f, ctx, scales)
+        shown, burn_rows = tol.capture_trial(eng_f, ctx, scales)
+        if plain is None or shown is None:
+            mismatch.append(f"x{factor} did not fly")
+        elif abs(plain.apogee_ft - shown.apogee_ft) > 1e-9:
+            mismatch.append(f"x{factor}: {plain.apogee_ft:.4f} vs "
+                            f"{shown.apogee_ft:.4f} ft")
+        elif not shown.rows or not burn_rows.rows:
+            mismatch.append(f"x{factor} produced no rows to show")
+    check("a trial's spreadsheet is the same flight as its row",
+          not mismatch, "; ".join(mismatch) if mismatch
+          else "3 factors re-flown identically, with rows")
+
     # Flying the same engine twice must give the same answer, or state is
     # leaking between trials and every later result is contaminated.
     a, _ = tol.fly(engine, ctx)
