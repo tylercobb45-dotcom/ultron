@@ -797,6 +797,111 @@ def validate_motor_designer():
           f"{fill_pa/1e6:.2f} MPa at 20 C")
 
 
+def validate_tolerances():
+    """The tolerance search, against the properties that make it meaningful.
+
+    A margin is only worth reading if the search that produced it is honest
+    about three things: the number it reports is one the rocket SURVIVES, the
+    baseline it measured from is the flight the rest of the app gives, and a
+    rocket that does not meet its goals gets told so rather than handed a
+    tolerance of zero.
+    """
+    banner("10. TOLERANCE SEARCH")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import tolerances as tol
+        import main as app_main
+    except Exception as exc:
+        check("tolerance search", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+
+    win = app_main.RocketSimulationUI()
+    win.show()
+    for _ in range(3):
+        app.processEvents()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           "SystemsGo Goddard Baseline.json")) as fh:
+        win.apply_configuration(json.load(fh))
+    app.processEvents()
+
+    engine, ctx = win._tolerance_inputs()
+
+    # The baseline must be the flight the app itself produces. If these two
+    # drift, every margin below is measured against a rocket the user never
+    # sees.
+    win.start_simulation()
+    for _ in range(4):
+        app.processEvents()
+    app_apogee = win.flight_report._report.apogee_ft
+    rep, _em = tol.fly(engine, ctx)
+    check("baseline matches the flight the app flies",
+          rep is not None and abs(rep.apogee_ft - app_apogee) <= 1.0,
+          f"tolerance baseline {rep.apogee_ft:,.1f} ft against the "
+          f"Simulation tab's {app_apogee:,.1f} ft")
+
+    # A rocket that misses its own goals has no margin to measure, and must
+    # be told so rather than handed zeros.
+    run = tol.find_tolerances(engine, ctx, knobs=tol.default_knobs()[:1])
+    check("a rocket missing its goals is refused, not given zeros",
+          bool(run.error) and not run.results,
+          "refused with an explanation" if run.error
+          else "returned results for a rocket that misses its goals")
+
+    # Now a goal it makes, so the search itself runs.
+    ctx.vehicle.goals = []
+    ctx.vehicle.target_altitude_ft = 8000.0
+    goals = tol.goal_list(ctx.vehicle)
+    knobs = [k for k in tol.default_knobs() if k.key in ("injector", "throat")]
+    run = tol.find_tolerances(engine, ctx, knobs=knobs)
+    check("a rocket meeting its goals is measured", not run.error
+          and len(run.results) == len(knobs),
+          f"{len(run.results)} component(s) in {run.trials} flights")
+
+    for r in run.results:
+        base = r.knob
+        # THE property that matters: the reported edge is a design that
+        # works. An off-by-one in the bisection bookkeeping would report the
+        # first FAILING value instead, and every margin would be one step too
+        # generous - in the wrong direction.
+        for side, factor in (("low", r.low_factor), ("high", r.high_factor)):
+            if factor is None:
+                continue
+            eng = base.write(engine, r.baseline * factor)
+            rep, _em = tol.fly(eng, ctx)
+            met, missed = tol.grade(rep, goals)
+            check(f"{base.key}: the reported {side} edge actually works", met,
+                  f"x{factor:.4f} reaches "
+                  f"{rep.apogee_ft if rep else 0:,.0f} ft"
+                  + ("" if met else " - MISSED " + "; ".join(missed)))
+        # And just past it should not, or the search stopped early. Only
+        # checked when the edge was found by the goals rather than by a
+        # physical limit or the search cap.
+        if r.low_factor is not None and not r.low_note:
+            eng = base.write(engine, r.baseline * (r.low_factor - 2 * tol.RESOLUTION))
+            rep, _em = tol.fly(eng, ctx)
+            met, _ = tol.grade(rep, goals)
+            check(f"{base.key}: just below the low edge fails", not met,
+                  f"x{r.low_factor - 2 * tol.RESOLUTION:.4f} reaches "
+                  f"{rep.apogee_ft if rep else 0:,.0f} ft")
+
+    # Flying the same engine twice must give the same answer, or state is
+    # leaking between trials and every later result is contaminated.
+    a, _ = tol.fly(engine, ctx)
+    b, _ = tol.fly(engine, ctx)
+    check("repeated trials do not contaminate each other",
+          a is not None and b is not None
+          and abs(a.apogee_ft - b.apogee_ft) < 1e-9,
+          f"{a.apogee_ft:,.4f} ft twice" if a and b else "a trial did not run")
+
+    win.close()
+    app.processEvents()
+
+
 def validate_windows_scripts():
     """The shipped .bat files, against the two ways they have already broken.
 
@@ -933,6 +1038,7 @@ def main():
     validate_drag_internals()
     validate_mass_components()
     validate_motor_designer()
+    validate_tolerances()
     validate_windows_scripts()
 
     banner("SUMMARY")

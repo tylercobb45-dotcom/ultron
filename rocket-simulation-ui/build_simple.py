@@ -99,6 +99,12 @@ def main():
         # moves an import behind a path insert cannot silently drop it, and
         # the Engine tab die on the Generate button in the frozen build only.
         "--hidden-import=motor_designer",
+        # The tolerance search and its tab. Named for the same reason as the
+        # modules above: these are reached through src being on --paths, and
+        # a physics module the analysis loses only shows up as a tab that
+        # dies on its button in the frozen build.
+        "--hidden-import=tolerances",
+        "--hidden-import=tolerances_tab",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",
         "--hidden-import=scipy.optimize",

@@ -21,6 +21,8 @@ from engine_lab import EngineLabWidget  # Hybrid engine design tab
 from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
+from tolerances_tab import TolerancesTab  # Build-tolerance search (optional tab)
+import tolerances  # the search itself, Qt-free
 import recovery as recovery_mod
 import failure_analysis as fa
 from aero_tab import AeroAnalysisWidget  # Cd vs Mach analysis tab
@@ -1691,6 +1693,21 @@ class RocketSimulationUI(QtWidgets.QWidget):
             'airframe': self.vehicle_tab.get_config(),
         }
 
+        # --- Tolerances: an extension, not part of the flight path ---
+        #
+        # It reads the rocket and flies copies of it; nothing it does reaches
+        # the Simulation tab or the loaded configuration. That is also why it
+        # can be switched off entirely from Settings without anything else
+        # noticing it has gone.
+        self.tolerances_tab = TolerancesTab(
+            get_inputs=self._tolerance_inputs)
+        self.tabs.addTab(self.tolerances_tab, "Tolerances")
+        # A tab switched off last time should not flash up now. This runs
+        # here, after the tab exists - called any earlier it silently did
+        # nothing, because there was no tab yet to remove.
+        if not self.load_extension_enabled():
+            self.set_tolerances_enabled(False)
+
         # --- Rockets: the saved-rocket library. First tab, because picking a
         # rocket is where a session starts. ---
         self.rocket_library = RocketLibraryWidget(
@@ -1763,6 +1780,26 @@ class RocketSimulationUI(QtWidgets.QWidget):
         units_layout.addWidget(units_note)
 
         settings_layout.addWidget(units_group)
+
+        # --- optional extensions ------------------------------------------
+        ext_group = QtWidgets.QGroupBox("Extensions")
+        ext_layout = QtWidgets.QVBoxLayout(ext_group)
+        self.tolerances_enabled = QtWidgets.QCheckBox(
+            "Tolerances tab - how far each engine component can be wrong")
+        self.tolerances_enabled.setChecked(self.load_extension_enabled())
+        self.tolerances_enabled.setToolTip(
+            "The tolerance search flies the rocket dozens of times, which "
+            "takes a minute or two. Turning it off removes the tab entirely; "
+            "nothing else in the app depends on it.")
+        self.tolerances_enabled.toggled.connect(self.set_tolerances_enabled)
+        ext_layout.addWidget(self.tolerances_enabled)
+        ext_note = QtWidgets.QLabel(
+            "<span style='font-size:9pt'>Extensions are self-contained: they "
+            "read the loaded rocket and never write to it, so switching one "
+            "off changes nothing about how the rocket flies.</span>")
+        ext_note.setWordWrap(True)
+        ext_layout.addWidget(ext_note)
+        settings_layout.addWidget(ext_group)
         
         # Rocket Configuration Profiles section
         profiles_group = QtWidgets.QGroupBox("Rocket Configuration Profiles")
@@ -4642,6 +4679,69 @@ class RocketSimulationUI(QtWidgets.QWidget):
             self.flight_report.set_values(values)
             self.invalidate_flight_results(
                 "Motor materials changed - run a simulation to re-grade it.")
+
+    # ---- optional extensions ---------------------------------------------
+    def load_extension_enabled(self, name="tolerances", default=True):
+        """Whether an optional tab is switched on, from the settings file."""
+        try:
+            with open(getattr(self, 'user_settings_file', None)
+                      or user_settings_path(), 'r') as f:
+                return bool(json.load(f).get(f"{name}_tab_enabled", default))
+        except Exception:
+            return default
+
+    def set_tolerances_enabled(self, enabled):
+        """Show or hide the Tolerances tab, and remember the choice.
+
+        Removing the tab rather than disabling it: a greyed-out tab still
+        invites a click and still has to explain itself. The widget is kept
+        alive so switching back does not lose whatever was measured.
+        """
+        enabled = bool(enabled)
+        tab = getattr(self, 'tolerances_tab', None)
+        if tab is not None:
+            index = self.tabs.indexOf(tab)
+            if enabled and index < 0:
+                # Back where it was: after the Flight Report, before Settings.
+                before = self.tabs.indexOf(self.flight_report)
+                at = before + 1 if before >= 0 else self.tabs.count()
+                self.tabs.insertTab(at, tab, "Tolerances")
+            elif not enabled and index >= 0:
+                self.tabs.removeTab(index)
+                tab.setParent(None)
+        try:
+            path = (getattr(self, 'user_settings_file', None)
+                    or user_settings_path())
+            try:
+                with open(path, 'r') as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+            existing["tolerances_tab_enabled"] = enabled
+            with open(path, 'w') as f:
+                json.dump(existing, f, indent=2)
+        except Exception:
+            pass
+
+    def _tolerance_inputs(self):
+        """(engine, FlightContext) for the Tolerances tab.
+
+        Deliberately the same sources the Simulation tab flies from, so the
+        baseline the tolerance search reports is the flight the rest of the
+        app would give you. A margin measured against a different rocket from
+        the one on screen is worse than no margin.
+        """
+        if not hasattr(self, 'engine_lab') or not hasattr(self, 'vehicle_tab'):
+            raise RuntimeError("the Engine and Aerodynamics tabs are not ready")
+        engine = self.engine_lab._read_engine()
+        ctx = tolerances.FlightContext(
+            airframe=self.vehicle_tab.airframe(),
+            site=self.vehicle_tab.launch_site(),
+            recovery=self.vehicle_tab.recovery_system(),
+            mass_props=self.vehicle_tab.mass_properties(),
+            vehicle=self.flight_report.vehicle_config(),
+            cd_override=self.cd_source())
+        return engine, ctx
 
     def _engine_preview_vehicle(self):
         """The loaded rocket, for the Engine tab's quick flight preview.
