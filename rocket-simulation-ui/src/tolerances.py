@@ -63,10 +63,12 @@ from hybrid_sim.metrics import metrics as hs_metrics  # noqa: E402
 RESOLUTION = 0.005
 
 # How far up to look. The downward search has a natural floor - a factor of
-# zero is the component doing nothing at all - and the upward one does not, so
-# it gets a stated limit rather than an invented one. 2.0 mirrors the floor:
-# "twice as much" against "none at all".
-MAX_FACTOR = 2.0
+# zero is the quantity being nothing at all - and the upward one does not, so
+# it gets a stated limit rather than an invented one. Three times the modelled
+# value: far enough that a motor which survives it is not meaningfully bounded
+# above, and the report says so in those words rather than implying the limit
+# was found.
+MAX_FACTOR = 3.0
 
 # Guard rail on runtime. A bisection to RESOLUTION needs about eight trials,
 # and anything much past that means the boundary is not behaving like a
@@ -74,39 +76,119 @@ MAX_FACTOR = 2.0
 MAX_TRIALS_PER_DIRECTION = 12
 
 
+# --- scaling what the MODEL says, not just what the hardware is ----------
+
+class ScaledEngineModel(EngineModel):
+    """The engine solver with a thumb on one of its own answers.
+
+    A hardware tolerance asks "what if the part is not the size on the print".
+    This asks the other question, which is at least as important: **what if
+    the model is wrong?** The regression law is a fit to somebody else's
+    firings, c* comes off a table computed for a propellant that is not
+    exactly yours, the injector model is a blend of two limiting cases. None
+    of those are laws of nature - they are our interpretation of them, and an
+    interpretation can be off.
+
+    So each factor here multiplies a modelled quantity EVERYWHERE it is used,
+    for the whole burn, and lets everything downstream follow. Scaling
+    chamber pressure is not a note in the margin; the solver genuinely runs
+    the motor at that pressure, the nozzle sees it, the thrust follows, and
+    the rocket flies on the result.
+
+    ``hybrid_sim`` is not modified to do this. These are overrides of the
+    methods the solver already routes through, and _post computes the output
+    arrays through the same ones - so what the model reports and what it
+    integrated stay the same thing.
+    """
+
+    #: name -> what it multiplies, for the UI and for error messages.
+    SCALES = ("mdot_ox", "pc", "cstar", "cf", "regression", "fuel_density",
+              "of")
+
+    def __init__(self, eng, scales=None, **kwargs):
+        super().__init__(eng, **kwargs)
+        self._scales = dict(scales or {})
+        a = self._scales.get("regression", 1.0)
+        rho = self._scales.get("fuel_density", 1.0)
+        if a != 1.0 or rho != 1.0:
+            # rdot = a * G^n, so scaling a scales the regression rate exactly.
+            # Fuel density is the separate question of how much MASS comes off
+            # for that much regression - the grain can be denser than the
+            # datasheet without burning back any faster.
+            self._fuel = dataclasses.replace(
+                self._fuel, a=self._fuel.a * a, rho=self._fuel.rho * rho)
+
+    def _k(self, name):
+        return self._scales.get(name, 1.0)
+
+    def _mdot_ox(self, m_l, T, Pc):
+        mdot, p_tank = super()._mdot_ox(m_l, T, Pc)
+        return mdot * self._k("mdot_ox"), p_tank
+
+    def _cstar(self, OF):
+        # Two different doubts, one call. "of" is the mixture the combustion
+        # actually sees being other than the ratio we computed; "cstar" is the
+        # table being wrong about what that mixture is worth.
+        return super()._cstar(OF * self._k("of")) * self._k("cstar")
+
+    def _pc_target(self, mdot_tot, OF, Pt, At):
+        return super()._pc_target(mdot_tot, OF, Pt, At) * self._k("pc")
+
+    def _cf(self, Pc, eps=None, Me=None):
+        return super()._cf(Pc, eps, Me) * self._k("cf")
+
+
 # --- the knobs ------------------------------------------------------------
+
+HARDWARE = "hardware"
+MODEL = "model"
+
 
 @dataclass
 class Knob:
-    """One component, and the quantity whose tolerance is being measured.
+    """One thing that can be wrong, and how to make it wrong.
 
-    ``read`` pulls the baseline out of an Engine. ``write`` puts a scaled
-    value back, returning the Engine to fly. ``limit`` is the physical bound
-    the quantity cannot pass regardless of what the goals say - a fill
-    fraction cannot exceed a full tank however forgiving the mission is, and
-    reporting an unreachable tolerance would be worse than reporting none.
+    ``apply`` takes the engine and a factor and returns the pair the trial
+    needs: the Engine to run, and the model scales to run it under. A
+    hardware knob changes the Engine and scales nothing; a model knob leaves
+    the Engine alone and scales the solver. Both end up in the same search.
+
+    ``observe`` pulls a representative baseline number out of the unperturbed
+    run, purely so the report can say what 100% actually was.
     """
     key: str
     component: str
     quantity: str
     unit: str
     decimals: int
-    read: object
-    write: object
+    kind: str
+    apply: object
+    observe: object
     why: str
     lower_limit: float = 0.0
     upper_limit: float = float("inf")
 
     def format(self, value: float) -> str:
-        return f"{value:,.{self.decimals}f}{(' ' + self.unit) if self.unit else ''}"
+        return (f"{value:,.{self.decimals}f}"
+                f"{(' ' + self.unit) if self.unit else ''}")
 
 
 def _set(eng: Engine, **changes) -> Engine:
     return dataclasses.replace(eng, **changes)
 
 
-def _injector_area(eng: Engine) -> float:
-    return eng.A_inj
+def _hardware(setter):
+    """Wrap a hardware setter into the (engine, scales) shape."""
+    def apply(engine, baseline, factor):
+        return setter(engine, baseline * factor), {}
+    return apply
+
+
+def _model(name):
+    """A model knob: the engine is untouched, the solver is scaled."""
+    def apply(engine, _baseline, factor):
+        return engine, {name: factor}
+    return apply
 
 
 def _set_injector_area(eng: Engine, area: float) -> Engine:
@@ -126,53 +208,117 @@ def _regression_a(eng: Engine) -> float:
 
     Engine.fuel_a is an override where 0 means "use the value that belongs to
     the named fuel", so the baseline has to resolve that - scaling a zero
-    gives zero and would have reported every fuel as infinitely tolerant.
+    gives zero and would report every fuel as infinitely tolerant.
     """
     return eng.fuel_a if eng.fuel_a > 0 else eng.fuel_eff.a
 
 
+def _mean(res, key):
+    """Mean of a burn array over the samples where the motor is actually on."""
+    try:
+        thrust = res["thrust"]
+        values = res[key]
+    except Exception:
+        return 0.0
+    live = [float(v) for v, f in zip(values, thrust) if float(f) > 1.0]
+    return sum(live) / len(live) if live else 0.0
+
+
+def _peak(res, key):
+    try:
+        return float(max(res[key]))
+    except Exception:
+        return 0.0
+
+
 def default_knobs() -> list:
-    """The components this can measure, in the order they are searched."""
+    """Everything this can be wrong about.
+
+    Hardware first because they are the build tolerances a team can act on,
+    then the model doubts. The ORDER the search actually uses is measured,
+    not this list - see rank_by_sensitivity.
+    """
     return [
-        Knob(
-            key="tank", component="Oxidiser tank",
-            quantity="Fill fraction (liquid vs vapour)", unit="", decimals=4,
-            read=lambda e: e.fill_frac,
-            write=lambda e, v: _set(e, fill_frac=v),
-            why="How much of the tank is liquid at ignition rather than "
-                "ullage vapour. Sets how much nitrous is aboard, and it is "
-                "the number a fill is least able to hit exactly.",
-            # A tank cannot be more than full, and a little ullage is needed
-            # for thermal expansion - filling to the brim is a burst risk,
-            # not a tolerance.
-            lower_limit=0.01, upper_limit=0.98),
-        Knob(
-            key="injector", component="Injector",
-            quantity="Flow area (Cd x A)", unit="mm^2", decimals=3,
-            read=_injector_area,
-            write=_set_injector_area,
-            why="Total orifice area, which is what sets oxidiser flow and so "
-                "thrust and burn time. Drill wander and edge break move it.",
-            lower_limit=1e-9),
-        Knob(
-            key="grain", component="Fuel grain",
-            quantity="Regression coefficient a", unit="", decimals=8,
-            read=_regression_a,
-            write=lambda e, v: _set(e, fuel_a=v),
-            why="Fuel regression rate, which sets fuel flow and therefore the "
-                "O/F the motor actually runs at. The least known number in a "
-                "hybrid: it depends on the formulation and the casting, and "
-                "it is not published for proprietary fuels.",
-            lower_limit=1e-12),
-        Knob(
-            key="throat", component="Nozzle throat",
-            quantity="Throat diameter", unit="mm", decimals=3,
-            read=lambda e: e.d_throat,
-            write=lambda e, v: _set(e, d_throat=v),
-            why="The most sensitive dimension in the motor - chamber pressure "
-                "goes roughly as one over throat area. Machining tolerance "
-                "and erosion both move it.",
-            lower_limit=1e-4),
+        # --- what the hardware is -------------------------------------
+        Knob(key="tank", component="Oxidiser tank", kind=HARDWARE,
+             quantity="Fill fraction (liquid vs vapour)", unit="", decimals=4,
+             apply=_hardware(lambda e, v: _set(e, fill_frac=v)),
+             observe=lambda res, m, e: e.fill_frac,
+             why="How much of the tank is liquid at ignition rather than "
+                 "ullage vapour. Sets how much nitrous is aboard, and it is "
+                 "the number a fill is least able to hit exactly.",
+             lower_limit=0.01, upper_limit=0.98),
+        Knob(key="injector", component="Injector", kind=HARDWARE,
+             quantity="Flow area (Cd x A)", unit="mm^2", decimals=3,
+             apply=_hardware(_set_injector_area),
+             observe=lambda res, m, e: e.A_inj,
+             why="Total orifice area, which is what sets oxidiser flow and "
+                 "so thrust and burn time. Drill wander and edge break move "
+                 "it.",
+             lower_limit=1e-9),
+        Knob(key="throat", component="Nozzle throat", kind=HARDWARE,
+             quantity="Throat diameter", unit="mm", decimals=3,
+             apply=_hardware(lambda e, v: _set(e, d_throat=v)),
+             observe=lambda res, m, e: e.d_throat,
+             why="The most sensitive dimension in the motor - chamber "
+                 "pressure goes roughly as one over throat area. Machining "
+                 "tolerance and erosion both move it.",
+             lower_limit=1e-4),
+
+        # --- what the model says --------------------------------------
+        Knob(key="pc", component="Chamber pressure", kind=MODEL,
+             quantity="Pressure the model predicts", unit="MPa", decimals=3,
+             apply=_model("pc"),
+             observe=lambda res, m, e: m.get("peak_Pc", 0.0) / 1e6,
+             why="Everything the nozzle does starts here. If the chamber "
+                 "really runs above or below what the model says, thrust and "
+                 "impulse move with it - this is usually the largest single "
+                 "doubt in the whole engine."),
+        Knob(key="cstar", component="Combustion", kind=MODEL,
+             quantity="c* (characteristic velocity)", unit="m/s", decimals=1,
+             apply=_model("cstar"),
+             observe=lambda res, m, e: _mean(res, "cstar"),
+             why="How much chamber pressure the propellant is worth. Comes "
+                 "off a CEA table computed for a propellant pair that is "
+                 "close to yours rather than exactly yours."),
+        Knob(key="cf", component="Nozzle", kind=MODEL,
+             quantity="Thrust coefficient Cf", unit="", decimals=4,
+             apply=_model("cf"),
+             observe=lambda res, m, e: _mean(res, "cf"),
+             why="How much the bell multiplies chamber pressure times throat "
+                 "area. An isentropic ideal with a divergence correction - "
+                 "real nozzles lose more, and by an amount nobody knows "
+                 "without firing it."),
+        Knob(key="regression", component="Fuel grain", kind=MODEL,
+             quantity="Regression rate", unit="mm/s", decimals=4,
+             apply=_model("regression"),
+             observe=lambda res, m, e: _mean(res, "rdot") * 1000.0,
+             why="How fast the fuel wall burns back, and so the fuel flow. "
+                 "The coefficient behind it is a literature average for a "
+                 "whole fuel family - the least known number in a hybrid, "
+                 "and not published at all for proprietary fuels."),
+        Knob(key="of", component="Mixture ratio", kind=MODEL,
+             quantity="O/F the combustion sees", unit="", decimals=3,
+             apply=_model("of"),
+             observe=lambda res, m, e: m.get("avg_OF", 0.0),
+             why="The ratio the chemistry behaves as though it were running "
+                 "at. Hybrids burn in a boundary layer and mix unevenly, so "
+                 "the effective mixture is not simply the two flow rates "
+                 "divided."),
+        Knob(key="mdot_ox", component="Oxidiser flow", kind=MODEL,
+             quantity="Oxidiser mass flow", unit="kg/s", decimals=4,
+             apply=_model("mdot_ox"),
+             observe=lambda res, m, e: _peak(res, "mdot_ox"),
+             why="What the injector model says comes through for a given "
+                 "pressure drop. A blend of two limiting cases with a "
+                 "weighting that is a rule of thumb."),
+        Knob(key="fuel_density", component="Fuel grain", kind=MODEL,
+             quantity="Fuel density", unit="kg/m3", decimals=1,
+             apply=_model("fuel_density"),
+             observe=lambda res, m, e: e.fuel_eff.rho,
+             why="How much mass comes off for a given regression. A cast "
+                 "grain with voids, or one packed denser than the datasheet, "
+                 "moves this without changing how fast the wall recedes."),
     ]
 
 
@@ -181,6 +327,8 @@ DISPLAY_SCALE = {"injector": 1e6, "throat": 1e3}
 
 
 def display_value(knob: Knob, si_value: float) -> str:
+    if si_value is None:
+        return "-"
     return knob.format(si_value * DISPLAY_SCALE.get(knob.key, 1.0))
 
 
@@ -221,15 +369,16 @@ class Trial:
     failed_goals: tuple = ()
 
 
-def fly(engine: Engine, ctx: FlightContext):
+def fly(engine: Engine, ctx: FlightContext, scales=None):
     """Run the engine, fly it, grade it. Returns (report, engine metrics).
 
-    None if the motor will not run or the rocket will not leave the pad -
-    which is a legitimate outcome of winding a knob far enough, and has to be
-    a FAIL rather than an exception that stops the search.
+    ``scales`` are model-error multipliers (see ScaledEngineModel). None if
+    the motor will not run or the rocket will not leave the pad - which is a
+    legitimate outcome of winding a knob far enough, and has to be a FAIL
+    rather than an exception that stops the search.
     """
     try:
-        res = EngineModel(engine).run()
+        res = ScaledEngineModel(engine, scales=scales).run()
         em = hs_metrics(res)
         if em.get("peak_thrust", 0.0) <= 0 or em.get("burn_time", 0.0) <= 0:
             return None, None
@@ -255,6 +404,8 @@ def fly(engine: Engine, ctx: FlightContext):
         rep = fa.analyze(rows, ctx.vehicle, engine_result=res, engine=engine,
                          cd_source=ctx.cd_override, mass_props=mass_props,
                          summary=summary)
+        em = dict(em)
+        em["_engine_result"] = res
         return rep, em
     except Exception:
         return None, None
@@ -301,6 +452,11 @@ class ToleranceResult:
     high_note: str = ""
     trials: list = field(default_factory=list)
     error: str = ""
+    #: Apogee change, in percent, for the SENSITIVITY_STEP probe. What the
+    #: ordering is built from, and worth showing: a knob the rocket barely
+    #: notices and one that moves it 20% both deserve a tolerance, but not
+    #: the same amount of attention.
+    sensitivity_pct: float | None = None
 
     @property
     def down_pct(self):
@@ -326,8 +482,14 @@ def _bisect(knob, base_engine, ctx, goals, baseline, downward,
     rocket survives - never one it does not.
     """
     trials = []
-    limit = knob.lower_limit if downward else knob.upper_limit
-    limit_factor = (limit / baseline) if baseline else None
+    if knob.kind == MODEL:
+        # A model scale has no hardware bound to run into: the question is
+        # how wrong the number can be, and "wrong by all of it" is a
+        # perfectly askable question. The limits below belong to parts.
+        limit_factor = None
+    else:
+        limit = knob.lower_limit if downward else knob.upper_limit
+        limit_factor = (limit / baseline) if baseline else None
     if limit_factor is not None and not math.isfinite(limit_factor):
         limit_factor = None
 
@@ -341,8 +503,8 @@ def _bisect(knob, base_engine, ctx, goals, baseline, downward,
     def run(factor):
         if should_cancel is not None and should_cancel():
             return None
-        eng = knob.write(base_engine, baseline * factor)
-        rep, _em = fly(eng, ctx)
+        eng, scales = knob.apply(base_engine, baseline, factor)
+        rep, _em = fly(eng, ctx, scales)
         met, missed = grade(rep, goals)
         t = Trial(factor=factor, passed=met,
                   apogee_ft=(rep.apogee_ft if rep else 0.0),
@@ -409,16 +571,15 @@ def _bisect(knob, base_engine, ctx, goals, baseline, downward,
     return passing, note, trials
 
 
-def measure(knob, base_engine, ctx, goals, baseline_apogee_ft,
+def measure(knob, base_engine, ctx, goals, baseline_apogee_ft, baseline,
             on_trial=None, should_cancel=None) -> ToleranceResult:
     """Both directions for one component."""
-    baseline = float(knob.read(base_engine))
+    baseline = float(baseline or 0.0)
     result = ToleranceResult(knob=knob, baseline=baseline,
                              baseline_apogee_ft=baseline_apogee_ft)
-    if not baseline or baseline <= 0:
-        result.error = ("This component's value is zero on the loaded engine, "
-                        "so there is no baseline to measure a tolerance "
-                        "against.")
+    if baseline <= 0:
+        result.error = ("This came out as zero on the loaded engine, so "
+                        "there is no baseline to measure against.")
         return result
 
     low, low_note, t1 = _bisect(knob, base_engine, ctx, goals, baseline,
@@ -451,6 +612,47 @@ class ToleranceRun:
     cancelled: bool = False
     error: str = ""
     trials: int = 0
+    ranking: list = field(default_factory=list)   # [(knob, apogee % change)]
+
+
+# One probe per knob decides the order. Small enough to stay in the linear
+# part of the response, large enough to rise clear of solver noise.
+SENSITIVITY_STEP = 0.10
+
+
+def rank_by_sensitivity(base_engine, ctx, knobs, baselines,
+                        baseline_apogee_ft, on_probe=None,
+                        should_cancel=None):
+    """Order the knobs by how much the rocket actually cares about each.
+
+    Measured, not asserted. Which quantity matters most is a property of THIS
+    rocket, not of hybrids in general - an oxidiser-flow error barely moves a
+    tank-limited motor because the same nitrous comes out either way, while
+    the same error on a chamber-pressure-limited one is the whole ball game.
+    One flight per knob buys an order worth having, and the number is worth
+    showing on its own.
+
+    Returns [(knob, percent change in apogee)], largest first.
+    """
+    scored = []
+    for knob in knobs:
+        if should_cancel is not None and should_cancel():
+            break
+        base = baselines.get(knob.key) or 0.0
+        if base <= 0:
+            scored.append((knob, 0.0))
+            continue
+        eng, scales = knob.apply(base_engine, base, 1.0 + SENSITIVITY_STEP)
+        rep, _em = fly(eng, ctx, scales)
+        if rep is None or baseline_apogee_ft <= 0:
+            pct = float("inf")        # it broke the motor: maximum attention
+        else:
+            pct = (rep.apogee_ft - baseline_apogee_ft) / baseline_apogee_ft * 100.0
+        scored.append((knob, pct))
+        if on_probe is not None:
+            on_probe(knob, pct)
+    scored.sort(key=lambda kv: -abs(kv[1]))
+    return scored
 
 
 def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
@@ -475,8 +677,8 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
     # cannot measure how far a rocket can drift from meeting its goals if it
     # is not meeting them to begin with.
     if on_progress is not None:
-        on_progress(0, len(knobs) + 1, "Flying the engine as configured...")
-    rep, _em = fly(base_engine, ctx)
+        on_progress(0, len(knobs) + 2, "Flying the engine as configured...")
+    rep, em = fly(base_engine, ctx)
     counter["n"] += 1
     met, missed = grade(rep, run.goals)
     run.baseline_apogee_ft = rep.apogee_ft if rep else 0.0
@@ -489,16 +691,40 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
         run.trials = counter["n"]
         return run
 
-    for i, knob in enumerate(knobs, start=1):
+    # What 100% is, for each knob, read off that one unperturbed run.
+    res = (em or {}).get("_engine_result")
+    baselines = {}
+    for knob in knobs:
+        try:
+            baselines[knob.key] = float(knob.observe(res, em or {},
+                                                     base_engine))
+        except Exception:
+            baselines[knob.key] = 0.0
+
+    if on_progress is not None:
+        on_progress(1, len(knobs) + 2,
+                    "Finding which of these the rocket cares about most...")
+    ranked = rank_by_sensitivity(
+        base_engine, ctx, knobs, baselines, run.baseline_apogee_ft,
+        on_probe=(lambda k, pct: on_progress(
+            1, len(knobs) + 2,
+            f"{k.component}: {k.quantity} moves apogee {pct:+.1f}%")
+            if on_progress is not None else None),
+        should_cancel=should_cancel)
+    counter["n"] += len(ranked)
+    run.ranking = list(ranked)
+
+    for i, (knob, pct) in enumerate(ranked, start=2):
         if should_cancel is not None and should_cancel():
             run.cancelled = True
             break
         if on_progress is not None:
-            on_progress(i, len(knobs) + 1,
+            on_progress(i, len(knobs) + 2,
                         f"{knob.component}: {knob.quantity}")
         result = measure(knob, base_engine, ctx, run.goals,
-                         run.baseline_apogee_ft, on_trial=counted_trial,
-                         should_cancel=should_cancel)
+                         run.baseline_apogee_ft, baselines.get(knob.key),
+                         on_trial=counted_trial, should_cancel=should_cancel)
+        result.sensitivity_pct = pct
         run.results.append(result)
         if result.error == "cancelled":
             run.cancelled = True
@@ -506,5 +732,5 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
 
     run.trials = counter["n"]
     if on_progress is not None:
-        on_progress(len(knobs) + 1, len(knobs) + 1, "Done.")
+        on_progress(len(knobs) + 2, len(knobs) + 2, "Done.")
     return run

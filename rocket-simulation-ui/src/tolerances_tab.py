@@ -47,29 +47,51 @@ class TolerancesTab(QtWidgets.QWidget):
         lv = QtWidgets.QVBoxLayout(left)
 
         intro = QtWidgets.QLabel(
-            "<b>Tolerances</b> &mdash; how far wrong each part of the motor "
-            "can be built and still have this rocket meet its goals.<br><br>"
-            "Each component is scaled up and down from the engine as it is "
-            "configured now. Every step runs the <i>full</i> engine burn and "
-            "the <i>full</i> trajectory, then grades the flight against this "
-            "rocket's own goals &mdash; the same goals the Flight Report "
-            "uses. Nothing here changes the loaded rocket.")
+            "<b>Tolerances</b> &mdash; how far wrong each thing can be and "
+            "still have this rocket meet its goals.<br><br>"
+            "Two kinds of wrong. The <b>hardware</b> can be built off the "
+            "print. The <b>model</b> can simply be mistaken: these equations "
+            "are our interpretation of the physics, not the physics, so what "
+            "they predict for chamber pressure or regression rate can be out "
+            "by a fifth and nothing will tell you. Both are scaled across "
+            "the whole burn and everything downstream follows.<br><br>"
+            "Every step runs the <i>full</i> engine burn and the <i>full</i> "
+            "trajectory, then grades it against this rocket's own goals "
+            "&mdash; the same goals the Flight Report uses. The order is "
+            "measured first, so the things this rocket actually cares about "
+            "come out on top. Nothing here changes the loaded rocket.<br><br>"
+            "<i>All ten takes a couple of minutes. Stop works at any "
+            "point.</i>")
         intro.setWordWrap(True)
         lv.addWidget(intro)
 
-        comp_group = QtWidgets.QGroupBox("Components to measure")
-        cv = QtWidgets.QVBoxLayout(comp_group)
         self._boxes = {}
-        for knob in tol.default_knobs():
-            box = QtWidgets.QCheckBox(
-                # Escaped rather than literal so this file stays pure
-                # ASCII on disk. Qt renders it the same either way.
-                "%s \u2014 %s" % (knob.component, knob.quantity))
-            box.setChecked(True)
-            box.setToolTip(knob.why)
-            self._boxes[knob.key] = box
-            cv.addWidget(box)
-        lv.addWidget(comp_group)
+        for kind, title, blurb in (
+            (tol.HARDWARE, "What the hardware is",
+             "Build tolerances: the part is not quite the size on the print."),
+            (tol.MODEL, "What the model says",
+             "Model error: the equation is our interpretation of the "
+             "physics, and an interpretation can be wrong. Each of these is "
+             "scaled across the WHOLE burn, and everything downstream "
+             "follows."),
+        ):
+            group = QtWidgets.QGroupBox(title)
+            cv = QtWidgets.QVBoxLayout(group)
+            note = QtWidgets.QLabel(f"<span style='font-size:9pt'>{blurb}</span>")
+            note.setWordWrap(True)
+            cv.addWidget(note)
+            for knob in tol.default_knobs():
+                if knob.kind != kind:
+                    continue
+                box = QtWidgets.QCheckBox(
+                    # Escaped rather than literal so this file stays pure
+                    # ASCII on disk. Qt renders it the same either way.
+                    "%s \u2014 %s" % (knob.component, knob.quantity))
+                box.setChecked(True)
+                box.setToolTip(knob.why)
+                self._boxes[knob.key] = box
+                cv.addWidget(box)
+            lv.addWidget(group)
 
         self.run_button = QtWidgets.QPushButton("Find Tolerances")
         self.run_button.clicked.connect(self._run)
@@ -103,10 +125,18 @@ class TolerancesTab(QtWidgets.QWidget):
         rv = QtWidgets.QVBoxLayout(right)
 
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["Component", "What was varied", "As configured",
-             "Lowest that works", "Highest that works", "Tolerance"])
+            ["Component", "What was varied", "As modelled",
+             "Lowest OK", "Highest OK", "Tolerance", "Impact"])
+        # Short headers on purpose. The full phrases needed more width than
+        # the values under them, so capping those columns to fit the numbers
+        # clipped their own titles to "WEST THAT WOR".
+        self.table.setToolTip(
+            "Lowest OK / Highest OK: the furthest this quantity can be wrong "
+            "in each direction and still have the rocket meet its goals.\n"
+            "Impact: how much apogee moved when it was put 10% high - "
+            "measured on this rocket, and what the rows are ordered by.")
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectRows)
@@ -177,7 +207,7 @@ class TolerancesTab(QtWidgets.QWidget):
         # Roughly: one baseline, then a far-end probe plus a bisection each
         # way per component. Only a guide for the bar - a component that
         # survives its whole range finishes in one flight.
-        est = 1 + len(knobs) * 2 * (2 + tol.MAX_TRIALS_PER_DIRECTION)
+        est = 1 + len(knobs) * (1 + 2 * (2 + tol.MAX_TRIALS_PER_DIRECTION))
         self.progress.setMaximum(est)
         self.progress.setValue(0)
         self._say("Flying the engine as configured...")
@@ -243,6 +273,7 @@ class TolerancesTab(QtWidgets.QWidget):
                 put(3, "-")
                 put(4, "-")
                 put(5, r.error)
+                put(6, "-")
                 continue
             # A run stopped part way through still measured whatever it
             # finished. Showing the completed side and marking only the other
@@ -257,9 +288,17 @@ class TolerancesTab(QtWidgets.QWidget):
             down = f"-{r.down_pct:.1f}%" if low_done else "?"
             up = f"+{r.up_pct:.1f}%" if high_done else "?"
             put(5, f"{down}  /  {up}")
+            put(6, "-" if r.sensitivity_pct is None
+                else f"{r.sensitivity_pct:+.1f}% apogee")
         self.table.resizeColumnsToContents()
         header = self.table.horizontalHeader()
-        for col, cap in ((1, 230),):
+        # Cap the value columns BEFORE stretching the description. Sizing
+        # every column to its contents first gives the three number columns
+        # whatever their widest row needs, and "What was varied" - the column
+        # that says what the row is about - gets the crumbs and shows
+        # "Pressure the mod...". Capping a column that is about to be
+        # stretched, as this did, achieves nothing at all.
+        for col, cap in ((2, 130), (3, 140), (4, 140), (5, 150), (6, 130)):
             if self.table.columnWidth(col) > cap:
                 self.table.setColumnWidth(col, cap)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
@@ -276,9 +315,23 @@ class TolerancesTab(QtWidgets.QWidget):
         headline = ("<b style='color:%s'>Stopped early.</b> " % bad
                     if run.cancelled else
                     "<b style='color:%s'>Done.</b> " % good)
+        # The tightest margin among the things that matter is the one number
+        # worth putting in front of someone. A 10% margin on the quantity the
+        # rocket is most sensitive to is the whole result; the table is the
+        # working.
+        tightest = ""
+        scored = [r for r in run.results
+                  if r.down_pct is not None and not r.error]
+        if scored:
+            worst = min(scored, key=lambda r: r.down_pct)
+            tightest = (
+                f"<br><br>Tightest margin: <b>{worst.knob.component} "
+                f"&mdash; {worst.knob.quantity}</b>, which only has "
+                f"<b>-{worst.down_pct:.0f}%</b> before this rocket stops "
+                f"making its goals.")
         self._say(
             f"{headline}{run.trials} complete flights.<br>"
             f"The engine as configured reaches "
             f"<b>{run.baseline_apogee_ft:,.0f} ft</b> and meets its goals; "
-            f"the table says how far each part can drift from that before it "
-            f"stops.")
+            f"the table says how far each thing can be wrong before it "
+            f"stops.{tightest}")

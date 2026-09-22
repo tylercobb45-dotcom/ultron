@@ -856,7 +856,9 @@ def validate_tolerances():
     ctx.vehicle.goals = []
     ctx.vehicle.target_altitude_ft = 8000.0
     goals = tol.goal_list(ctx.vehicle)
-    knobs = [k for k in tol.default_knobs() if k.key in ("injector", "throat")]
+    # One hardware knob and one model knob, so both paths through the search
+    # are exercised - they reach the simulator by completely different routes.
+    knobs = [k for k in tol.default_knobs() if k.key in ("throat", "pc")]
     run = tol.find_tolerances(engine, ctx, knobs=knobs)
     check("a rocket meeting its goals is measured", not run.error
           and len(run.results) == len(knobs),
@@ -871,8 +873,8 @@ def validate_tolerances():
         for side, factor in (("low", r.low_factor), ("high", r.high_factor)):
             if factor is None:
                 continue
-            eng = base.write(engine, r.baseline * factor)
-            rep, _em = tol.fly(eng, ctx)
+            eng, scales = base.apply(engine, r.baseline, factor)
+            rep, _em = tol.fly(eng, ctx, scales)
             met, missed = tol.grade(rep, goals)
             check(f"{base.key}: the reported {side} edge actually works", met,
                   f"x{factor:.4f} reaches "
@@ -882,12 +884,28 @@ def validate_tolerances():
         # checked when the edge was found by the goals rather than by a
         # physical limit or the search cap.
         if r.low_factor is not None and not r.low_note:
-            eng = base.write(engine, r.baseline * (r.low_factor - 2 * tol.RESOLUTION))
-            rep, _em = tol.fly(eng, ctx)
+            factor = r.low_factor - 2 * tol.RESOLUTION
+            eng, scales = base.apply(engine, r.baseline, factor)
+            rep, _em = tol.fly(eng, ctx, scales)
             met, _ = tol.grade(rep, goals)
             check(f"{base.key}: just below the low edge fails", not met,
-                  f"x{r.low_factor - 2 * tol.RESOLUTION:.4f} reaches "
+                  f"x{factor:.4f} reaches "
                   f"{rep.apogee_ft if rep else 0:,.0f} ft")
+
+    # Every model override has to actually reach the solver. These are
+    # subclass overrides of hybrid_sim's own methods, so if one of those
+    # methods is renamed upstream the override becomes dead code that nothing
+    # calls - and the knob would silently report an infinite tolerance
+    # instead of an error. Each scale must move the result.
+    base_m = tol.hs_metrics(tol.ScaledEngineModel(engine).run())
+    for name in tol.ScaledEngineModel.SCALES:
+        scaled = tol.hs_metrics(
+            tol.ScaledEngineModel(engine, scales={name: 1.25}).run())
+        moved = abs(scaled["total_impulse"] - base_m["total_impulse"])
+        check(f"scaling the modelled {name} reaches the solver",
+              moved > base_m["total_impulse"] * 1e-4,
+              f"impulse {base_m['total_impulse']:,.0f} -> "
+              f"{scaled['total_impulse']:,.0f} N.s")
 
     # Flying the same engine twice must give the same answer, or state is
     # leaking between trials and every later result is contaminated.
