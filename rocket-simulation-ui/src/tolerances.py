@@ -52,10 +52,11 @@ if os.path.isdir(_HYBRID_SIM_ROOT) and _HYBRID_SIM_ROOT not in sys.path:
     sys.path.insert(0, _HYBRID_SIM_ROOT)
 
 import failure_analysis as fa        # noqa: E402
-import flight_model                  # noqa: E402
+import tolerance_sim as sim          # noqa: E402
 from hybrid_sim.config import Engine  # noqa: E402
-from hybrid_sim.engine import EngineModel            # noqa: E402
-from hybrid_sim.metrics import metrics as hs_metrics  # noqa: E402
+
+#: Re-exported so callers do not need to know which module owns the list.
+SCALES = sim.SCALES
 
 
 # Bisection stops when the bracket is this wide. 0.005 is half of the last
@@ -74,68 +75,6 @@ MAX_FACTOR = 3.0
 # and anything much past that means the boundary is not behaving like a
 # boundary (a knob whose goal outcome is not monotonic, usually).
 MAX_TRIALS_PER_DIRECTION = 12
-
-
-# --- scaling what the MODEL says, not just what the hardware is ----------
-
-class ScaledEngineModel(EngineModel):
-    """The engine solver with a thumb on one of its own answers.
-
-    A hardware tolerance asks "what if the part is not the size on the print".
-    This asks the other question, which is at least as important: **what if
-    the model is wrong?** The regression law is a fit to somebody else's
-    firings, c* comes off a table computed for a propellant that is not
-    exactly yours, the injector model is a blend of two limiting cases. None
-    of those are laws of nature - they are our interpretation of them, and an
-    interpretation can be off.
-
-    So each factor here multiplies a modelled quantity EVERYWHERE it is used,
-    for the whole burn, and lets everything downstream follow. Scaling
-    chamber pressure is not a note in the margin; the solver genuinely runs
-    the motor at that pressure, the nozzle sees it, the thrust follows, and
-    the rocket flies on the result.
-
-    ``hybrid_sim`` is not modified to do this. These are overrides of the
-    methods the solver already routes through, and _post computes the output
-    arrays through the same ones - so what the model reports and what it
-    integrated stay the same thing.
-    """
-
-    #: name -> what it multiplies, for the UI and for error messages.
-    SCALES = ("mdot_ox", "pc", "cstar", "cf", "regression", "fuel_density",
-              "of")
-
-    def __init__(self, eng, scales=None, **kwargs):
-        super().__init__(eng, **kwargs)
-        self._scales = dict(scales or {})
-        a = self._scales.get("regression", 1.0)
-        rho = self._scales.get("fuel_density", 1.0)
-        if a != 1.0 or rho != 1.0:
-            # rdot = a * G^n, so scaling a scales the regression rate exactly.
-            # Fuel density is the separate question of how much MASS comes off
-            # for that much regression - the grain can be denser than the
-            # datasheet without burning back any faster.
-            self._fuel = dataclasses.replace(
-                self._fuel, a=self._fuel.a * a, rho=self._fuel.rho * rho)
-
-    def _k(self, name):
-        return self._scales.get(name, 1.0)
-
-    def _mdot_ox(self, m_l, T, Pc):
-        mdot, p_tank = super()._mdot_ox(m_l, T, Pc)
-        return mdot * self._k("mdot_ox"), p_tank
-
-    def _cstar(self, OF):
-        # Two different doubts, one call. "of" is the mixture the combustion
-        # actually sees being other than the ratio we computed; "cstar" is the
-        # table being wrong about what that mixture is worth.
-        return super()._cstar(OF * self._k("of")) * self._k("cstar")
-
-    def _pc_target(self, mdot_tot, OF, Pt, At):
-        return super()._pc_target(mdot_tot, OF, Pt, At) * self._k("pc")
-
-    def _cf(self, Pc, eps=None, Me=None):
-        return super()._cf(Pc, eps, Me) * self._k("cf")
 
 
 # --- the knobs ------------------------------------------------------------
@@ -213,24 +152,6 @@ def _regression_a(eng: Engine) -> float:
     return eng.fuel_a if eng.fuel_a > 0 else eng.fuel_eff.a
 
 
-def _mean(res, key):
-    """Mean of a burn array over the samples where the motor is actually on."""
-    try:
-        thrust = res["thrust"]
-        values = res[key]
-    except Exception:
-        return 0.0
-    live = [float(v) for v, f in zip(values, thrust) if float(f) > 1.0]
-    return sum(live) / len(live) if live else 0.0
-
-
-def _peak(res, key):
-    try:
-        return float(max(res[key]))
-    except Exception:
-        return 0.0
-
-
 def default_knobs() -> list:
     """Everything this can be wrong about.
 
@@ -243,7 +164,7 @@ def default_knobs() -> list:
         Knob(key="tank", component="Oxidiser tank", kind=HARDWARE,
              quantity="Fill fraction (liquid vs vapour)", unit="", decimals=4,
              apply=_hardware(lambda e, v: _set(e, fill_frac=v)),
-             observe=lambda res, m, e: e.fill_frac,
+             observe=lambda burn, e: e.fill_frac,
              why="How much of the tank is liquid at ignition rather than "
                  "ullage vapour. Sets how much nitrous is aboard, and it is "
                  "the number a fill is least able to hit exactly.",
@@ -251,7 +172,7 @@ def default_knobs() -> list:
         Knob(key="injector", component="Injector", kind=HARDWARE,
              quantity="Flow area (Cd x A)", unit="mm^2", decimals=3,
              apply=_hardware(_set_injector_area),
-             observe=lambda res, m, e: e.A_inj,
+             observe=lambda burn, e: e.A_inj,
              why="Total orifice area, which is what sets oxidiser flow and "
                  "so thrust and burn time. Drill wander and edge break move "
                  "it.",
@@ -259,7 +180,7 @@ def default_knobs() -> list:
         Knob(key="throat", component="Nozzle throat", kind=HARDWARE,
              quantity="Throat diameter", unit="mm", decimals=3,
              apply=_hardware(lambda e, v: _set(e, d_throat=v)),
-             observe=lambda res, m, e: e.d_throat,
+             observe=lambda burn, e: e.d_throat,
              why="The most sensitive dimension in the motor - chamber "
                  "pressure goes roughly as one over throat area. Machining "
                  "tolerance and erosion both move it.",
@@ -269,7 +190,7 @@ def default_knobs() -> list:
         Knob(key="pc", component="Chamber pressure", kind=MODEL,
              quantity="Pressure the model predicts", unit="MPa", decimals=3,
              apply=_model("pc"),
-             observe=lambda res, m, e: m.get("peak_Pc", 0.0) / 1e6,
+             observe=lambda burn, e: burn.peak_pc / 1e6,
              why="Everything the nozzle does starts here. If the chamber "
                  "really runs above or below what the model says, thrust and "
                  "impulse move with it - this is usually the largest single "
@@ -277,14 +198,14 @@ def default_knobs() -> list:
         Knob(key="cstar", component="Combustion", kind=MODEL,
              quantity="c* (characteristic velocity)", unit="m/s", decimals=1,
              apply=_model("cstar"),
-             observe=lambda res, m, e: _mean(res, "cstar"),
+             observe=lambda burn, e: burn.mean_cstar,
              why="How much chamber pressure the propellant is worth. Comes "
                  "off a CEA table computed for a propellant pair that is "
                  "close to yours rather than exactly yours."),
         Knob(key="cf", component="Nozzle", kind=MODEL,
              quantity="Thrust coefficient Cf", unit="", decimals=4,
              apply=_model("cf"),
-             observe=lambda res, m, e: _mean(res, "cf"),
+             observe=lambda burn, e: burn.mean_cf,
              why="How much the bell multiplies chamber pressure times throat "
                  "area. An isentropic ideal with a divergence correction - "
                  "real nozzles lose more, and by an amount nobody knows "
@@ -292,7 +213,7 @@ def default_knobs() -> list:
         Knob(key="regression", component="Fuel grain", kind=MODEL,
              quantity="Regression rate", unit="mm/s", decimals=4,
              apply=_model("regression"),
-             observe=lambda res, m, e: _mean(res, "rdot") * 1000.0,
+             observe=lambda burn, e: burn.mean_rdot * 1000.0,
              why="How fast the fuel wall burns back, and so the fuel flow. "
                  "The coefficient behind it is a literature average for a "
                  "whole fuel family - the least known number in a hybrid, "
@@ -300,7 +221,7 @@ def default_knobs() -> list:
         Knob(key="of", component="Mixture ratio", kind=MODEL,
              quantity="O/F the combustion sees", unit="", decimals=3,
              apply=_model("of"),
-             observe=lambda res, m, e: m.get("avg_OF", 0.0),
+             observe=lambda burn, e: burn.mean_of,
              why="The ratio the chemistry behaves as though it were running "
                  "at. Hybrids burn in a boundary layer and mix unevenly, so "
                  "the effective mixture is not simply the two flow rates "
@@ -308,14 +229,14 @@ def default_knobs() -> list:
         Knob(key="mdot_ox", component="Oxidiser flow", kind=MODEL,
              quantity="Oxidiser mass flow", unit="kg/s", decimals=4,
              apply=_model("mdot_ox"),
-             observe=lambda res, m, e: _peak(res, "mdot_ox"),
+             observe=lambda burn, e: burn.peak_mdot_ox,
              why="What the injector model says comes through for a given "
                  "pressure drop. A blend of two limiting cases with a "
                  "weighting that is a rule of thumb."),
         Knob(key="fuel_density", component="Fuel grain", kind=MODEL,
              quantity="Fuel density", unit="kg/m3", decimals=1,
              apply=_model("fuel_density"),
-             observe=lambda res, m, e: e.fuel_eff.rho,
+             observe=lambda burn, e: e.fuel_eff.rho,
              why="How much mass comes off for a given regression. A cast "
                  "grain with voids, or one packed denser than the datasheet, "
                  "moves this without changing how fast the wall recedes."),
@@ -340,7 +261,11 @@ class FlightContext:
 
     Captured once, before the first trial. The point of a tolerance is that
     one thing moved and nothing else did, so the airframe, the site, the
-    recovery train and the dry mass have to be the same objects every time.
+    recovery train and the dry mass have to be the same for every trial.
+
+    The tolerance simulator's lookup tables hang off this too, because they
+    are the same kind of thing: derived from what does not move, and built
+    once.
     """
     airframe: object
     site: object
@@ -348,16 +273,20 @@ class FlightContext:
     mass_props: object
     vehicle: object                 # failure_analysis.VehicleConfig, for goals
     cd_override: object = None
-    output_dt: float = 0.05
+    conditions: object = None       # tolerance_sim.Conditions, built on demand
 
-    def fresh_mass(self):
-        """A copy of the mass properties, because the flight mutates them.
-
-        run_flight burns propellant off the object it is given. Handing it the
-        same one twice would fly the second trial with the first trial's
-        leftovers, and every later trial would look worse than it is.
-        """
-        return dataclasses.replace(self.mass_props)
+    def prepare(self, expected_apogee_m: float = 3000.0):
+        """Build the simulator's fixed tables. Call once, before the search."""
+        tables = sim.build_tables(
+            self.airframe, self.site,
+            # Room above the baseline for the trials that fly higher, so a
+            # perturbed motor is not quietly clamped to the top of the table.
+            max_altitude_m=max(1000.0, expected_apogee_m * 3.0))
+        self.conditions = sim.Conditions(
+            airframe=self.airframe, site=self.site, recovery=self.recovery,
+            mass_props=dataclasses.replace(self.mass_props), tables=tables,
+            cd_override=self.cd_override)
+        return self.conditions
 
 
 @dataclass
@@ -370,45 +299,41 @@ class Trial:
 
 
 def fly(engine: Engine, ctx: FlightContext, scales=None):
-    """Run the engine, fly it, grade it. Returns (report, engine metrics).
+    """Burn the motor, fly it, hand back (outcome, burn).
 
-    ``scales`` are model-error multipliers (see ScaledEngineModel). None if
-    the motor will not run or the rocket will not leave the pad - which is a
-    legitimate outcome of winding a knob far enough, and has to be a FAIL
-    rather than an exception that stops the search.
+    Goes through the tolerance simulator, not the main one. ``scales`` are
+    model-error multipliers, passed straight in as parameters - the search
+    does not reach into anybody's solver to apply them.
+
+    None if the motor will not run or the rocket will not leave the pad -
+    which is a legitimate outcome of winding a knob far enough, and has to be
+    a FAIL rather than an exception that stops the search.
     """
+    cond = ctx.conditions or ctx.prepare()
     try:
-        res = ScaledEngineModel(engine, scales=scales).run()
-        em = hs_metrics(res)
-        if em.get("peak_thrust", 0.0) <= 0 or em.get("burn_time", 0.0) <= 0:
-            return None, None
-        points = [(float(t), max(0.0, float(f)))
-                  for t, f in zip(res["t"], res["thrust"])]
-        if len(points) < 2:
-            return None, None
-
-        mass_props = ctx.fresh_mass()
-        # The propellant that flies is the propellant this motor actually
-        # expends. Holding it at the baseline would fly a half-flow injector
-        # with a full load of nitrous, and the tolerance would come back far
-        # too generous.
-        prop = float(em.get("prop_mass") or 0.0)
-        if prop > 0:
-            mass_props.propellant_mass_kg = prop
-
-        rows, summary = flight_model.run_flight(
-            points, ctx.airframe, ctx.site, ctx.recovery, mass_props,
-            output_dt=ctx.output_dt, cd_override=ctx.cd_override)
-        if not rows:
-            return None, None
-        rep = fa.analyze(rows, ctx.vehicle, engine_result=res, engine=engine,
-                         cd_source=ctx.cd_override, mass_props=mass_props,
-                         summary=summary)
-        em = dict(em)
-        em["_engine_result"] = res
-        return rep, em
+        outcome, burn = sim.simulate(engine, cond, scales=scales)
     except Exception:
         return None, None
+    if not outcome.flew or outcome.apogee_m <= 0:
+        return None, None
+    return outcome, burn
+
+
+def agreement(engine: Engine, ctx: FlightContext, reference_apogee_ft: float):
+    """How far the tolerance simulator is from the flight the app flies.
+
+    The whole point of a separate simulator is speed, and the whole risk of
+    one is that it quietly stops describing the same rocket. So the baseline
+    is compared against the main simulation's own answer every time a search
+    runs, and the number is reported rather than assumed. Returns the
+    fractional difference in apogee, or None if there is nothing to compare.
+    """
+    if not reference_apogee_ft:
+        return None
+    outcome, _burn = fly(engine, ctx)
+    if outcome is None:
+        return None
+    return (outcome.apogee_ft - reference_apogee_ft) / reference_apogee_ft
 
 
 def goal_list(vehicle) -> list:
@@ -613,6 +538,9 @@ class ToleranceRun:
     error: str = ""
     trials: int = 0
     ranking: list = field(default_factory=list)   # [(knob, apogee % change)]
+    #: Fractional apogee difference between this simulator and the main one
+    #: at the baseline. None if there was nothing to compare against.
+    agreement: float | None = None
 
 
 # One probe per knob decides the order. Small enough to stay in the linear
@@ -655,9 +583,18 @@ def rank_by_sensitivity(base_engine, ctx, knobs, baselines,
     return scored
 
 
+#: How far the tolerance simulator may sit from the main one at the baseline
+#: before the answers stop being about the same rocket. The two integrate the
+#: same physics with different steppers, so they will not agree to the last
+#: digit and should not be expected to; a percent is comfortably inside the
+#: uncertainty in the c* table, and well outside anything a real disagreement
+#: would hide in.
+AGREEMENT_LIMIT = 0.01
+
+
 def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
-                    on_progress=None, on_trial=None,
-                    should_cancel=None) -> ToleranceRun:
+                    on_progress=None, on_trial=None, should_cancel=None,
+                    reference_apogee_ft: float = 0.0) -> ToleranceRun:
     """Measure every selected component. The entry point.
 
     ``on_progress(done, total, message)`` is called as it goes so a UI can
@@ -665,6 +602,8 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
     """
     knobs = list(knobs if knobs is not None else default_knobs())
     run = ToleranceRun(goals=goal_list(ctx.vehicle))
+    if ctx.conditions is None:
+        ctx.prepare()
 
     counter = {"n": 0}
 
@@ -678,7 +617,7 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
     # is not meeting them to begin with.
     if on_progress is not None:
         on_progress(0, len(knobs) + 2, "Flying the engine as configured...")
-    rep, em = fly(base_engine, ctx)
+    rep, burn = fly(base_engine, ctx)
     counter["n"] += 1
     met, missed = grade(rep, run.goals)
     run.baseline_apogee_ft = rep.apogee_ft if rep else 0.0
@@ -691,13 +630,29 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
         run.trials = counter["n"]
         return run
 
+    # Is this still the same rocket the rest of the app flies? Asked every
+    # run, against the main simulation's own answer, because a fast simulator
+    # that has drifted is worse than a slow one - it gives confident margins
+    # for a vehicle nobody owns.
+    if reference_apogee_ft:
+        run.agreement = ((run.baseline_apogee_ft - reference_apogee_ft)
+                         / reference_apogee_ft)
+        if abs(run.agreement) > AGREEMENT_LIMIT:
+            run.error = (
+                f"The tolerance simulator and the main simulation disagree "
+                f"about this rocket by {run.agreement * 100:+.1f}% on apogee "
+                f"({run.baseline_apogee_ft:,.0f} ft against "
+                f"{reference_apogee_ft:,.0f} ft). Margins measured against a "
+                f"different flight from the one on the Simulation tab would "
+                f"be misleading, so nothing is reported.")
+            run.trials = counter["n"]
+            return run
+
     # What 100% is, for each knob, read off that one unperturbed run.
-    res = (em or {}).get("_engine_result")
     baselines = {}
     for knob in knobs:
         try:
-            baselines[knob.key] = float(knob.observe(res, em or {},
-                                                     base_engine))
+            baselines[knob.key] = float(knob.observe(burn, base_engine))
         except Exception:
             baselines[knob.key] = 0.0
 

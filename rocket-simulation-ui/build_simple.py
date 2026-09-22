@@ -104,6 +104,7 @@ def main():
         # a physics module the analysis loses only shows up as a tab that
         # dies on its button in the frozen build.
         "--hidden-import=tolerances",
+        "--hidden-import=tolerance_sim",
         "--hidden-import=tolerances_tab",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",

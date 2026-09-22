@@ -4724,7 +4724,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
             pass
 
     def _tolerance_inputs(self):
-        """(engine, FlightContext) for the Tolerances tab.
+        """(engine, FlightContext, reference apogee) for the Tolerances tab.
 
         Deliberately the same sources the Simulation tab flies from, so the
         baseline the tolerance search reports is the flight the rest of the
@@ -4741,7 +4741,14 @@ class RocketSimulationUI(QtWidgets.QWidget):
             mass_props=self.vehicle_tab.mass_properties(),
             vehicle=self.flight_report.vehicle_config(),
             cd_override=self.cd_source())
-        return engine, ctx
+        # The last flight the main simulation produced, if there is one. The
+        # tolerance run checks itself against this and refuses to report
+        # margins if the two simulators have drifted apart.
+        reference_ft = 0.0
+        report = getattr(getattr(self, 'flight_report', None), '_report', None)
+        if report is not None:
+            reference_ft = float(getattr(report, 'apogee_ft', 0.0) or 0.0)
+        return engine, ctx, reference_ft
 
     def _engine_preview_vehicle(self):
         """The loaded rocket, for the Engine tab's quick flight preview.

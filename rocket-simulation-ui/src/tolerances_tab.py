@@ -187,7 +187,7 @@ class TolerancesTab(QtWidgets.QWidget):
             self._say("This tab has not been connected to a rocket.")
             return
         try:
-            engine, ctx = self._get_inputs()
+            engine, ctx, reference_ft = self._get_inputs()
         except Exception as exc:
             self._say(f"<b style='color:{theme.PALETTE['critical']}'>"
                       f"Could not read the rocket: {exc}</b>")
@@ -235,7 +235,8 @@ class TolerancesTab(QtWidgets.QWidget):
         try:
             run = tol.find_tolerances(
                 engine, ctx, knobs=knobs, on_progress=on_progress,
-                on_trial=on_trial, should_cancel=lambda: self._cancel)
+                on_trial=on_trial, should_cancel=lambda: self._cancel,
+                reference_apogee_ft=reference_ft)
         except Exception as exc:
             self._say(f"<b style='color:{theme.PALETTE['critical']}'>"
                       f"The search failed: {exc}</b>")
@@ -255,10 +256,11 @@ class TolerancesTab(QtWidgets.QWidget):
         pal = theme.PALETTE
         good, bad = pal.get('good', '#3fb950'), pal['critical']
         if run.error:
+            detail = ("Missed: " + "; ".join(run.baseline_missed)
+                      if run.baseline_missed else "")
             self._say(f"<b style='color:{bad}'>{run.error}</b><br>"
                       f"The engine as configured reaches "
-                      f"{run.baseline_apogee_ft:,.0f} ft. Missed: "
-                      + "; ".join(run.baseline_missed))
+                      f"{run.baseline_apogee_ft:,.0f} ft. {detail}")
             return
 
         self.table.setRowCount(len(run.results))
@@ -329,8 +331,12 @@ class TolerancesTab(QtWidgets.QWidget):
                 f"&mdash; {worst.knob.quantity}</b>, which only has "
                 f"<b>-{worst.down_pct:.0f}%</b> before this rocket stops "
                 f"making its goals.")
+        agree = ""
+        if run.agreement is not None:
+            agree = (f"<br>Checked against the main simulation: "
+                     f"<b>{run.agreement * 100:+.2f}%</b> on baseline apogee.")
         self._say(
-            f"{headline}{run.trials} complete flights.<br>"
+            f"{headline}{run.trials} complete flights.{agree}<br>"
             f"The engine as configured reaches "
             f"<b>{run.baseline_apogee_ft:,.0f} ft</b> and meets its goals; "
             f"the table says how far each thing can be wrong before it "

@@ -829,20 +829,35 @@ def validate_tolerances():
         win.apply_configuration(json.load(fh))
     app.processEvents()
 
-    engine, ctx = win._tolerance_inputs()
+    engine, ctx, _ref = win._tolerance_inputs()
 
-    # The baseline must be the flight the app itself produces. If these two
-    # drift, every margin below is measured against a rocket the user never
-    # sees.
+    # The tolerance sweep runs on its OWN simulator - a separate integrator
+    # built for a hundred and fifty flights rather than one. The risk of that
+    # is the whole risk of this feature: a fast simulator that has quietly
+    # stopped describing the same rocket gives confident margins for a
+    # vehicle nobody owns. So it is measured against the main simulation.
     win.start_simulation()
     for _ in range(4):
         app.processEvents()
     app_apogee = win.flight_report._report.apogee_ft
-    rep, _em = tol.fly(engine, ctx)
-    check("baseline matches the flight the app flies",
-          rep is not None and abs(rep.apogee_ft - app_apogee) <= 1.0,
-          f"tolerance baseline {rep.apogee_ft:,.1f} ft against the "
-          f"Simulation tab's {app_apogee:,.1f} ft")
+    ctx.prepare(expected_apogee_m=app_apogee / 3.280839895)
+    rep, _burn = tol.fly(engine, ctx)
+    drift = abs(rep.apogee_ft - app_apogee) / app_apogee if rep else 1.0
+    check("the tolerance simulator agrees with the main simulation",
+          rep is not None and drift <= tol.AGREEMENT_LIMIT,
+          f"{rep.apogee_ft:,.1f} ft against the Simulation tab's "
+          f"{app_apogee:,.1f} ft ({drift * 100:+.2f}%, limit "
+          f"{tol.AGREEMENT_LIMIT * 100:.0f}%)")
+
+    # And it has to be worth having done: the point of the separate simulator
+    # is that it is much cheaper per flight.
+    import time as _time
+    t0 = _time.time()
+    for _ in range(3):
+        tol.fly(engine, ctx)
+    own = (_time.time() - t0) / 3.0
+    check("and is substantially cheaper per flight", own < 0.5,
+          f"{own * 1000:.0f} ms per complete engine burn and trajectory")
 
     # A rocket that misses its own goals has no margin to measure, and must
     # be told so rather than handed zeros.
@@ -897,15 +912,15 @@ def validate_tolerances():
     # methods is renamed upstream the override becomes dead code that nothing
     # calls - and the knob would silently report an infinite tolerance
     # instead of an error. Each scale must move the result.
-    base_m = tol.hs_metrics(tol.ScaledEngineModel(engine).run())
-    for name in tol.ScaledEngineModel.SCALES:
-        scaled = tol.hs_metrics(
-            tol.ScaledEngineModel(engine, scales={name: 1.25}).run())
-        moved = abs(scaled["total_impulse"] - base_m["total_impulse"])
-        check(f"scaling the modelled {name} reaches the solver",
-              moved > base_m["total_impulse"] * 1e-4,
-              f"impulse {base_m['total_impulse']:,.0f} -> "
-              f"{scaled['total_impulse']:,.0f} N.s")
+    import tolerance_sim as tsim
+    base_burn = tsim.burn_engine(engine)
+    for name in tol.SCALES:
+        scaled = tsim.burn_engine(engine, scales={name: 1.25})
+        moved = abs(scaled.total_impulse - base_burn.total_impulse)
+        check(f"scaling the modelled {name} reaches the simulator",
+              moved > base_burn.total_impulse * 1e-4,
+              f"impulse {base_burn.total_impulse:,.0f} -> "
+              f"{scaled.total_impulse:,.0f} N.s")
 
     # Flying the same engine twice must give the same answer, or state is
     # leaking between trials and every later result is contaminated.
