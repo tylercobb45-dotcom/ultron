@@ -27,6 +27,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -958,6 +959,114 @@ def validate_tolerances():
     app.processEvents()
 
 
+# The smallest screen this has to look right on. Not a guess: it is the
+# commonest laptop resolution still in use, and it is where every layout
+# failure in this app has shown up first.
+SMALL_SCREEN = (1366, 768)
+
+#: Height below which the Flight Report's 2x2 subplot grid stops laying out.
+#: Measured, not guessed: at 220 the four plots draw over one another.
+PLOT_MIN_HEIGHT_PX = 360
+
+
+def validate_ui_geometry():
+    """Text that does not fit the box it is drawn in.
+
+    Clipping cannot be seen in the source and does not raise anything. It is
+    caught by measuring rendered widgets, which is the only way it has ever
+    been caught here: a column collapses to 31 px and shows "A...", a heading
+    reads "AT WAS VAR", four plots draw on top of each other. All of those
+    were live at 1366x768 while every test passed.
+    """
+    banner("11. UI GEOMETRY (measured on rendered widgets, at 1366x768)")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        from PyQt5.QtGui import QFontMetrics
+        import main as app_main
+        import report_tab
+    except Exception as exc:
+        check("UI geometry", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+
+    win = app_main.RocketSimulationUI()
+    win.show()
+    for _ in range(4):
+        app.processEvents()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           "SystemsGo Goddard Baseline.json")) as fh:
+        win.apply_configuration(json.load(fh))
+    app.processEvents()
+    win.start_simulation()
+    for _ in range(6):
+        app.processEvents()
+
+    W, H = SMALL_SCREEN
+    pages = []
+    for i in range(win.tabs.count()):
+        win.tabs.setCurrentIndex(i)
+        for _ in range(3):
+            app.processEvents()
+        pages.append((win.tabs.tabText(i), win.tabs.widget(i)))
+    for _name, page in pages:
+        page.setParent(None)
+        page.resize(W - 20, H - 80)
+        page.show()
+        for _ in range(4):
+            app.processEvents()
+
+    # The Flight Report's "Check" column says WHAT was tested. Everything
+    # else on that row is a number that means nothing without it.
+    table = win.flight_report.table
+    width = table.columnWidth(3)
+    check("Flight Report: the Check column stays readable",
+          width >= report_tab.CHECK_MIN_PX,
+          f"{width} px, floor {report_tab.CHECK_MIN_PX} px")
+
+    # Every table heading has to fit its own title.
+    clipped = []
+    for tab_name, tbl in (("Flight Report", win.flight_report.table),
+                          ("Tolerances", win.tolerances_tab.table),
+                          ("Tolerances log", win.tolerances_tab.log)):
+        metrics = QFontMetrics(tbl.horizontalHeader().font())
+        for col in range(tbl.columnCount()):
+            item = tbl.horizontalHeaderItem(col)
+            if not item:
+                continue
+            need = metrics.horizontalAdvance(item.text().upper()) + 14
+            if need > tbl.columnWidth(col):
+                clipped.append(f"{tab_name}/{item.text()}")
+    check("no table heading is clipped", not clipped,
+          "; ".join(clipped[:4]) if clipped else "all headings fit")
+
+    # A 2x2 grid of subplots needs height, and below it matplotlib abandons
+    # constrained layout and draws the four plots over one another.
+    #
+    # Checked as a HEIGHT, not only as a warning on draw. Drawing at 223 px
+    # does not always emit the warning - the collapse showed up on the tab
+    # switch, not on every draw - so a warning-only check passed happily
+    # against the very layout that produced four overlapping plots at
+    # 1366x768. The height is the thing that has to hold.
+    canvas = win.flight_report.canvas
+    tall_enough = canvas.height() >= PLOT_MIN_HEIGHT_PX
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        canvas.draw()
+        collapsed = [w for w in caught if "collapsed" in str(w.message)]
+    check("Flight Report plots have room to lay out",
+          tall_enough and not collapsed,
+          f"canvas {canvas.width()}x{canvas.height()}, floor "
+          f"{PLOT_MIN_HEIGHT_PX} px"
+          + ("" if not collapsed else " - axes collapsed to zero"))
+
+    win.close()
+    app.processEvents()
+
+
 def validate_windows_scripts():
     """The shipped .bat files, against the two ways they have already broken.
 
@@ -1095,6 +1204,7 @@ def main():
     validate_mass_components()
     validate_motor_designer()
     validate_tolerances()
+    validate_ui_geometry()
     validate_windows_scripts()
 
     banner("SUMMARY")

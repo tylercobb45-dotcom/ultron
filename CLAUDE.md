@@ -26,7 +26,7 @@ The rule is about the DELIVERABLE, not about where work gets done:
 ## Verification expectations
 
 - Both suites must pass before any commit: `python tools/validate_presets.py`
-  (144 checks) and `python hybrid_sim/verify.py` (31 checks).
+  (147 checks) and `python hybrid_sim/verify.py` (31 checks).
 - The app is PyQt5; test headless with `QT_QPA_PLATFORM=offscreen`.
 - Do not trust a static read of UI code. Several bugs here were only found by
   rendering frames and looking at them.

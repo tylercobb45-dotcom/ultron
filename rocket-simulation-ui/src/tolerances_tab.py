@@ -50,7 +50,7 @@ class TrialSheetDialog(QtWidgets.QDialog):
         layout.addWidget(tabs)
 
         close = QtWidgets.QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         layout.addWidget(close, alignment=QtCore.Qt.AlignRight)
 
 
@@ -77,11 +77,11 @@ class TolerancesTab(QtWidgets.QWidget):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        left = QtWidgets.QWidget()
+        left_inner = QtWidgets.QWidget()
         # Same lesson as the Engine tab: a panel narrower than its form clips
         # the right-hand side of every row.
-        left.setMinimumWidth(430)
-        lv = QtWidgets.QVBoxLayout(left)
+        left_inner.setMinimumWidth(430)
+        lv = QtWidgets.QVBoxLayout(left_inner)
 
         intro = QtWidgets.QLabel(
             "<b>Tolerances</b> &mdash; how far wrong each thing can be and "
@@ -155,6 +155,17 @@ class TolerancesTab(QtWidgets.QWidget):
             f"color:{theme.PALETTE['text']}; }}")
         lv.addWidget(self.status)
         lv.addStretch()
+        # Scroll it. Ten checkboxes, two explanatory notes and a status panel
+        # are taller than 768 px leaves for this column, and a QVBoxLayout
+        # with nowhere to put the overflow crushes its children instead: the
+        # intro text was cut mid-sentence and the checkbox rows overlapped
+        # each other. Every other form-heavy tab in this app is already
+        # scrollable for exactly this reason.
+        left = QtWidgets.QScrollArea()
+        left.setWidgetResizable(True)
+        left.setWidget(left_inner)
+        left.setMinimumWidth(455)
+        left.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
@@ -178,7 +189,24 @@ class TolerancesTab(QtWidgets.QWidget):
         self.table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectRows)
         self.table.setMinimumHeight(180)
+        # Size the headers from the start. These were left at Qt's default
+        # 104 px until the first run called resizeColumnsToContents, so
+        # opening the tab showed "AT WAS VAR" and ".S MODELLE" above empty
+        # rows - the state every user sees first.
+        # Every column sized to its own header while the table is empty. The
+        # description column only starts stretching once there are rows to
+        # stretch for - made Stretch from the start it was handed whatever
+        # was left over, which on a laptop was 64 px and clipped its own
+        # title.
+        _th = self.table.horizontalHeader()
+        _th.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        _th.setStretchLastSection(True)
         rv.addWidget(self.table, stretch=1)
+
+        self.goals_label = QtWidgets.QLabel("")
+        self.goals_label.setWordWrap(True)
+        self.goals_label.setTextFormat(QtCore.Qt.RichText)
+        rv.addWidget(self.goals_label)
 
         self.note = QtWidgets.QLabel("")
         self.note.setWordWrap(True)
@@ -255,6 +283,13 @@ class TolerancesTab(QtWidgets.QWidget):
         self.log.setRowCount(0)
         self.note.setText("")
         goals = tol.goal_list(ctx.vehicle)
+        # What the margins are measured against, said on screen. This line
+        # lived in the old text log and was lost when the log became a table -
+        # leaving a tab full of tolerance figures with nothing anywhere saying
+        # what "meets the goals" meant.
+        self.goals_label.setText(
+            "<b>Graded against:</b> "
+            + "; ".join(g.label() for g in goals))
         # Kept so a double-clicked row can be flown again exactly as it was.
         self._replay = {"engine": engine, "ctx": ctx, "goals": goals,
                         "knobs": {k.key: k for k in knobs}, "baselines": {}}
@@ -295,7 +330,10 @@ class TolerancesTab(QtWidgets.QWidget):
                       f"({done['n']} flights so far)")
 
         def on_progress(_i, _n, message):
-            QtWidgets.QApplication.processEvents()
+            # The ranking pass is a flight per knob with no trial rows to
+            # show, so without this the tab sits apparently frozen through
+            # the first ten seconds of every run.
+            self._say(message)
 
         try:
             run = tol.find_tolerances(
@@ -375,10 +413,37 @@ class TolerancesTab(QtWidgets.QWidget):
                       else "MISSES: " + "; ".join(missed)))
         dialog = TrialSheetDialog(title, summary, outcome.rows, burn.rows,
                                   parent=self)
-        self._open_dialogs.append(dialog)      # keep it alive, non-modal
+        # Kept alive while open (it is non-modal), and released when it is
+        # closed. Appending without ever removing held every opened trial's
+        # rows and table items for the rest of the session - tens of
+        # thousands of QTableWidgetItems per flight somebody glanced at.
+        #
+        # The prune runs off `finished` and takes no argument. Connecting a
+        # lambda that captured the dialog did not work and could not: the
+        # captured default argument is itself a strong reference, so the
+        # cleanup callback was the thing keeping the dialog alive.
+        dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dialog.finished.connect(self._prune_dialogs)
+        self._open_dialogs.append(dialog)
         dialog.show()
         self._say(f"Opened the spreadsheet for {knob.quantity} at "
                   f"{factor * 100:.2f}%.")
+
+    def _prune_dialogs(self):
+        """Drop trial windows that have been closed.
+
+        By identity of state, not of object: a dialog set to delete on close
+        is already on its way out by the time this runs, so asking it
+        anything is unsafe. isVisible() is the one question that stays valid.
+        """
+        alive = []
+        for dialog in self._open_dialogs:
+            try:
+                if dialog.isVisible():
+                    alive.append(dialog)
+            except RuntimeError:
+                pass          # already destroyed by Qt
+        self._open_dialogs = alive
 
     # ---- results ---------------------------------------------------------
     def _show(self, run):

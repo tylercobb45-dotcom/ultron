@@ -32,6 +32,10 @@ import materials as mat_lib
 import failure_analysis as fa
 
 # status -> (table row background, text colour, banner colour)
+#: Floor for the "Check" column, in pixels. Below about this the column
+#: cannot hold even a short check name and the table stops explaining itself.
+CHECK_MIN_PX = 150
+
 _COLORS = {
     fa.OK:       theme.status_colors("OK"),
     fa.CAUTION:  theme.status_colors("CAUTION"),
@@ -215,6 +219,9 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setMinimumHeight(240)
+        # The description column never goes below this; everything else gives
+        # way first.
+        self.table.horizontalHeader().setMinimumSectionSize(28)
         self.table.itemSelectionChanged.connect(self._show_detail)
         table_layout.addWidget(self.table, stretch=1)
 
@@ -236,7 +243,13 @@ class FlightReportWidget(QtWidgets.QWidget):
         self.canvas = FigureCanvas(self.figure)
         # Keep the plot readable without making it the reason the whole
         # window refuses to be short enough for a laptop screen.
-        self.canvas.setMinimumHeight(220)
+        # A 2x2 grid of subplots, each with a title, two axis labels, a twin
+        # axis and a legend, needs real height. At 220 the axes collapse to
+        # nothing, matplotlib gives up on constrained layout, and the four
+        # plots render on top of each other - which is what the Flight Report
+        # actually looked like at 1366x768. This is the height below which the
+        # picture stops being a picture.
+        self.canvas.setMinimumHeight(380)
         splitter.addWidget(self.canvas)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -643,9 +656,30 @@ class FlightReportWidget(QtWidgets.QWidget):
         # nothing and showing "Apo...", "Fuel...", "Oxi...". The table is only
         # readable if the description survives.
         header = self.table.horizontalHeader()
-        for col, cap in ((2, 110), (5, 210), (6, 210)):
+        # Caps sized from the width there actually is, not from a fixed
+        # number. Hard caps of 210 px each on Measured and Limit are fine on
+        # a wide screen and ruinous on a laptop: at 1366x768 the table is
+        # 837 px, the fixed columns take all of it, and "Check" - the column
+        # that says WHAT was tested - stretched to 31 px and showed "A...",
+        # "F...", "...". Give that column a floor first and let the free-text
+        # columns have what is left.
+        fixed = sum(self.table.columnWidth(c) for c in (0, 1, 2, 4, 7))
+        spare = max(0, self.table.viewport().width() - fixed - CHECK_MIN_PX)
+        # Never below the column's own title. Capping to a flat 90 px shaved
+        # three pixels off "Measured" and clipped the heading - a column too
+        # narrow to say what it contains is worse than one that elides its
+        # rows, because the rows are readable in the detail pane below and
+        # the heading is not readable anywhere.
+        metrics = QtGui.QFontMetrics(self.table.horizontalHeader().font())
+        for col in (5, 6):
+            item = self.table.horizontalHeaderItem(col)
+            floor = (metrics.horizontalAdvance(item.text().upper()) + 16
+                     if item else 90)
+            cap = max(floor, min(210, spare // 2))
             if self.table.columnWidth(col) > cap:
                 self.table.setColumnWidth(col, cap)
+        if self.table.columnWidth(2) > 110:
+            self.table.setColumnWidth(2, 110)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         if rep.checks:
             self.table.selectRow(0)
