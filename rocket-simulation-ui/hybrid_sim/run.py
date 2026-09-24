@@ -20,7 +20,7 @@ def main():
     if a.validate:
         validate(); return
     res = EngineModel(BASELINE).run()
-    print_metrics(res, "Goddard baseline engine")
+    print_metrics(res, "hybrid_sim reference engine")
     fl = FlightModel(ROCKET, res).run()
     print("\n=== Flight ===")
     print(f"  Apogee        : {fl['apogee_ft']:8.0f} ft ({fl['apogee_m']:.0f} m)")
@@ -28,8 +28,8 @@ def main():
     print(f"  Max velocity  : {fl['v_max']:8.1f} m/s   Max Mach: {fl['mach_max']:.3f}")
     print(f"  Max G (ascent): {fl['g_max_ascent']:8.1f}")
     if not a.no_plots:
-        print("\nPlots:", plot_engine(res, "engine.png", "Goddard baseline engine"),
-              plot_flight(fl, "flight.png", "Goddard baseline trajectory"))
+        print("\nPlots:", plot_engine(res, "engine.png", "hybrid_sim reference engine"),
+              plot_flight(fl, "flight.png", "hybrid_sim reference trajectory"))
 
 if __name__ == "__main__":
     main()

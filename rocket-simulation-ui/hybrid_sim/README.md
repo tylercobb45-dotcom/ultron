@@ -1,6 +1,6 @@
 # hybrid_sim v2.0
 
-N2O/HTPB hybrid rocket engine + 1-DOF flight simulation (Goddard level,
+N2O/HTPB hybrid rocket engine + 1-DOF flight simulation (amateur hybrid class,
 SystemsGo). From-scratch rebuild, verified layer-by-layer against independent
 references.
 
@@ -52,7 +52,7 @@ threshold convention.
   matches the reference (N2O tanks frost over in reality).
 * Excel "Max G = 14.4" was the parachute snatch load; ascent G is ~4-5.
 
-## Baseline (Goddard design)
+## Baseline (the spreadsheet reference case)
 
 ```
 Peak thrust 1315 N   Impulse 11601 N*s   Burn 16.1 s

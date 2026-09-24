@@ -29,12 +29,16 @@ ROCKETS
     Airframes are representative of what each motor class is normally flown
     in. They are not claimed to be specific named vehicles - inventing
     dimensions for a real team's rocket would make the validation
-    meaningless. The Goddard preset is the exception: it is the configuration
-    behind the spreadsheet reference, so its flight can be checked end to end.
+    meaningless. Two presets are modelled rather than measured, and both say
+    so: "hybrid_sim Reference Flight" is the configuration behind the
+    spreadsheet reference, so its flight can be checked end to end, and
+    "SystemsGo Goddard Baseline" is a motor sized here to the Goddard brief
+    (50,000 ft with a payload) because no measured curve of that class ships
+    with the app.
 
-    Every preset except Goddard flies a real measured thrust curve rather
-    than a modelled one, so a flight comparison tests the flight model
-    against a motor that actually existed.
+    Every other preset flies a real measured thrust curve rather than a
+    modelled one, so a flight comparison tests the flight model against a
+    motor that actually existed.
 
 See docs/VALIDATION.md for the residuals and the disagreements.
 """
@@ -270,11 +274,20 @@ PRESET_ROCKETS = [
                      harness_rating_n=2500),
     ),
     # -- 3. the validated reference case ---------------------------------------
+    #
+    # This is a VALIDATION FIXTURE, not a competition vehicle. Its job is to
+    # reproduce one specific independently-computed flight, which is why it
+    # carries that author's measured Cd of 1.625 and a 9,292 ft goal. It was
+    # called "SystemsGo Goddard Baseline" until the real Goddard brief - 50,000
+    # ft with a payload - was modelled, which this configuration reaches
+    # nothing like. Renaming it keeps the reference honest and frees the
+    # Goddard name for the vehicle that actually flies the mission.
     dict(
-        name="SystemsGo Goddard Baseline",
+        name="hybrid_sim Reference Flight",
         description=("The configuration hybrid_sim is validated against, with "
                      "an independent spreadsheet reference for the whole "
-                     "flight: 9,292 ft, Mach 0.57. Transonic-adjacent."),
+                     "flight: 9,292 ft, Mach 0.57. Transonic-adjacent. A "
+                     "reference case, not a Goddard-level vehicle."),
         reference=("Engine and flight: hybrid_sim excel_ref.json "
                    "(independent spreadsheet model)"),
         thrust_curve=f"{_CURVES}/SystemsGo_Goddard_baseline.csv",
@@ -306,6 +319,110 @@ PRESET_ROCKETS = [
                      fin_span_m=0.15, fin_thickness_m=0.005,
                      target_altitude_ft=9292, rail_length_m=5.18,
                      harness_rating_n=4000),
+    ),
+    # -- 3b. the Goddard brief: 50,000 ft with a payload -----------------------
+    #
+    # SystemsGo's Goddard level asks for a scratch-built vehicle that carries a
+    # scientific payload to 50,000 ft, flown at White Sands. Nothing in the
+    # measured-curve library is that motor, so this one was sized here against
+    # the app's own engine and trajectory models and then graded by the same
+    # Flight Report the user sees. It reaches 53,459 ft with no CRITICAL check
+    # outstanding - see docs/VALIDATION.md for the three CAUTIONs that remain
+    # and why they are inherent to a nitrous blowdown flying this profile.
+    #
+    # Sizing decisions worth knowing before editing any number here:
+    #   * The 90 mm initial port and the 0.60 m grain are set by two checks
+    #     pulling against each other - opening the port drops oxidiser flux
+    #     (P-07) but thins the web that P-06 wants left at burnout. 90 mm in a
+    #     170.8 mm bore lands at 472 kg/m^2s peak flux with 29% of the web
+    #     still there.
+    #   * The 42 mm throat and 2.6 mm orifices are the other opposed pair:
+    #     opening the injector lifts thrust-to-weight (P-01) and pushes flux
+    #     back over its limit. Flux is a physical limit on where the
+    #     regression data is valid; the 5:1 thrust-to-weight is a convention
+    #     for rail stability that R-01 already confirms directly.
+    #   * The airframe is carbon rather than glass because 5.7 m of 184 mm
+    #     tube in G10 costs 5.4 kg, which is worth about 5,600 ft here.
+    dict(
+        name="SystemsGo Goddard Baseline",
+        description=("SystemsGo Goddard level: a scientific payload to 50,000 "
+                     "ft. 184 mm carbon airframe, 78.6 kN.s nitrous/HTPB "
+                     "hybrid, Mach 1.68. Reaches 53,459 ft."),
+        reference=("Motor and airframe sized in this repository against the "
+                   "Goddard brief; no measured curve of this class exists "
+                   "here. Modelled, not flown."),
+        thrust_curve=f"{_CURVES}/SystemsGo_Goddard_50k.csv",
+        cd=0.55, main_alt=250, main_area=18.1,
+        engine=dict(d_tank=0.1708, L_tank=2.60, fill_frac=0.85, T_tank_0=298.0,
+                    n_holes=12, d_hole=0.0026, Cd_inj=0.75,
+                    L_grain=0.60, d_grain_outer=0.1708, d_port_0=0.090,
+                    d_throat=0.042, eps_exp=6.5, alpha_deg=15.0,
+                    eta_cstar=0.90, eta_nozzle=0.95, gamma=1.22, MW=26.0),
+        airframe=dict(
+            nose_shape="Von Karman (LV-Haack)", nose_length_m=1.00,
+            body_diameter_m=0.184, body_length_m=4.7614,
+            surface_roughness_um=20.0, boattail_length_m=0.0,
+            boattail_exit_diameter_m=0.0,
+            fin_count=4, fin_root_chord_m=0.44, fin_tip_chord_m=0.18,
+            fin_span_m=0.13, fin_sweep_m=0.22, fin_thickness_m=0.009,
+            dry_mass_kg=56.808, propellant_mass_kg=41.889,
+            dry_cg_m=3.496, propellant_cg_m=3.739,
+            elevation_m=1216.0, temperature_c=25.0, wind_speed_ms=4.0,
+            rail_length_m=10.0, rail_angle_deg=0.0,
+            # No measured-Cd override: this vehicle does not exist, so there
+            # is no measured number to honour and the model's own drag
+            # buildup is the only defensible source.
+            cd_override=0.0,
+            # Every dry mass above is the sum of these, placed where they sit.
+            # The stability margin the report grades is the margin of this
+            # parts list, not of a number somebody typed.
+            mass_components=[
+                dict(name="Nose cone", mass_kg=2.508, position_m=0.550,
+                     length_m=1.000, kind="Structure"),
+                dict(name="Payload", mass_kg=2.000, position_m=1.200,
+                     length_m=0.300, kind="Payload"),
+                dict(name="Avionics bay", mass_kg=1.800, position_m=1.500,
+                     length_m=0.350, kind="Avionics"),
+                dict(name="Recovery", mass_kg=4.600, position_m=1.700,
+                     length_m=0.500, kind="Recovery"),
+                dict(name="Fwd closure / fill", mass_kg=1.400,
+                     position_m=2.050, length_m=0.100, kind="Structure"),
+                dict(name="Oxidiser tank", mass_kg=12.148, position_m=3.400,
+                     length_m=2.600, kind="Structure"),
+                dict(name="Plumbing / main valve", mass_kg=2.600,
+                     position_m=4.550, length_m=0.400, kind="Other"),
+                dict(name="Injector bulkhead", mass_kg=1.600,
+                     position_m=4.730, length_m=0.060, kind="Structure"),
+                dict(name="Chamber case", mass_kg=3.044, position_m=5.170,
+                     length_m=0.820, kind="Structure"),
+                dict(name="Chamber liner", mass_kg=2.750, position_m=5.170,
+                     length_m=0.820, kind="Structure"),
+                dict(name="Nozzle", mass_kg=3.507, position_m=5.671,
+                     length_m=0.181, kind="Structure"),
+                dict(name="Body tube", mass_kg=11.288, position_m=3.381,
+                     length_m=4.761, kind="Structure"),
+                dict(name="Fins", mass_kg=3.355, position_m=5.519,
+                     length_m=0.440, kind="Structure"),
+                dict(name="Fasteners / bonding", mass_kg=4.208,
+                     position_m=3.381, length_m=4.761, kind="Other"),
+            ]),
+        recovery=None,
+        recovery_spec=dict(kind="dual", drogue_d=1.2, main_d=4.8, main_alt=250),
+        # Carbon airframe and nose, but GLASS fins: G10's shear modulus is
+        # 7.0 GPa against carbon's 5.0, and fin flutter is a shear-stiffness
+        # problem, so glass is the better fin at Mach 1.68 despite being
+        # heavier. Tank is 7075 rather than 6061 - at 7.02 MPa hot-pad
+        # saturation the wall drops from 3.5 mm to 2.4 mm, worth 5 kg.
+        vehicle=dict(_GLASS, airframe_material="Carbon Fiber / Epoxy",
+                     nose_material="Carbon Fiber / Epoxy",
+                     tank_material="Aluminum 7075-T6",
+                     body_od_m=0.184, body_wall_m=0.0026,
+                     body_length_m=5.7614, fin_count=4,
+                     fin_root_chord_m=0.44, fin_tip_chord_m=0.18,
+                     fin_span_m=0.13, fin_thickness_m=0.009,
+                     chamber_wall_m=0.00223, tank_wall_m=0.00238,
+                     target_altitude_ft=50000, rail_length_m=10.0,
+                     harness_rating_n=13000),
     ),
     # -- 4. supersonic ----------------------------------------------------------
     dict(

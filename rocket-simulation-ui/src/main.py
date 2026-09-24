@@ -3682,8 +3682,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self._set_stability_note(text, ok=ok)
 
     # Frames the playback is allowed, and how they are shared between the
-    # climb and the descent. A Goddard flight is 200 s long; at one frame per
-    # 0.05 s that is 4,000 frames, and about six minutes of watching, nearly
+    # climb and the descent. The Goddard baseline flies 555 s; at one frame per
+    # 0.05 s that is 11,000 frames, and over nine minutes of watching, nearly
     # all of it a parachute drifting down. Budgeting frames instead keeps
     # every flight roughly the same length to watch, whether it is a 30 s
     # sport flight or a 40-minute descent from 30 km.

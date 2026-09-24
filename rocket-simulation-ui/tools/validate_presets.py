@@ -8,7 +8,7 @@ Three layers, each checked against something the model was not built from:
      Isp). The reference is certification data for the I260 and the measured
      thrustcurve.org curves for the J317, K240 and L550.
 
-  2. FLIGHT vs INDEPENDENT MODEL - the Goddard baseline against the
+  2. FLIGHT vs INDEPENDENT MODEL - the hybrid_sim reference flight against
      spreadsheet reference carried in hybrid_sim/excel_ref.json, which is a
      separate implementation by a different author.
 
@@ -199,9 +199,17 @@ def fly_preset(preset):
         elevation_m=a["elevation_m"], temperature_c=a["temperature_c"],
         wind_speed_ms=a["wind_speed_ms"], rail_length_m=a["rail_length_m"],
         rail_angle_deg=a["rail_angle_deg"])
+    # A preset that names its parts flies on the parts, exactly as the app
+    # does when it loads the same profile. Ignoring them here meant this
+    # harness graded a different vehicle from the one the user sees: a typed
+    # dry CG instead of the buildup's, and a rod-estimate pitch inertia
+    # instead of a real sum of m*r^2, which moves weathercocking and drift.
+    components = [mass_model.MassComponent(**dict(c))
+                  for c in (a.get("mass_components") or [])]
     mass = flight_model.MassProperties(
         dry_mass_kg=a["dry_mass_kg"], propellant_mass_kg=a["propellant_mass_kg"],
-        dry_cg_m=a["dry_cg_m"], propellant_cg_m=a["propellant_cg_m"])
+        dry_cg_m=a["dry_cg_m"], propellant_cg_m=a["propellant_cg_m"],
+        buildup=mass_model.MassBuildup(components) if components else None)
     spec = preset["recovery_spec"]
     if spec.get("kind") == "single":
         system = recovery_mod.RecoverySystem.single_deploy(diameter_m=spec["main_d"])
@@ -216,7 +224,7 @@ def fly_preset(preset):
 
 
 def validate_goddard(rows, summary, preset):
-    banner("2. GODDARD FLIGHT vs INDEPENDENT SPREADSHEET REFERENCE")
+    banner("2. REFERENCE FLIGHT vs INDEPENDENT SPREADSHEET")
     with open(os.path.join(ROOT, "hybrid_sim", "excel_ref.json"), encoding="utf-8") as f:
         ref = json.load(f)["summary"]
     max_mach = max(r["Mach"] for r in rows)
@@ -252,6 +260,120 @@ def validate_goddard(rows, summary, preset):
         summary2["apogee_ft"],
         (summary2["apogee_ft"] - summary["apogee_ft"]) / summary["apogee_ft"] * 100))
     print("   flight model: a 3.1x difference in drag area moves apogee that far.")
+
+
+GODDARD_MISSION_FT = 50000.0
+
+
+def goddard_report(preset, rows, summary, mass):
+    """The Flight Report for a preset, built the way the app builds it."""
+    import failure_analysis as fa
+    import json as _json
+    # NOT build_engine(): that helper pins T_tank_0 to 293 K for the HyperTEK
+    # fits, and this motor is filled to 298 K on purpose - the tank pressure
+    # that follows is what holds P-03 injector stiffness above 20% and P-01
+    # thrust-to-weight where it is. Silently flying it at 293 K would grade a
+    # different motor.
+    fit = dict(preset["engine"])
+    fuel = FUELS[fit.pop("fuel", "HTPB")]
+    fit["n_holes"] = int(fit.get("n_holes", 1))
+    eng = Engine(fuel=fuel, **fit)
+    res = EngineModel(eng).run()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           preset["name"] + ".json"), encoding="utf-8") as fh:
+        profile = _json.load(fh)
+    # The vehicle section is written in DISPLAY units by build_presets, so the
+    # millimetre fields have to come back to metres here. Reading them raw
+    # grades a 184 mm body as a 184 m one and every structural check passes
+    # for the wrong reason.
+    mm_fields = {"body_od_m", "body_wall_m", "fin_root_chord_m",
+                 "fin_tip_chord_m", "fin_span_m", "fin_thickness_m",
+                 "chamber_wall_m", "tank_wall_m"}
+    v = fa.VehicleConfig()
+    for key, value in (profile.get("vehicle") or {}).items():
+        if not hasattr(v, key):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            setattr(v, key, value)
+            continue
+        setattr(v, key, number / 1000.0 if key in mm_fields else number)
+    cd = preset["airframe"].get("cd_override") or None
+    return fa.analyze(rows, v, engine_result=res, engine=eng, cd_source=cd,
+                      mass_props=mass, summary=summary), v
+
+
+def validate_goddard_mission(rows, summary, preset, mass):
+    """The Goddard baseline against the brief it exists to fly.
+
+    Everything else in this file checks the MODEL against outside data. This
+    checks the DESIGN against its requirement, which is a different claim and
+    needs to be made separately: a preset called a Goddard baseline that does
+    not reach 50,000 ft, or that reaches it with a CRITICAL failure mode
+    outstanding, is not a baseline for anything.
+    """
+    banner("3a. GODDARD BASELINE vs THE SYSTEMSGO BRIEF")
+    print("   SystemsGo's Goddard level: a scientific payload to 50,000 ft.")
+    print("   The motor and airframe were sized in this repository - there is")
+    print("   no measured curve of this class - so the only thing standing")
+    print("   between the design and wishful thinking is the report below.\n")
+
+    rep, v = goddard_report(preset, rows, summary, mass)
+    by = {c.code: c for c in rep.checks}
+
+    check("  reaches the mission altitude: {:,.0f} ft".format(rep.apogee_ft),
+          rep.apogee_ft >= GODDARD_MISSION_FT,
+          "goal {:,.0f} ft, margin {:+.1f}%".format(
+              GODDARD_MISSION_FT,
+              (rep.apogee_ft / GODDARD_MISSION_FT - 1.0) * 100.0))
+
+    # A components list silently overrides the typed dry mass (MassProperties
+    # treats it as strictly more information), so the two disagreeing is a
+    # defect nothing else would report: the preset would fly one mass and
+    # document another.
+    comps = preset["airframe"].get("mass_components") or []
+    declared = float(preset["airframe"]["dry_mass_kg"])
+    built = sum(float(c["mass_kg"]) for c in comps)
+    check("  parts list sums to the declared dry mass",
+          bool(comps) and abs(built - declared) <= 0.01,
+          "{:.3f} kg over {:d} parts vs {:.3f} kg declared".format(
+              built, len(comps), declared))
+
+    critical = [c for c in rep.checks if c.status == "CRITICAL"]
+    check("  no CRITICAL failure mode outstanding", not critical,
+          "clean" if not critical
+          else ", ".join("%s %s" % (c.code, c.name) for c in critical))
+
+    # The individual limits the design was actually traded against, named so a
+    # regression says WHICH margin moved rather than only that one did.
+    for code, want in (("P-06", "fuel grain burn-through"),
+                       ("P-07", "oxidiser mass flux"),
+                       ("W-01", "static stability margin"),
+                       ("R-01", "rail exit velocity"),
+                       ("S-05", "fin flutter margin"),
+                       ("R-04", "landing descent rate")):
+        c = by.get(code)
+        if c is None:
+            check("  %s %s is graded" % (code, want), False, "check missing")
+            continue
+        check("  %s %s" % (code, want), c.status == "OK",
+              "%s (%s, limit %s)" % (c.status, c.value, c.limit))
+
+    print()
+    remaining = [c for c in rep.checks if c.status not in ("OK", "NO DATA")]
+    print("   %d of %d checks are not OK, all of them CAUTION:" % (
+        len(remaining), len(rep.checks)))
+    for c in remaining:
+        print("     %-5s %-30s %s" % (c.code, c.name, c.value))
+    print("   These are inherent to the mission and the feed system, not")
+    print("   defects: a nitrous blowdown self-cools (P-12), N2O/HTPB at an")
+    print("   efficient mixture ratio burns hotter than the throat's service")
+    print("   temperature and is held by graphite that sublimes rather than")
+    print("   melts (P-09), and Mach 1.8 to 50,000 ft costs dynamic pressure")
+    print("   (S-01, well inside its 150 kPa critical). Loaded in the app a")
+    print("   fourth appears, P-00, stating that the motor is modelled rather")
+    print("   than flown - which it is, and which is the point of saying so.")
 
 
 def summary_time_to_apogee(rows):
@@ -826,7 +948,7 @@ def validate_tolerances():
     for _ in range(3):
         app.processEvents()
     with open(os.path.join(ROOT, "src", "profiles",
-                           "SystemsGo Goddard Baseline.json")) as fh:
+                           "hybrid_sim Reference Flight.json")) as fh:
         win.apply_configuration(json.load(fh))
     app.processEvents()
 
@@ -998,7 +1120,7 @@ def validate_ui_geometry():
     for _ in range(4):
         app.processEvents()
     with open(os.path.join(ROOT, "src", "profiles",
-                           "SystemsGo Goddard Baseline.json")) as fh:
+                           "hybrid_sim Reference Flight.json")) as fh:
         win.apply_configuration(json.load(fh))
     app.processEvents()
     win.start_simulation()
@@ -1065,6 +1187,38 @@ def validate_ui_geometry():
 
     win.close()
     app.processEvents()
+
+
+def validate_engine_tab_default():
+    """The Engine tab's dropdown must name the motor its fields actually hold.
+
+    These are two separate pieces of state and nothing forces them to agree:
+    the combo is filled from _PRESETS in key order and the default is applied
+    by name. While the default happened to be the first key they matched by
+    luck, and renaming an entry above it left the tab reading "hybrid_sim
+    reference" over the Goddard motor's numbers.
+    """
+    banner("12. ENGINE TAB DEFAULT (dropdown vs the fields under it)")
+    from PyQt5 import QtWidgets
+    hook = sys.excepthook
+    import engine_lab
+    sys.excepthook = hook
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    lab = engine_lab.EngineLabWidget()
+    shown = lab.preset_combo.currentText()
+    check("  dropdown shows the default preset",
+          shown == engine_lab.DEFAULT_PRESET,
+          "%r, default is %r" % (shown, engine_lab.DEFAULT_PRESET))
+
+    want = engine_lab._PRESETS[engine_lab.DEFAULT_PRESET]
+    eng = lab.current_engine_run()[0]
+    same = (abs(eng.d_throat - want["d_throat"]) < 1e-6
+            and abs(eng.L_tank - want["L_tank"]) < 1e-6
+            and abs(eng.T_tank_0 - want["T_tank_0"]) < 1e-6)
+    check("  and the fields hold that preset's motor", same,
+          "throat %.1f mm, tank %.2f m, fill %.0f K"
+          % (eng.d_throat * 1000, eng.L_tank, eng.T_tank_0))
+    lab.deleteLater()
 
 
 def validate_windows_scripts():
@@ -1188,11 +1342,19 @@ def main():
             max(r["accel_total"] for r in rows) / G0,
             summary["rail_exit_speed"] or 0.0, abs(summary["drift_m"])))
 
+    reference = flights.get("hybrid_sim Reference Flight")
+    if reference:
+        validate_goddard(reference[0], reference[1],
+                         next(p for p in preset_defs.PRESET_ROCKETS
+                              if p["name"] == "hybrid_sim Reference Flight"))
+
     goddard = flights.get("SystemsGo Goddard Baseline")
     if goddard:
-        validate_goddard(goddard[0], goddard[1],
-                         next(p for p in preset_defs.PRESET_ROCKETS
-                              if p["name"] == "SystemsGo Goddard Baseline"))
+        validate_goddard_mission(
+            goddard[0], goddard[1],
+            next(p for p in preset_defs.PRESET_ROCKETS
+                 if p["name"] == "SystemsGo Goddard Baseline"),
+            goddard[4])
 
     banner("4. PHYSICAL BOUNDS (must hold regardless of modelling choices)")
     for name, data in flights.items():
@@ -1205,6 +1367,7 @@ def main():
     validate_motor_designer()
     validate_tolerances()
     validate_ui_geometry()
+    validate_engine_tab_default()
     validate_windows_scripts()
 
     banner("SUMMARY")

@@ -7,7 +7,8 @@ isentropic nozzle with Summerfield separation) - nothing in that package is
 modified here. This module only adds a PyQt5 front end around it:
 
     * a form for the engine's tank / injector / fuel grain / nozzle geometry
-    * preset motors to start from (the Goddard baseline and the two
+    * preset motors to start from (the Goddard baseline, the hybrid_sim
+      reference case, and the two
       HyperTEK motors hybrid_sim validates against)
     * an embedded thrust/pressure/O-F/mdot plot and a metrics readout
     * an optional quick apogee/velocity estimate (hybrid_sim's own 1-DOF
@@ -260,7 +261,9 @@ def _hypertek_presets():
 
 
 _PRESETS = {
-    "Goddard baseline": dict(
+    # The configuration behind the spreadsheet reference. Not a Goddard-level
+    # vehicle - it reaches 9,292 ft - so it is named for what it actually is.
+    "hybrid_sim reference": dict(
         d_tank=0.100, L_tank=1.019, fill_frac=0.85, T_tank_0=293,
         n_holes=4, d_hole=0.00252, Cd_inj=0.7, fuel="HTPB",
         L_grain=0.30, d_grain_outer=0.076, d_port_0=0.036,
@@ -268,8 +271,23 @@ _PRESETS = {
         eta_cstar=0.90, eta_nozzle=0.95, gamma=1.22, MW=26.0,
         rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
     ),
+    # Sized here against the SystemsGo Goddard brief - a payload to 50,000 ft.
+    # 78.6 kN.s, 21.4 s, Isp 191 s; the vehicle it flies reaches 53,459 ft.
+    "Goddard baseline (50k)": dict(
+        d_tank=0.1708, L_tank=2.60, fill_frac=0.85, T_tank_0=298,
+        n_holes=12, d_hole=0.0026, Cd_inj=0.75, fuel="HTPB",
+        L_grain=0.60, d_grain_outer=0.1708, d_port_0=0.090,
+        d_throat=0.042, eps_exp=6.5, alpha_deg=15.0,
+        eta_cstar=0.90, eta_nozzle=0.95, gamma=1.22, MW=26.0,
+        rocket=dict(m_dry=56.808, Cd_body=0.55, d_body=0.184),
+    ),
 }
 _PRESETS.update(_hypertek_presets())
+
+# What the Engine tab opens on. Named rather than positional: the tab used to
+# rely on this being the first key of _PRESETS, so adding an entry above it
+# silently changed which motor the app started with.
+DEFAULT_PRESET = "Goddard baseline (50k)"
 
 # Inputs are styled by the application-wide theme; nothing local needed.
 _INPUT_STYLE = ""
@@ -388,7 +406,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._on_materials = on_materials
         self._last_design = None      # last motor_designer.DesignResult
         self._build_ui()
-        self._apply_preset("Goddard baseline")
+        self._select_preset(DEFAULT_PRESET)
 
     # ---- UI construction -------------------------------------------------
     def _build_ui(self):
@@ -989,6 +1007,23 @@ class EngineLabWidget(QtWidgets.QWidget):
             return None
 
     # ---- presets -----------------------------------------------------------
+    def _select_preset(self, name):
+        """Show a preset in the combo AND apply it.
+
+        Applying without moving the combo leaves the dropdown naming one motor
+        while the fields hold another - which is what happened when the first
+        key of _PRESETS stopped being the default. Setting the combo is what
+        the user would do, and the currentTextChanged connection applies it.
+        """
+        idx = self.preset_combo.findText(name)
+        if idx < 0:
+            self._apply_preset(name)
+            return
+        if self.preset_combo.currentIndex() == idx:
+            self._apply_preset(name)      # already showing it; still apply
+        else:
+            self.preset_combo.setCurrentIndex(idx)
+
     def _apply_preset(self, name):
         preset = _PRESETS.get(name)
         if not preset:
