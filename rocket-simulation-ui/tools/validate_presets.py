@@ -920,6 +920,57 @@ def validate_motor_designer():
           f"{fill_pa/1e6:.2f} MPa at 20 C")
 
 
+def validate_duty_resolution():
+    """Impulse, average thrust and burn time: any two fix the third.
+
+    This is the arithmetic behind the three boxes at the top of the Design a
+    Motor panel, and it is worth checking on its own because it decides what
+    the designer is even aiming at. I = F * t, so a brief given as "2,200 N for
+    14 s" has to size the same motor as one given as "30,800 N.s in 14 s".
+    """
+    banner("13. MOTOR BRIEF ARITHMETIC (impulse / thrust / burn time)")
+    import motor_designer as md
+
+    it, fa, tb, notes = md.resolve_duty(
+        md.Requirements(avg_thrust_n=2200.0, burn_time_s=14.0))
+    check("  thrust and burn time give the impulse", abs(it - 30800.0) < 1e-6,
+          "2,200 N x 14 s = {:,.0f} N.s".format(it))
+
+    it, fa, tb, notes = md.resolve_duty(
+        md.Requirements(total_impulse_ns=30800.0, burn_time_s=14.0))
+    check("  impulse and burn time give the thrust", abs(fa - 2200.0) < 1e-6,
+          "{:,.0f} N.s over 14 s = {:,.0f} N".format(it, fa))
+
+    it, fa, tb, notes = md.resolve_duty(
+        md.Requirements(total_impulse_ns=30800.0, avg_thrust_n=2200.0))
+    check("  impulse and thrust give the burn time", abs(tb - 14.0) < 1e-9,
+          "{:,.0f} N.s at {:,.0f} N = {:.2f} s".format(it, fa, tb))
+
+    # All three, disagreeing. The contradiction has to be reported, not
+    # silently resolved in favour of whichever the code happened to read last.
+    _it, _fa, _tb, notes = md.resolve_duty(
+        md.Requirements(total_impulse_ns=30800.0, avg_thrust_n=2200.0,
+                        burn_time_s=25.0))
+    check("  a contradictory brief is reported, not silently resolved",
+          any("disagree" in n for n in notes),
+          notes[0][:66] + "..." if notes else "NO NOTE RAISED")
+
+    # Impulse alone still has to produce a burn time, and say that it guessed.
+    _it, _fa, tb, notes = md.resolve_duty(
+        md.Requirements(total_impulse_ns=30800.0))
+    check("  impulse alone still yields a burn time, stated as an assumption",
+          3.0 <= tb <= 25.0 and any("no burn time" in n.lower() for n in notes),
+          "assumed {:.1f} s".format(tb))
+
+    # Nothing at all is an error, not a zero-thrust motor.
+    try:
+        md.resolve_duty(md.Requirements())
+        ok, detail = False, "accepted an empty brief"
+    except ValueError as exc:
+        ok, detail = True, str(exc)[:58] + "..."
+    check("  an empty brief is refused", ok, detail)
+
+
 def validate_tolerances():
     """The tolerance search, against the properties that make it meaningful.
 
@@ -1198,7 +1249,7 @@ def validate_engine_tab_default():
     luck, and renaming an entry above it left the tab reading "hybrid_sim
     reference" over the Goddard motor's numbers.
     """
-    banner("12. ENGINE TAB DEFAULT (dropdown vs the fields under it)")
+    banner("12. ENGINE TAB (default preset, and the brief you can reach)")
     from PyQt5 import QtWidgets
     hook = sys.excepthook
     import engine_lab
@@ -1218,6 +1269,28 @@ def validate_engine_tab_default():
     check("  and the fields hold that preset's motor", same,
           "throat %.1f mm, tank %.2f m, fill %.0f K"
           % (eng.d_throat * 1000, eng.L_tank, eng.T_tank_0))
+
+    # The Generate Motor button used to sit at the bottom of the requirements
+    # group, inside a scroll area whose viewport was 417 px against 2,521 px of
+    # content. It rendered NOTHING: you could fill in a brief and never find
+    # the button that acts on it. Measured on the real widget rather than
+    # reasoned about, because that is the only way this kind of defect shows.
+    host = QtWidgets.QWidget()
+    host.resize(1366, 768)
+    box = QtWidgets.QVBoxLayout(host)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.addWidget(lab)
+    host.show()
+    for _ in range(6):
+        _app.processEvents()
+    for name, w in (("Generate Motor button", lab.generate_button),
+                    ("Burn time field", lab._req_fields["burn_time_s"]),
+                    ("Average thrust field", lab._req_fields["avg_thrust_n"])):
+        r = w.visibleRegion().boundingRect()
+        check("  %s renders" % name, not r.isEmpty() and r.height() >= 10,
+              "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
+              else "NOTHING VISIBLE")
+    host.deleteLater()
     lab.deleteLater()
 
 
@@ -1366,6 +1439,7 @@ def main():
     validate_mass_components()
     validate_motor_designer()
     validate_tolerances()
+    validate_duty_resolution()
     validate_ui_geometry()
     validate_engine_tab_default()
     validate_windows_scripts()

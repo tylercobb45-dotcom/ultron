@@ -519,6 +519,12 @@ class EngineLabWidget(QtWidgets.QWidget):
         # takes an equal share and squeezes the form down to a few rows.
         left_layout.addWidget(scroll, 1)
 
+        # Generate first, then run, then send: the order you actually do them
+        # in. Pinned here rather than left at the bottom of the requirements
+        # group, where it was scrolled out of sight (see _build_requirements).
+        left_layout.addWidget(self.generate_button)
+        left_layout.addWidget(self.req_status)
+
         self.run_button = QtWidgets.QPushButton("Run Engine Simulation")
         self.run_button.clicked.connect(self._run_engine)
         left_layout.addWidget(self.run_button)
@@ -634,17 +640,22 @@ class EngineLabWidget(QtWidgets.QWidget):
         form.addRow("Pressure safety factor:", self.req_sf_edit)
         outer.addLayout(form)
 
+        # The button and its status line are built here, next to the fields
+        # they act on, but they are NOT added to this group. _build_ui pins
+        # them outside the scroll area instead, for the same reason the design
+        # report moved out: this group is 500 px of form inside a 417 px
+        # viewport, so anything at the bottom of it renders nothing at all.
+        # The button that acts on the brief was invisible until you scrolled a
+        # nested scroll area, which reads as "this panel does not work".
         self.generate_button = QtWidgets.QPushButton("Generate Motor")
         self.generate_button.setToolTip(
             "Size a complete motor against these requirements and fill in "
             "every field below.")
         self.generate_button.clicked.connect(self._generate_motor)
-        outer.addWidget(self.generate_button)
 
         self.req_status = QtWidgets.QLabel("No motor generated yet.")
         self.req_status.setWordWrap(True)
         self.req_status.setTextFormat(QtCore.Qt.RichText)
-        outer.addWidget(self.req_status)
         return group
 
     def _build_design_report(self):
