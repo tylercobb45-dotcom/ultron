@@ -22,6 +22,7 @@ from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
 from tolerances_tab import TolerancesTab  # Build-tolerance search (optional tab)
+from engine_designer_tab import EngineDesignerTab  # Engine from requirements (optional tab)
 import tolerances  # the search itself, Qt-free
 import recovery as recovery_mod
 import failure_analysis as fa
@@ -1653,7 +1654,20 @@ class RocketSimulationUI(QtWidgets.QWidget):
             on_materials=self._apply_motor_materials)
         self.engine_section = EngineSection(self.engine_lab,
                                             self.get_profiles_dir)
-        self.tabs.addTab(_scrollable(self.engine_section), "Engine")
+        self._engine_tab_page = _scrollable(self.engine_section)
+        self.tabs.addTab(self._engine_tab_page, "Engine")
+
+        # --- Engine Designer: an engine from requirements (optional) ---
+        #
+        # Its own tab, beside the Engine tab rather than inside it: this is
+        # for asking "what engine do I need?" before there is one. It writes
+        # nothing until Send to Engine tab, which goes through the Engine
+        # tab's own loader. Switchable off from Settings like Tolerances.
+        self.engine_designer_tab = EngineDesignerTab(
+            on_send_to_engine=self._send_designed_engine)
+        self.tabs.addTab(self.engine_designer_tab, "Engine Designer")
+        if not self.load_extension_enabled("engine_designer"):
+            self.set_engine_designer_enabled(False)
 
         # --- Aerodynamics: airframe shape, recovery, and the drag it makes ---
         # on_changed keeps the Stability Test tab's view of the launch
@@ -1793,6 +1807,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
             "nothing else in the app depends on it.")
         self.tolerances_enabled.toggled.connect(self.set_tolerances_enabled)
         ext_layout.addWidget(self.tolerances_enabled)
+        self.engine_designer_enabled = QtWidgets.QCheckBox(
+            "Engine Designer tab - generate an engine from requirements")
+        self.engine_designer_enabled.setChecked(
+            self.load_extension_enabled("engine_designer"))
+        self.engine_designer_enabled.setToolTip(
+            "Give it the impulse, thrust, size and mass limits and a fuel, "
+            "and it sizes a complete hybrid engine and its thrust curve. "
+            "Turning it off removes the tab; the Engine tab is unaffected.")
+        self.engine_designer_enabled.toggled.connect(
+            self.set_engine_designer_enabled)
+        ext_layout.addWidget(self.engine_designer_enabled)
         ext_note = QtWidgets.QLabel(
             "<span style='font-size:9pt'>Extensions are self-contained: they "
             "read the loaded rocket and never write to it, so switching one "
@@ -4722,6 +4747,58 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 json.dump(existing, f, indent=2)
         except Exception:
             pass
+
+    def set_engine_designer_enabled(self, enabled):
+        """Show or hide the Engine Designer tab, and remember the choice.
+
+        Same rules as set_tolerances_enabled: removed rather than greyed out,
+        and the widget kept alive so a brief typed in is still there when it
+        comes back.
+        """
+        enabled = bool(enabled)
+        tab = getattr(self, 'engine_designer_tab', None)
+        if tab is not None:
+            index = self.tabs.indexOf(tab)
+            if enabled and index < 0:
+                # Back where it was: straight after the Engine tab.
+                engine = self.tabs.indexOf(
+                    getattr(self, '_engine_tab_page', None))
+                at = engine + 1 if engine >= 0 else self.tabs.count()
+                self.tabs.insertTab(at, tab, "Engine Designer")
+                # Out of the window it missed any unit-system change.
+                if hasattr(self, 'unit_select'):
+                    system = self.unit_system()
+                    for field in tab.findChildren(unit_fields.UnitField):
+                        field.set_system(system)
+            elif not enabled and index >= 0:
+                self.tabs.removeTab(index)
+                tab.setParent(None)
+        try:
+            path = (getattr(self, 'user_settings_file', None)
+                    or user_settings_path())
+            try:
+                with open(path, 'r') as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+            existing["engine_designer_tab_enabled"] = enabled
+            with open(path, 'w') as f:
+                json.dump(existing, f, indent=2)
+        except Exception:
+            pass
+
+    def _send_designed_engine(self, design):
+        """Engine Designer -> Engine tab, through the Engine tab's loader.
+
+        Switch first, then load. load_design runs the engine and draws its
+        plots, and drawn on a hidden tab the canvas has no size - matplotlib
+        abandons the layout and the four plots land on top of each other.
+        """
+        page = getattr(self, '_engine_tab_page', None)
+        if page is not None and self.tabs.indexOf(page) >= 0:
+            self.tabs.setCurrentWidget(page)
+            QtWidgets.QApplication.processEvents()
+        self.engine_lab.load_design(design)
 
     def _tolerance_inputs(self):
         """(engine, FlightContext, reference apogee) for the Tolerances tab.

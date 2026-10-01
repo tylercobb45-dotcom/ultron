@@ -797,6 +797,66 @@ def validate_motor_designer():
           f"{tank['pressure_pa']/1e6:.2f} MPa design vs "
           f"{fill_pa/1e6:.2f} MPa at 20 C")
 
+    # The mass breakdown has to add up: what sits on the pad is the hardware
+    # plus the propellant loaded, not a third number.
+    mp = r.masses
+    parts_sum = mp["DRY"] + mp["oxidiser propellant"] + mp["fuel propellant"]
+    check("motor mass breakdown adds up",
+          mp["DRY"] > 0 and abs(parts_sum - mp["LOADED"]) < 1e-9,
+          f"{mp['DRY']:.2f} kg dry + propellant = {mp['LOADED']:.2f} kg loaded")
+
+    # The thrust curve handed back is the one the table was graded on.
+    t, F = r.curve["t"], r.curve["thrust"]
+    area = sum((t[i + 1] - t[i]) * (F[i + 1] + F[i]) / 2.0
+               for i in range(len(t) - 1))
+    check("returned thrust curve integrates to the reported impulse",
+          abs(area - r.metrics["total_impulse"]) / r.metrics["total_impulse"]
+          < 0.01,
+          f"{area:,.0f} vs {r.metrics['total_impulse']:,.0f} N.s")
+
+    # A minimum length is met by going narrower - the same oxidiser in a
+    # slimmer tank - and never at the cost of the maximum or the diameter.
+    long_req = md.Requirements(total_impulse_ns=11600, avg_thrust_n=720,
+                               max_diameter_m=0.150, min_length_m=2.0,
+                               max_length_m=2.5, fuel="HTPB")
+    long_r = md.design_motor(long_req)
+    total = long_r.envelope["TOTAL"]
+    check("minimum length is reached without breaking the maximum",
+          long_r.met_all and 2.0 * 0.999 <= total <= 2.5 * 1.001
+          and long_r.envelope["_outside_diameter"] <= 0.150 * 1.001,
+          f"{total*1000:.0f} mm long, "
+          f"{long_r.envelope['_outside_diameter']*1000:.1f} mm wide")
+
+    # A mass ceiling binds as hard as the envelope. 12 kg is under what this
+    # brief weighs filling a 150 mm tube (about 13.8 kg), so meeting it
+    # needs the narrower, lighter motor - not a smaller impulse.
+    light = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        max_length_m=2.5, max_motor_mass_kg=12.0, fuel="HTPB"))
+    check("mass ceiling is met without giving up the impulse",
+          light.met_all and light.masses["LOADED"] <= 12.0,
+          f"{light.masses['LOADED']:.2f} kg loaded, "
+          f"{light.metrics['total_impulse']:,.0f} N.s")
+
+    # Under the propellant's own mass no motor exists. That has to come back
+    # as a miss with the reason, never as a motor that claims to meet it.
+    heavy = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        max_length_m=2.5, max_motor_mass_kg=4.0, fuel="HTPB"))
+    check("an impossible mass ceiling is reported as a miss",
+          not heavy.met_all,
+          f"{sum(1 for c in heavy.compliance if not c.met)} requirement(s) "
+          f"marked as missed")
+
+    try:
+        md.design_motor(md.Requirements(total_impulse_ns=5000,
+                                        min_length_m=2.0, max_length_m=1.0))
+        refused = False
+    except ValueError:
+        refused = True
+    check("a minimum length longer than the maximum is refused", refused,
+          "2000 mm minimum against 1000 mm maximum")
+
 
 def validate_tolerances():
     """The tolerance search, against the properties that make it meaningful.
@@ -1031,7 +1091,8 @@ def validate_ui_geometry():
     clipped = []
     for tab_name, tbl in (("Flight Report", win.flight_report.table),
                           ("Tolerances", win.tolerances_tab.table),
-                          ("Tolerances log", win.tolerances_tab.log)):
+                          ("Tolerances log", win.tolerances_tab.log),
+                          ("Engine Designer", win.engine_designer_tab.spec)):
         metrics = QFontMetrics(tbl.horizontalHeader().font())
         for col in range(tbl.columnCount()):
             item = tbl.horizontalHeaderItem(col)
@@ -1062,6 +1123,13 @@ def validate_ui_geometry():
           f"canvas {canvas.width()}x{canvas.height()}, floor "
           f"{PLOT_MIN_HEIGHT_PX} px"
           + ("" if not collapsed else " - axes collapsed to zero"))
+
+    # The Engine Designer's thrust and pressure plots share one canvas.
+    designer = win.engine_designer_tab.canvas
+    check("Engine Designer plots have room to lay out",
+          designer.height() >= PLOT_MIN_HEIGHT_PX,
+          f"canvas {designer.width()}x{designer.height()}, floor "
+          f"{PLOT_MIN_HEIGHT_PX} px")
 
     win.close()
     app.processEvents()
