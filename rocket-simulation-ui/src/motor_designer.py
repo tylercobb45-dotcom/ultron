@@ -897,12 +897,14 @@ def _violation(m: dict, req: Requirements, eng=None, work=None) -> float:
     if eng is not None and work is not None:
         if req.max_length_m > 0 or req.min_length_m > 0:
             total = motor_length(eng, work["case_id"])["TOTAL"]
-            if req.max_length_m > 0 and total > req.max_length_m:
+            if (req.max_length_m > 0
+                    and total > req.max_length_m * (1.0 + LENGTH_SLACK)):
                 worst = max(worst, (total - req.max_length_m) / req.max_length_m)
             # A floor on length is as hard as a ceiling: a motor that does not
             # reach its mounts is not installed any more than one that is too
             # long for the bay.
-            if req.min_length_m > 0 and total < req.min_length_m:
+            if (req.min_length_m > 0
+                    and total < req.min_length_m * (1.0 - LENGTH_SLACK)):
                 worst = max(worst, (req.min_length_m - total) / req.min_length_m)
         if req.max_motor_mass_kg > 0:
             mats = _materials_for(eng, m, req, work)
@@ -933,6 +935,18 @@ def _score(m: dict, req: Requirements, duty: tuple) -> float:
     """
     errs = _targets(m, req, duty)
     return max(errs) if errs else 0.0
+
+
+def _note_once(notes: list, note: str):
+    """Add a note, replacing an earlier one about the same thing.
+
+    _fit_envelope says how far it shortened the tank, and it says so on every
+    sweep with a different number. Kept as written, a design carried five
+    contradictory "Tank shortened by" lines.
+    """
+    stem = note.split(" by ")[0] if note.startswith("Tank shortened") else note
+    notes[:] = [n for n in notes if not n.startswith(stem)]
+    notes.append(note)
 
 
 def _fit_envelope(eng: Engine, req: Requirements, work: dict) -> tuple:
@@ -967,7 +981,7 @@ def _fit_envelope(eng: Engine, req: Requirements, work: dict) -> tuple:
 
 
 def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
-           progress=None) -> tuple:
+           progress=None, max_sweeps: int = None) -> tuple:
     """Walk the seed onto the brief using the real engine solver.
 
     Returns (best engine, its metrics, run count, notes).
@@ -992,11 +1006,13 @@ def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
     # written into the Engine Lab form as though it were a design.
     eng = _apply_limits(eng, req, work)
     eng, gave = _fit_envelope(eng, req, work)
-    notes.extend(gave)
+    for g in gave:
+        _note_once(notes, g)
 
-    for sweep in range(MAX_SWEEPS):
+    sweeps = MAX_SWEEPS if max_sweeps is None else max_sweeps
+    for sweep in range(sweeps):
         if progress is not None:
-            progress(sweep / float(MAX_SWEEPS),
+            progress(sweep / float(sweeps),
                      f"Simulating candidate {sweep + 1}...")
         m = _evaluate(eng, req.ambient_pa)
         runs += 1
@@ -1100,8 +1116,7 @@ def refine(eng: Engine, req: Requirements, duty: tuple, work: dict,
                 f"the only lever here and it has run out.")
         cand, gave = _fit_envelope(cand, req, work)
         for g in gave:
-            if g not in notes:
-                notes.append(g)
+            _note_once(notes, g)
         eng = cand
 
     if best_eng is None:
@@ -1275,11 +1290,14 @@ def _compliance(m: dict, req: Requirements, duty: tuple,
     if req.max_length_m > 0:
         got = length_parts["TOTAL"]
         add("Overall length", f"{req.max_length_m * 1000:.0f} mm maximum",
-            f"{got * 1000:.0f} mm", got <= req.max_length_m * 1.001)
+            f"{got * 1000:.0f} mm",
+            got <= req.max_length_m * (1.0 + LENGTH_SLACK))
     if req.min_length_m > 0:
         got = length_parts["TOTAL"]
-        add("Overall length", f"{req.min_length_m * 1000:.0f} mm minimum",
-            f"{got * 1000:.0f} mm", got >= req.min_length_m * 0.999)
+        # Its own label, so "misses: Minimum length" says which way it missed.
+        add("Minimum length", f"{req.min_length_m * 1000:.0f} mm minimum",
+            f"{got * 1000:.0f} mm",
+            got >= req.min_length_m * (1.0 - LENGTH_SLACK))
     if req.max_motor_mass_kg > 0 and mass_parts:
         got = mass_parts["LOADED"]
         add("Motor mass, loaded", f"{req.max_motor_mass_kg:.2f} kg maximum",
@@ -1295,15 +1313,27 @@ def _compliance(m: dict, req: Requirements, duty: tuple,
     return rows
 
 
-# Narrowing passes allowed when a motor comes out shorter than its minimum
-# length or heavier than its maximum mass.
-MIN_LENGTH_PASSES = 6
-
-# How much each mass-driven pass narrows the outside diameter.
-NARROW_FOR_MASS = 0.85
-
-# Narrower than this and there is no room left for a port, a web and a throat.
+# Outside diameter search, for a minimum length or a mass ceiling.
+#
+# Narrowest motor the search will consider. Below this there is no room
+# left for a port, a web and a throat.
 MIN_OUTSIDE_DIAMETER_M = 0.020
+
+# The search stops once it has the diameter to within this.
+DIAMETER_RESOLUTION_M = 0.003
+
+# Most halvings of the bracket, after it has been found.
+BISECT_STEPS = 3
+
+# Sweeps a search probe gets. A probe only has to say how long and how heavy
+# the motor at that diameter comes out, and impulse - which sets the tank -
+# has normally settled well inside this. The motor finally chosen gets the
+# full MAX_SWEEPS.
+PROBE_SWEEPS = 8
+
+# Slack on the length limits, the same in grading and in the search, so a
+# motor the report passes is never treated as having failed.
+LENGTH_SLACK = 0.001
 
 
 def _design_fuel(req: Requirements, fuel_name: str, injector: str,
@@ -1320,68 +1350,143 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
     motor that fills a 150 mm tube weighs 13.8 kg loaded; the same motor at
     89 mm weighs 9.8 kg.
 
-    For length, each pass shrinks the outside diameter by the square root of
-    how much longer the tank has to get, which is what a fixed volume
-    implies. For mass it steps down by NARROW_FOR_MASS. A pass is kept only if
-    it is better against the brief as given, so a narrower motor that breaks
-    the maximum length instead never wins.
-    """
-    seed, work, notes = seed_engine(req, fuel_name, injector, duty)
-    eng, m, runs, ref_notes = refine(seed, req, duty, work, progress=progress)
-    notes = notes + ref_notes
-    key = (_violation(m, req, eng, work), _score(m, req, duty))
-    best = (key, eng, m, work, notes, runs)
-    if req.min_length_m <= 0 and req.max_motor_mass_kg <= 0:
-        return best
+    So the outside diameter is searched, not stepped. Length rises and mass
+    falls as the motor narrows, so each limit has one boundary diameter, and
+    the motor wanted is the WIDEST one inside both: wider than that only
+    breaks a limit, narrower only costs length and buys nothing. The boundary
+    is bisected on motors designed WITHOUT the mass ceiling - with it, the
+    search holds the mass by giving up impulse, which hides exactly the
+    information being looked for. The final motor is then designed against
+    the whole brief at that diameter.
 
-    total_runs = runs
-    # Narrowing is driven from the motor just tried, not the best one: under
-    # a mass ceiling the solver often holds the mass by shrinking the tank
-    # and giving up impulse, and the next step down is where that stops.
-    od_try = None
-    for _ in range(MIN_LENGTH_PASSES):
-        if best[0][0] <= 0.0 and best[0][1] <= TOLERANCE:
-            break                                # the brief is met
-        _key, eng, m, work, notes, _runs = best
+    Every motor tried is graded against the brief as given, and the best is
+    kept, so a search that cannot help returns the motor it started from.
+    """
+    plan = 1 + (1 + BISECT_STEPS + 4) * (
+        (req.min_length_m > 0) + (req.max_motor_mass_kg > 0)) + 1
+    tried = []
+
+    def attempt(od_cap, drop_mass=False, sweeps=None):
+        """Design at an outside-diameter cap; graded against ``req``."""
+        brief = req
+        if od_cap is not None:
+            brief = dataclasses.replace(brief, max_diameter_m=od_cap)
+        if drop_mass:
+            brief = dataclasses.replace(brief, max_motor_mass_kg=0.0)
+        k = len(tried)
+        step = None
+        if progress is not None:
+            # One slice of the bar per motor designed, so it only moves on.
+            def step(f, msg):
+                progress(min(0.97, (k + f) / float(plan)), msg)
+        seed, work, notes = seed_engine(brief, fuel_name, injector, duty)
+        eng, m, runs, ref_notes = refine(seed, brief, duty, work,
+                                         progress=step, max_sweeps=sweeps)
         mats = _materials_for(eng, m, req, work)
-        if od_try is None:
-            od_try = assembled_diameter(eng, work["case_id"], mats)
-        total = motor_length(eng, work["case_id"])["TOTAL"]
-        short = (req.min_length_m * 1.01 - total
-                 if req.min_length_m > 0 else 0.0)
-        if short > 0:
-            od_new = od_try * math.sqrt(eng.L_tank / (eng.L_tank + short))
-            why = (f"so the motor reaches the {req.min_length_m * 1000:.0f} "
-                   f"mm minimum length: the same oxidiser in a slimmer tank "
-                   f"is a longer tank.")
-        elif req.max_motor_mass_kg > 0:
-            # Heavy, or held under the ceiling only by missing a target.
-            od_new = od_try * NARROW_FOR_MASS
-            why = (f"to meet the brief under {req.max_motor_mass_kg:.2f} kg: "
-                   f"narrower bores need thinner walls and smaller end "
-                   f"plates.")
+        entry = {
+            "key": (_violation(m, req, eng, work), _score(m, req, duty)),
+            "eng": eng, "m": m, "work": work, "notes": notes + ref_notes,
+            "runs": runs,
+            "od": assembled_diameter(eng, work["case_id"], mats),
+            "length": motor_length(eng, work["case_id"])["TOTAL"],
+            "loaded": motor_mass(eng, work["case_id"], mats,
+                                 req.structural_sf)["LOADED"],
+        }
+        tried.append(entry)
+        return entry
+
+    base = attempt(None)
+    if req.min_length_m <= 0 and req.max_motor_mass_kg <= 0:
+        return (base["key"], base["eng"], base["m"], base["work"],
+                base["notes"], base["runs"])
+
+    # Motors without the mass ceiling, by diameter, shared by both searches.
+    free = {}
+
+    def free_at(od):
+        key = round(od, 4)
+        if key not in free:
+            free[key] = attempt(od, drop_mass=True, sweeps=PROBE_SWEEPS)
+        return free[key]
+
+    od_top = base["od"]
+    caps, reasons = [], []
+
+    if req.min_length_m > 0:
+        floor = req.min_length_m * (1.0 - LENGTH_SLACK)
+        start = free_at(od_top) if req.max_motor_mass_kg > 0 else base
+        if start["length"] < floor:
+            # A fixed tank volume grows in length as 1/d^2, which gives a
+            # good first guess at the diameter.
+            l_tank = start["eng"].L_tank
+            short = req.min_length_m * (1.0 + LENGTH_SLACK) - start["length"]
+            guess = od_top * math.sqrt(l_tank / (l_tank + max(0.0, short)))
+            od_len = _widest_passing(
+                lambda od: free_at(od)["length"] >= floor, od_top, guess)
+            if od_len is not None:
+                caps.append(od_len)
+                reasons.append(f"reach the {req.min_length_m * 1000:.0f} mm "
+                               f"minimum length - the same oxidiser in a "
+                               f"slimmer tank is a longer tank")
+
+    if req.max_motor_mass_kg > 0:
+        ceiling = req.max_motor_mass_kg
+        start = free_at(od_top)
+        # Propellant burned is what the impulse costs whatever the diameter;
+        # if that alone is over the ceiling no motor can meet it, and there
+        # is nothing to search for.
+        if start["loaded"] > ceiling and start["m"]["prop_mass"] < ceiling:
+            od_mass = _widest_passing(
+                lambda od: free_at(od)["loaded"] <= ceiling, od_top,
+                od_top * 0.85)
+            if od_mass is not None:
+                caps.append(od_mass)
+                reasons.append(f"come in under {ceiling:.2f} kg - narrower "
+                               f"bores need thinner walls and smaller end "
+                               f"plates")
+
+    if caps:
+        attempt(min(caps))
+
+    best = min(tried, key=lambda e: e["key"])
+    notes = list(best["notes"])
+    if best is not base and best["od"] < od_top - DIAMETER_RESOLUTION_M:
+        notes.append(f"Narrowed to {best['od'] * 1000:.1f} mm outside "
+                     f"diameter to " + "; and to ".join(reasons) + ".")
+    total_runs = sum(e["runs"] for e in tried)
+    return (best["key"], best["eng"], best["m"], best["work"], notes,
+            total_runs)
+
+
+def _widest_passing(passes, od_top, guess):
+    """Widest outside diameter below ``od_top`` for which ``passes`` holds.
+
+    ``passes(od_top)`` is known to be False. First steps down from ``guess``
+    until a diameter passes, then bisects the bracket. None if nothing above
+    MIN_OUTSIDE_DIAMETER_M passes.
+    """
+    hi = od_top
+    od = max(MIN_OUTSIDE_DIAMETER_M, min(guess, od_top * 0.98))
+    lo = None
+    for _ in range(4):
+        if passes(od):
+            lo = od
+            break
+        hi = od
+        if od <= MIN_OUTSIDE_DIAMETER_M:
+            return None
+        od = max(MIN_OUTSIDE_DIAMETER_M, od * 0.8)
+    if lo is None:
+        return None
+    for _ in range(BISECT_STEPS):
+        if hi - lo <= DIAMETER_RESOLUTION_M:
+            break
+        mid = 0.5 * (lo + hi)
+        if passes(mid):
+            lo = mid
         else:
-            break
-        if od_new < MIN_OUTSIDE_DIAMETER_M:
-            break
-        od_try = od_new
-        narrow = dataclasses.replace(req, max_diameter_m=od_new)
-        try:
-            seed2, work2, notes2 = seed_engine(narrow, fuel_name, injector, duty)
-            eng2, m2, runs2, ref2 = refine(seed2, narrow, duty, work2,
-                                           progress=progress)
-        except Exception:
-            break
-        total_runs += runs2
-        key2 = (_violation(m2, req, eng2, work2), _score(m2, req, duty))
-        if key2 < best[0]:
-            note = f"Narrowed to {od_new * 1000:.1f} mm outside diameter {why}"
-            best = (key2, eng2, m2, work2,
-                    [n for n in notes2 + ref2
-                     if not n.startswith("Narrowed to ")] + [note],
-                    runs2)
-    key, eng, m, work, notes, _runs = best
-    return key, eng, m, work, notes, total_runs
+            hi = mid
+    return lo
 
 
 def design_motor(req: Requirements, progress=None) -> DesignResult:
@@ -1464,15 +1569,26 @@ def design_motor(req: Requirements, progress=None) -> DesignResult:
 
     # A mass ceiling that propellant alone breaks cannot be met by any
     # hardware. Say so, with the number, rather than leave a bare MISSES.
-    if req.max_motor_mass_kg > 0 and masses["LOADED"] > req.max_motor_mass_kg:
+    #
+    # Measured against the impulse ASKED FOR, not the one delivered: under an
+    # impossible ceiling the search holds the mass by burning less
+    # propellant, and the propellant left over then looks affordable - which
+    # sent people off to thin their walls when the impulse was the problem.
+    ceiling = req.max_motor_mass_kg
+    held_down = ceiling > 0 and (
+        masses["LOADED"] > ceiling
+        or (it > 0 and m["total_impulse"] < it * (1.0 - TOLERANCE)))
+    if held_down:
         prop = masses["oxidiser propellant"] + masses["fuel propellant"]
-        if prop >= req.max_motor_mass_kg:
+        needed = it / (G0 * max(1.0, m["isp"])) if it > 0 else prop
+        if needed >= ceiling:
             notes.append(
-                f"The propellant alone is {prop:.2f} kg, over the "
-                f"{req.max_motor_mass_kg:.2f} kg limit before any hardware. "
-                f"At about {m['isp']:.0f} s Isp, {it:,.0f} N.s needs that "
-                f"much propellant - lower the impulse or raise the limit.")
-        else:
+                f"{it:,.0f} N.s needs about {needed:.1f} kg of propellant "
+                f"at {m['isp']:.0f} s Isp - more than the {ceiling:.2f} kg "
+                f"limit before any hardware at all. No motor can meet both: "
+                f"lower the impulse or raise the limit. The motor shown "
+                f"keeps the mass and gives up impulse.")
+        elif masses["LOADED"] > ceiling:
             notes.append(
                 f"Hardware is {masses['DRY']:.2f} kg on top of "
                 f"{prop:.2f} kg of propellant. The walls are already the "

@@ -232,23 +232,17 @@ class EngineDesignerTab(QtWidgets.QWidget):
 
     # ---- the brief -------------------------------------------------------
     def requirements(self) -> motor_designer.Requirements:
-        """The brief as the designer wants it, in SI."""
-        req = motor_designer.Requirements()
-        for key, widget in self._fields.items():
-            # Blank is "no requirement", which the dataclass spells 0.0.
-            value = 0.0 if widget.is_blank() else widget.value_si()
-            setattr(req, key, max(0.0, float(value)))
-        fuel = self.fuel_combo.currentText()
-        req.fuel = fuel if fuel in FUELS else ""
-        inj = self.injector_combo.currentText()
-        req.injector = inj if inj in INJECTOR_TYPES else ""
-        req.tank_temp_k = (self.tank_temp.value_si()
-                           if not self.tank_temp.is_blank() else 293.0)
-        try:
-            req.structural_sf = max(1.0, float(self.sf_edit.text()))
-        except (TypeError, ValueError):
-            req.structural_sf = 2.0
-        return req
+        """The brief as the designer wants it, in SI.
+
+        Read by the same function the Engine tab uses, so one brief cannot
+        size two different motors on the two tabs.
+        """
+        return engine_lab.read_requirements(
+            self._fields, self.fuel_combo.currentText(),
+            self.injector_combo.currentText(),
+            (self.tank_temp.value_si() if not self.tank_temp.is_blank()
+             else 293.15),
+            self.sf_edit.text())
 
     def set_requirements(self, **values):
         """Fill boxes from SI values, by Requirements attribute name."""

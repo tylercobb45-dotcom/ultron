@@ -18,6 +18,7 @@ modified here. This module only adds a PyQt5 front end around it:
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -366,6 +367,43 @@ class _EngExportDialog(QtWidgets.QDialog):
         }
 
 
+# Sensible range for the pressure-vessel safety factor. Below 1 the wall is
+# sized to fail; far above 10 is a typo, and an infinite one made the wall
+# allowance zero, which the thickness floor then turned into the THINNEST
+# possible wall - the opposite of what was asked.
+SF_RANGE = (1.0, 10.0)
+
+
+def read_requirements(fields, fuel_text, injector_text, tank_temp_k,
+                      sf_text) -> "motor_designer.Requirements":
+    """A requirements brief from form values, in SI.
+
+    Shared by the Engine tab and the Engine Designer tab, so the same boxes
+    can never be read two different ways. ``fields`` maps Requirements
+    attribute names to UnitFields. Raises ValueError with a message worth
+    showing when the safety factor is not a usable number.
+    """
+    req = motor_designer.Requirements()
+    for key, widget in fields.items():
+        # An empty box is "no requirement". UnitField reads blank as 0.0,
+        # which is the same number the dataclass uses for "not asked for",
+        # so the two agree - but be explicit rather than relying on it.
+        value = 0.0 if widget.is_blank() else widget.value_si()
+        setattr(req, key, max(0.0, float(value)))
+    req.fuel = fuel_text if fuel_text in FUELS else ""
+    req.injector = injector_text if injector_text in INJECTOR_TYPES else ""
+    req.tank_temp_k = tank_temp_k
+    try:
+        sf = float(sf_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"the safety factor '{sf_text}' is not a number")
+    if not math.isfinite(sf) or not SF_RANGE[0] <= sf <= SF_RANGE[1]:
+        raise ValueError(f"the safety factor has to be between "
+                         f"{SF_RANGE[0]:g} and {SF_RANGE[1]:g}, not {sf_text}")
+    req.structural_sf = sf
+    return req
+
+
 def design_report_html(design) -> str:
     """The compliance table, the length and mass budgets and the materials.
 
@@ -373,7 +411,7 @@ def design_report_html(design) -> str:
     design with exactly the same report as the Engine tab does.
     """
     pal = theme.PALETTE
-    ok_col, bad_col = pal.get('good', '#3fb950'), pal['critical']
+    ok_col, bad_col = pal['ok'], pal['critical']
     rows = []
     for c in design.compliance:
         colour = ok_col if c.met else bad_col
@@ -405,16 +443,22 @@ def design_report_html(design) -> str:
     mass_html = ""
     masses = getattr(design, "masses", None) or {}
     if masses:
-        rows_m = "".join(
-            f"<tr><td>{k}</td><td align='right'>{v:.2f} kg</td></tr>"
-            for k, v in masses.items() if k not in ("DRY", "LOADED"))
+        # Hardware, then its total, then the propellant, then the grand
+        # total - so each bold line is the sum of the rows directly above it.
+        def row(label, value, bold=False):
+            b0, b1 = ("<b>", "</b>") if bold else ("", "")
+            return (f"<tr><td>{b0}{label}{b1}</td><td align='right'>{b0}"
+                    f"{value:.2f} kg{b1}</td></tr>")
+        propellant = [k for k in masses if k.endswith("propellant")]
+        hardware = [k for k in masses
+                    if k not in propellant and k not in ("DRY", "LOADED")]
         mass_html = (
             "<br><b>Mass budget</b> <i>(estimate)</i>"
-            "<table cellspacing='0' cellpadding='2'>" + rows_m
-            + f"<tr><td><b>Dry</b></td><td align='right'><b>"
-              f"{masses['DRY']:.2f} kg</b></td></tr>"
-            + f"<tr><td><b>Loaded</b></td><td align='right'><b>"
-              f"{masses['LOADED']:.2f} kg</b></td></tr></table>")
+            "<table cellspacing='0' cellpadding='2'>"
+            + "".join(row(k, masses[k]) for k in hardware)
+            + row("Dry", masses["DRY"], bold=True)
+            + "".join(row(k, masses[k]) for k in propellant)
+            + row("Loaded", masses["LOADED"], bold=True) + "</table>")
 
     mats = []
     for part in ("tank", "chamber", "nozzle"):
@@ -764,31 +808,14 @@ class EngineLabWidget(QtWidgets.QWidget):
 
     def _read_requirements(self):
         """The brief as the designer wants it, in SI."""
-        req = motor_designer.Requirements()
-        for _label, key, _qkey, _tip in _REQ_FIELDS:
-            widget = self._req_fields.get(key)
-            if widget is None:
-                continue
-            # An empty box is "no requirement". UnitField reads blank as 0.0,
-            # which is the same number the dataclass uses for "not asked for",
-            # so the two agree - but be explicit rather than relying on it.
-            value = 0.0 if widget.is_blank() else widget.value_si()
-            setattr(req, key, max(0.0, float(value)))
-
-        fuel = self.req_fuel_combo.currentText()
-        req.fuel = fuel if fuel in FUELS else ""
-        inj = self.req_inj_combo.currentText()
-        req.injector = inj if inj in INJECTOR_TYPES else ""
-
         # Tank fill temperature comes from the form rather than a box of its
         # own: it is already an engine field, and having it in two places is
         # how the two drift apart.
-        req.tank_temp_k = self._field_si("T_tank_0", 293.0) or 293.0
-        try:
-            req.structural_sf = max(1.0, float(self.req_sf_edit.text()))
-        except (TypeError, ValueError):
-            req.structural_sf = 2.0
-        return req
+        return read_requirements(
+            self._req_fields, self.req_fuel_combo.currentText(),
+            self.req_inj_combo.currentText(),
+            self._field_si("T_tank_0", 293.0) or 293.0,
+            self.req_sf_edit.text())
 
     def _generate_motor(self):
         self.error_label.setText("")
@@ -837,7 +864,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.apply_config(self._si_to_form(design.engine_fields))
         pal = theme.PALETTE
         self.req_status.setText(
-            f"<b style='color:{pal.get('good', '#3fb950')}'>Motor generated "
+            f"<b style='color:{pal['ok']}'>Motor generated "
             f"and filled in below &mdash; it meets every requirement.</b> "
             f"See the design report."
             if design.met_all else

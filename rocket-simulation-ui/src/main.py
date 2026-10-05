@@ -49,6 +49,54 @@ def user_settings_path():
     """
     return portable_paths.settings_file()
 
+
+def update_user_settings(path, changes):
+    """Merge ``changes`` into the settings file. True if it was written.
+
+    One place for this, because the file holds the theme, the saved inputs
+    and the extension switches together, and every copy of the read-merge-
+    write that used to exist here replaced the whole file with just its own
+    key whenever the read failed - so a file held open for a moment by
+    antivirus or OneDrive cost the user every other setting.
+
+      * Missing file: start fresh.
+      * Unreadable (locked, permissions): do NOT write - try again next time
+        rather than clobber settings that are still there.
+      * Unparseable (a write cut off half way): keep it as .corrupt beside
+        the new one, then start fresh.
+
+    The write goes to a temporary file that then replaces the real one, so
+    the file on disk is always either the old settings or the new ones.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            settings = json.load(f)
+        if not isinstance(settings, dict):
+            raise ValueError("settings file does not hold an object")
+    except FileNotFoundError:
+        settings = {}
+    except (ValueError, UnicodeDecodeError):
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            return False
+        settings = {}
+    except OSError:
+        return False
+    settings.update(changes)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
 # Theme application is now handled per-widget via apply_theme().
@@ -857,19 +905,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
     def save_theme_preference(self):
         """Save the current theme preference to user settings"""
         if hasattr(self, 'user_settings_file'):
-            try:
-                with open(self.user_settings_file, 'r') as f:
-                    settings = json.load(f)
-            except:
-                settings = {}
-            
-            settings['theme'] = self.current_theme
-            
-            try:
-                with open(self.user_settings_file, 'w') as f:
-                    json.dump(settings, f, indent=2)
-            except:
-                pass
+            update_user_settings(self.user_settings_file,
+                                 {'theme': self.current_theme})
 
     def load_theme_preference(self):
         """Load the saved theme preference"""
@@ -4734,19 +4771,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
             elif not enabled and index >= 0:
                 self.tabs.removeTab(index)
                 tab.setParent(None)
-        try:
-            path = (getattr(self, 'user_settings_file', None)
-                    or user_settings_path())
-            try:
-                with open(path, 'r') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing["tolerances_tab_enabled"] = enabled
-            with open(path, 'w') as f:
-                json.dump(existing, f, indent=2)
-        except Exception:
-            pass
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            {"tolerances_tab_enabled": enabled})
 
     def set_engine_designer_enabled(self, enabled):
         """Show or hide the Engine Designer tab, and remember the choice.
@@ -4773,19 +4800,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
             elif not enabled and index >= 0:
                 self.tabs.removeTab(index)
                 tab.setParent(None)
-        try:
-            path = (getattr(self, 'user_settings_file', None)
-                    or user_settings_path())
-            try:
-                with open(path, 'r') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing["engine_designer_tab_enabled"] = enabled
-            with open(path, 'w') as f:
-                json.dump(existing, f, indent=2)
-        except Exception:
-            pass
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            {"engine_designer_tab_enabled": enabled})
 
     def _send_designed_engine(self, design):
         """Engine Designer -> Engine tab, through the Engine tab's loader.
@@ -5869,20 +5886,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
             'temperature': self.temperature_input.text(),
             'humidity': self.humidity_input.text(),
         }
-        try:
-            # Merge into whatever is already saved - this file also holds the
-            # theme preference, which a blind overwrite would wipe.
-            settings_path = getattr(self, 'user_settings_file', None) or user_settings_path()
-            try:
-                with open(settings_path, 'r') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing.update(data)
-            with open(settings_path, 'w') as f:
-                json.dump(existing, f, indent=2)
-        except Exception:
-            pass
+        # Merge into whatever is already saved - this file also holds the
+        # theme preference, which a blind overwrite would wipe.
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            data)
 
     def load_inputs(self):
         try:
