@@ -166,6 +166,14 @@ def n2o_vapour_density(T_k: float) -> float:
     Ideal gas is a simplification near the critical point, where the vapour is
     far from ideal. It matters little because the vapour is a small part of the
     load until the liquid is nearly gone.
+
+    KNOWN LIMITATION: at 293 K this gives 91 kg/m^3 against about 159 for
+    the real saturated vapour (NIST), and it also feeds the HEM half of the
+    Dyer injector flow. The ESDU 91022 correlation gets it right, but the
+    reference spreadsheet hybrid_sim is validated against and the HyperTEK
+    fits were both made with this ideal-gas value - switching alone fails 5
+    of the 31 reference checks and moves one HyperTEK peak 16% off its test
+    data. Change it together with a refit, not on its own.
     """
     T = _clamp_tank_temperature(T_k)
     return n2o_saturation_pressure(T) / (N2O_R_GAS * T)
@@ -512,7 +520,9 @@ def characteristic_velocity(of_ratio: float, of_table, cstar_table,
     get less pressure for the same mass flow.
 
     ``of_shift`` and ``cstar_scale`` let a particular fuel formulation be
-    nudged off the table without rebuilding it.
+    nudged off the table without rebuilding it. The shift is ADDED to the
+    O/F before the lookup, so a positive shift moves the peak to a lower
+    O/F - which is where a fuel that carries its own oxygen belongs.
 
     Outside the table the value is HELD at the end point rather than
     extrapolated - a polynomial run past its data does not degrade gracefully.
