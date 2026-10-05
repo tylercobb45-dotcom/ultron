@@ -947,7 +947,7 @@ def _violation(m: dict, req: Requirements, eng=None, work=None) -> float:
             # higher - and a thicker wall on the same bore is a wider motor.
             od = assembled_diameter(eng, work["case_id"],
                                     _materials_for(eng, m, req, work))
-            if od > req.max_diameter_m * (1.0 + 1e-9):
+            if od > req.max_diameter_m * (1.0 + DIAMETER_SLACK):
                 worst = max(worst, (od - req.max_diameter_m)
                             / req.max_diameter_m)
     return worst
@@ -1345,7 +1345,8 @@ def _compliance(m: dict, req: Requirements, duty: tuple,
     if req.max_diameter_m > 0:
         got = length_parts.get("_outside_diameter", 0.0)
         add("Outside diameter", f"{req.max_diameter_m * 1000:.0f} mm maximum",
-            f"{got * 1000:.1f} mm", got <= req.max_diameter_m * 1.001,
+            f"{got * 1000:.1f} mm",
+            got <= req.max_diameter_m * (1.0 + DIAMETER_SLACK),
             "Widest of the tank, the case and the nozzle exit, walls "
             "included.")
     return rows
@@ -1372,6 +1373,13 @@ PROBE_SWEEPS = 8
 # Slack on the length limits, the same in grading and in the search, so a
 # motor the report passes is never treated as having failed.
 LENGTH_SLACK = 0.001
+
+# Slack on the diameter limit, for rounding only - 0.015 mm on a 150 mm
+# motor, finer than anything that gets machined. The bores are iterated in
+# from the limit and then snapped to the form's 0.01 mm grid (QUANTUM), and
+# without this that last rounding put motors a few microns "over", so the
+# search treated an exact fit as a breach. Same in grading and the search.
+DIAMETER_SLACK = 1e-4
 
 
 def _design_fuel(req: Requirements, fuel_name: str, injector: str,
