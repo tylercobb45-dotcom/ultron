@@ -1361,8 +1361,9 @@ MIN_OUTSIDE_DIAMETER_M = 0.020
 # The search stops once it has the diameter to within this.
 DIAMETER_RESOLUTION_M = 0.003
 
-# Most halvings of the bracket, after it has been found.
-BISECT_STEPS = 3
+# Most halvings of the bracket, after it has been found. The search runs
+# until the bracket is under DIAMETER_RESOLUTION_M; this only bounds it.
+BISECT_STEPS = 10
 
 # Sweeps a search probe gets. A probe only has to say how long and how heavy
 # the motor at that diameter comes out, and impulse - which sets the tank -
@@ -1408,7 +1409,7 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
     Every motor tried is graded against the brief as given, and the best is
     kept, so a search that cannot help returns the motor it started from.
     """
-    plan = 1 + (1 + BISECT_STEPS + 4) * (
+    plan = 1 + (1 + 4 + 4) * (
         (req.min_length_m > 0) + (req.max_motor_mass_kg > 0)) + 1
     tried = []
 
@@ -1430,6 +1431,7 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
                                          progress=step, max_sweeps=sweeps)
         mats = _materials_for(eng, m, req, work)
         entry = {
+            "full": sweeps is None,
             "key": (_violation(m, req, eng, work), _score(m, req, duty)),
             "eng": eng, "m": m, "work": work, "notes": notes + ref_notes,
             "runs": runs,
@@ -1512,9 +1514,12 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
         except ValueError:
             pass                    # the best motor found so far stands
 
-    best = min(tried, key=lambda e: e["key"])
+    # Only fully refined motors can be the answer. A probe stopped at
+    # PROBE_SWEEPS was only there to measure length and mass.
+    best = min((e for e in tried if e["full"]), key=lambda e: e["key"])
     notes = list(best["notes"])
-    if best is not base and best["od"] < od_top - DIAMETER_RESOLUTION_M:
+    if (best is not base and reasons
+            and best["od"] < od_top - DIAMETER_RESOLUTION_M):
         notes.append(f"Narrowed to {best['od'] * 1000:.1f} mm outside "
                      f"diameter to " + "; and to ".join(reasons) + ".")
     total_runs = sum(e["runs"] for e in tried)
