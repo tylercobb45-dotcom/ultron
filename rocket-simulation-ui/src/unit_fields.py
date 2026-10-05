@@ -144,6 +144,9 @@ FIELDS: dict[str, U.Quantity] = {q.key: q for q in [
        metric="MPa", imperial="psi", decimals=2),
     _q("req_max_diameter", "Maximum motor diameter", **_LEN_SMALL),
     _q("req_max_length", "Maximum motor length", **_LEN_SMALL),
+    _q("req_min_length", "Minimum motor length", **_LEN_SMALL),
+    _q("req_max_motor_mass", "Maximum motor mass", dimension="mass",
+       metric="kg", imperial="lb", decimals=2),
     # --- simulation --------------------------------------------------------
     _q("timestep", "Time step", dimension="time", metric="s",
        imperial="s", decimals=4),

@@ -22,6 +22,7 @@ from report_tab import FlightReportWidget  # Failure-mode report tab
 from rocket_library import RocketLibraryWidget  # Saved-rocket library tab
 from vehicle_tab import VehicleTabWidget  # Airframe / launch site / recovery tab
 from tolerances_tab import TolerancesTab  # Build-tolerance search (optional tab)
+from engine_designer_tab import EngineDesignerTab  # Engine from requirements (optional tab)
 import tolerances  # the search itself, Qt-free
 import recovery as recovery_mod
 import failure_analysis as fa
@@ -47,6 +48,54 @@ def user_settings_path():
     the drive.
     """
     return portable_paths.settings_file()
+
+
+def update_user_settings(path, changes):
+    """Merge ``changes`` into the settings file. True if it was written.
+
+    One place for this, because the file holds the theme, the saved inputs
+    and the extension switches together, and every copy of the read-merge-
+    write that used to exist here replaced the whole file with just its own
+    key whenever the read failed - so a file held open for a moment by
+    antivirus or OneDrive cost the user every other setting.
+
+      * Missing file: start fresh.
+      * Unreadable (locked, permissions): do NOT write - try again next time
+        rather than clobber settings that are still there.
+      * Unparseable (a write cut off half way): keep it as .corrupt beside
+        the new one, then start fresh.
+
+    The write goes to a temporary file that then replaces the real one, so
+    the file on disk is always either the old settings or the new ones.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            settings = json.load(f)
+        if not isinstance(settings, dict):
+            raise ValueError("settings file does not hold an object")
+    except FileNotFoundError:
+        settings = {}
+    except (ValueError, UnicodeDecodeError):
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            return False
+        settings = {}
+    except OSError:
+        return False
+    settings.update(changes)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
 
 # === FULL RETRO PIXEL STYLE ===
 # NOTE: Removed use of a global app stylesheet to avoid forcing retro styles over other themes.
@@ -856,19 +905,8 @@ class RocketSimulationUI(QtWidgets.QWidget):
     def save_theme_preference(self):
         """Save the current theme preference to user settings"""
         if hasattr(self, 'user_settings_file'):
-            try:
-                with open(self.user_settings_file, 'r') as f:
-                    settings = json.load(f)
-            except:
-                settings = {}
-            
-            settings['theme'] = self.current_theme
-            
-            try:
-                with open(self.user_settings_file, 'w') as f:
-                    json.dump(settings, f, indent=2)
-            except:
-                pass
+            update_user_settings(self.user_settings_file,
+                                 {'theme': self.current_theme})
 
     def load_theme_preference(self):
         """Load the saved theme preference"""
@@ -1653,7 +1691,20 @@ class RocketSimulationUI(QtWidgets.QWidget):
             on_materials=self._apply_motor_materials)
         self.engine_section = EngineSection(self.engine_lab,
                                             self.get_profiles_dir)
-        self.tabs.addTab(_scrollable(self.engine_section), "Engine")
+        self._engine_tab_page = _scrollable(self.engine_section)
+        self.tabs.addTab(self._engine_tab_page, "Engine")
+
+        # --- Engine Designer: an engine from requirements (optional) ---
+        #
+        # Its own tab, beside the Engine tab rather than inside it: this is
+        # for asking "what engine do I need?" before there is one. It writes
+        # nothing until Send to Engine tab, which goes through the Engine
+        # tab's own loader. Switchable off from Settings like Tolerances.
+        self.engine_designer_tab = EngineDesignerTab(
+            on_send_to_engine=self._send_designed_engine)
+        self.tabs.addTab(self.engine_designer_tab, "Engine Designer")
+        if not self.load_extension_enabled("engine_designer"):
+            self.set_engine_designer_enabled(False)
 
         # --- Aerodynamics: airframe shape, recovery, and the drag it makes ---
         # on_changed keeps the Stability Test tab's view of the launch
@@ -1793,6 +1844,17 @@ class RocketSimulationUI(QtWidgets.QWidget):
             "nothing else in the app depends on it.")
         self.tolerances_enabled.toggled.connect(self.set_tolerances_enabled)
         ext_layout.addWidget(self.tolerances_enabled)
+        self.engine_designer_enabled = QtWidgets.QCheckBox(
+            "Engine Designer tab - generate an engine from requirements")
+        self.engine_designer_enabled.setChecked(
+            self.load_extension_enabled("engine_designer"))
+        self.engine_designer_enabled.setToolTip(
+            "Give it the impulse, thrust, size and mass limits and a fuel, "
+            "and it sizes a complete hybrid engine and its thrust curve. "
+            "Turning it off removes the tab; the Engine tab is unaffected.")
+        self.engine_designer_enabled.toggled.connect(
+            self.set_engine_designer_enabled)
+        ext_layout.addWidget(self.engine_designer_enabled)
         ext_note = QtWidgets.QLabel(
             "<span style='font-size:9pt'>Extensions are self-contained: they "
             "read the loaded rocket and never write to it, so switching one "
@@ -4709,19 +4771,51 @@ class RocketSimulationUI(QtWidgets.QWidget):
             elif not enabled and index >= 0:
                 self.tabs.removeTab(index)
                 tab.setParent(None)
-        try:
-            path = (getattr(self, 'user_settings_file', None)
-                    or user_settings_path())
-            try:
-                with open(path, 'r') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing["tolerances_tab_enabled"] = enabled
-            with open(path, 'w') as f:
-                json.dump(existing, f, indent=2)
-        except Exception:
-            pass
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            {"tolerances_tab_enabled": enabled})
+
+    def set_engine_designer_enabled(self, enabled):
+        """Show or hide the Engine Designer tab, and remember the choice.
+
+        Same rules as set_tolerances_enabled: removed rather than greyed out,
+        and the widget kept alive so a brief typed in is still there when it
+        comes back.
+        """
+        enabled = bool(enabled)
+        tab = getattr(self, 'engine_designer_tab', None)
+        if tab is not None:
+            index = self.tabs.indexOf(tab)
+            if enabled and index < 0:
+                # Back where it was: straight after the Engine tab.
+                engine = self.tabs.indexOf(
+                    getattr(self, '_engine_tab_page', None))
+                at = engine + 1 if engine >= 0 else self.tabs.count()
+                self.tabs.insertTab(at, tab, "Engine Designer")
+                # Out of the window it missed any unit-system change.
+                if hasattr(self, 'unit_select'):
+                    system = self.unit_system()
+                    for field in tab.findChildren(unit_fields.UnitField):
+                        field.set_system(system)
+            elif not enabled and index >= 0:
+                self.tabs.removeTab(index)
+                tab.setParent(None)
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            {"engine_designer_tab_enabled": enabled})
+
+    def _send_designed_engine(self, design):
+        """Engine Designer -> Engine tab, through the Engine tab's loader.
+
+        Switch first, then load. load_design runs the engine and draws its
+        plots, and drawn on a hidden tab the canvas has no size - matplotlib
+        abandons the layout and the four plots land on top of each other.
+        """
+        page = getattr(self, '_engine_tab_page', None)
+        if page is not None and self.tabs.indexOf(page) >= 0:
+            self.tabs.setCurrentWidget(page)
+            QtWidgets.QApplication.processEvents()
+        self.engine_lab.load_design(design)
 
     def _tolerance_inputs(self):
         """(engine, FlightContext, reference apogee) for the Tolerances tab.
@@ -5792,20 +5886,11 @@ class RocketSimulationUI(QtWidgets.QWidget):
             'temperature': self.temperature_input.text(),
             'humidity': self.humidity_input.text(),
         }
-        try:
-            # Merge into whatever is already saved - this file also holds the
-            # theme preference, which a blind overwrite would wipe.
-            settings_path = getattr(self, 'user_settings_file', None) or user_settings_path()
-            try:
-                with open(settings_path, 'r') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing.update(data)
-            with open(settings_path, 'w') as f:
-                json.dump(existing, f, indent=2)
-        except Exception:
-            pass
+        # Merge into whatever is already saved - this file also holds the
+        # theme preference, which a blind overwrite would wipe.
+        update_user_settings(
+            getattr(self, 'user_settings_file', None) or user_settings_path(),
+            data)
 
     def load_inputs(self):
         try:

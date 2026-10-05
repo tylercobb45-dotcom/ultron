@@ -21,6 +21,7 @@ Run:  python tools/validate_presets.py
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -797,6 +798,117 @@ def validate_motor_designer():
           f"{tank['pressure_pa']/1e6:.2f} MPa design vs "
           f"{fill_pa/1e6:.2f} MPa at 20 C")
 
+    # The mass model, checked against things it does not compute itself.
+    # Propellant: the engine solver loads the tank and grain on its own, so
+    # the two have to agree. Tank shell: a hand calculation from the wall the
+    # materials report chose.
+    mp = r.masses
+    eng_r = md.Engine(**{k: v for k, v in r.engine_fields.items()
+                         if k not in ("fuel", "inj_type", "_units")},
+                      fuel=md.FUELS[r.fuel_name], inj_type=r.injector_name)
+    solver = md.EngineModel(eng_r)
+    loaded = mp["oxidiser propellant"] + mp["fuel propellant"]
+    solver_loaded = solver.m_ox0 + solver.m_f0
+    tank_mat = md.materials_mod.get(r.materials["tank"]["name"])
+    t_w = r.materials["tank"]["wall_m"]
+    hand = tank_mat.density * (math.pi * (eng_r.d_tank + t_w) * t_w * eng_r.L_tank
+                               + 2.0 * math.pi * (eng_r.d_tank / 2) ** 2 * t_w)
+    check("motor mass agrees with the solver and a hand calculation",
+          abs(loaded - solver_loaded) / solver_loaded < 1e-3
+          and abs(mp["oxidiser tank"] - hand) / hand < 1e-6
+          and abs(mp["LOADED"] - mp["DRY"] - loaded) < 1e-9,
+          f"propellant {loaded:.3f} vs solver {solver_loaded:.3f} kg, "
+          f"tank {mp['oxidiser tank']:.3f} vs {hand:.3f} kg by hand")
+
+    # The thrust curve handed back is the one the table was graded on.
+    t, F = r.curve["t"], r.curve["thrust"]
+    area = sum((t[i + 1] - t[i]) * (F[i + 1] + F[i]) / 2.0
+               for i in range(len(t) - 1))
+    check("returned thrust curve integrates to the reported impulse",
+          abs(area - r.metrics["total_impulse"]) / r.metrics["total_impulse"]
+          < 0.01,
+          f"{area:,.0f} vs {r.metrics['total_impulse']:,.0f} N.s")
+
+    # A minimum length is met by going narrower - the same oxidiser in a
+    # slimmer tank - and never at the cost of the maximum or the diameter.
+    long_req = md.Requirements(total_impulse_ns=11600, avg_thrust_n=720,
+                               max_diameter_m=0.150, min_length_m=2.0,
+                               max_length_m=2.5, fuel="HTPB")
+    long_r = md.design_motor(long_req)
+    total = long_r.envelope["TOTAL"]
+    check("minimum length is reached without breaking the maximum",
+          long_r.met_all and 2.0 * 0.999 <= total <= 2.5 * 1.001
+          and long_r.envelope["_outside_diameter"] <= 0.150 * 1.001,
+          f"{total*1000:.0f} mm long, "
+          f"{long_r.envelope['_outside_diameter']*1000:.1f} mm wide")
+
+    # A mass ceiling binds as hard as the envelope. 12 kg is under what this
+    # brief weighs filling a 150 mm tube (about 13.8 kg), so meeting it
+    # needs the narrower, lighter motor - not a smaller impulse.
+    light = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        max_length_m=2.5, max_motor_mass_kg=12.0, fuel="HTPB"))
+    check("mass ceiling is met without giving up the impulse",
+          light.met_all and light.masses["LOADED"] <= 12.0,
+          f"{light.masses['LOADED']:.2f} kg loaded, "
+          f"{light.metrics['total_impulse']:,.0f} N.s")
+
+    # Under the propellant's own mass no motor exists. That has to come back
+    # as a miss with the reason, never as a motor that claims to meet it.
+    heavy = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        max_length_m=2.5, max_motor_mass_kg=4.0, fuel="HTPB"))
+    # ...and the reason given has to be the real one: the impulse asked for
+    # needs more propellant than the ceiling, whatever the walls are made of.
+    told = any("needs about" in n and "propellant" in n for n in heavy.notes)
+    check("an impossible mass ceiling is reported as a miss, with the reason",
+          not heavy.met_all and told,
+          f"{sum(1 for c in heavy.compliance if not c.met)} requirement(s) "
+          f"missed; propellant reason {'given' if told else 'MISSING'}")
+
+    # A ceiling the motor is nowhere near must not change the motor.
+    plain_req = md.Requirements(total_impulse_ns=11600, avg_thrust_n=720,
+                                max_diameter_m=0.150, max_length_m=2.5,
+                                fuel="HTPB")
+    plain = md.design_motor(plain_req)
+    roomy = md.design_motor(dataclasses.replace(plain_req,
+                                                max_motor_mass_kg=30.0))
+    check("a mass ceiling that does not bind leaves the motor alone",
+          roomy.engine_fields == plain.engine_fields,
+          f"{plain.masses['LOADED']:.2f} kg motor under a 30 kg ceiling")
+
+    # A minimum length with no maximum must land near it, not overshoot to
+    # whatever the narrowest motor happens to be.
+    floor_r = md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        min_length_m=2.0, fuel="HTPB"))
+    got = floor_r.envelope["TOTAL"]
+    check("a minimum length alone is met without overshooting it",
+          floor_r.met_all and 2.0 * 0.999 <= got <= 2.0 * 1.10,
+          f"{got*1000:.0f} mm for a 2000 mm minimum")
+
+    # The progress bar only ever moves forward, however many motors the
+    # diameter search designs on the way.
+    steps = []
+    md.design_motor(md.Requirements(
+        total_impulse_ns=11600, avg_thrust_n=720, max_diameter_m=0.150,
+        max_length_m=2.5, max_motor_mass_kg=12.0, fuel="HTPB"),
+        progress=lambda f, _msg: steps.append(f))
+    back = sum(1 for a, b in zip(steps, steps[1:]) if b < a - 1e-12)
+    check("designer progress never runs backwards", back == 0 and steps,
+          f"{len(steps)} updates, {back} backwards")
+
+    _check_safety_factor_input()
+
+    try:
+        md.design_motor(md.Requirements(total_impulse_ns=5000,
+                                        min_length_m=2.0, max_length_m=1.0))
+        refused = False
+    except ValueError:
+        refused = True
+    check("a minimum length longer than the maximum is refused", refused,
+          "2000 mm minimum against 1000 mm maximum")
+
 
 def validate_tolerances():
     """The tolerance search, against the properties that make it meaningful.
@@ -1031,7 +1143,8 @@ def validate_ui_geometry():
     clipped = []
     for tab_name, tbl in (("Flight Report", win.flight_report.table),
                           ("Tolerances", win.tolerances_tab.table),
-                          ("Tolerances log", win.tolerances_tab.log)):
+                          ("Tolerances log", win.tolerances_tab.log),
+                          ("Engine Designer", win.engine_designer_tab.spec)):
         metrics = QFontMetrics(tbl.horizontalHeader().font())
         for col in range(tbl.columnCount()):
             item = tbl.horizontalHeaderItem(col)
@@ -1062,6 +1175,13 @@ def validate_ui_geometry():
           f"canvas {canvas.width()}x{canvas.height()}, floor "
           f"{PLOT_MIN_HEIGHT_PX} px"
           + ("" if not collapsed else " - axes collapsed to zero"))
+
+    # The Engine Designer's thrust and pressure plots share one canvas.
+    designer = win.engine_designer_tab.canvas
+    check("Engine Designer plots have room to lay out",
+          designer.height() >= PLOT_MIN_HEIGHT_PX,
+          f"canvas {designer.width()}x{designer.height()}, floor "
+          f"{PLOT_MIN_HEIGHT_PX} px")
 
     win.close()
     app.processEvents()
@@ -1139,6 +1259,38 @@ def _check_quantum_matches_form():
     check("designer precision matches the Engine Lab form", not mismatched,
           f"{len(md.QUANTUM)} fields agree" if not mismatched
           else "; ".join(mismatched[:3]))
+
+
+def _check_safety_factor_input():
+    """A safety factor that is not a usable number is refused, not guessed.
+
+    An infinite one used to make the wall allowance zero, which the
+    thickness floor turned into the THINNEST wall - the opposite of asking
+    for an extremely conservative design.
+    """
+    try:
+        import engine_lab
+    except Exception as exc:
+        check("bad safety factors are refused", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+
+    class Blank:
+        def is_blank(self):
+            return True
+
+    fields = {"total_impulse_ns": Blank()}
+    refused = []
+    for text in ("inf", "1e999", "nan", "0.5", "50", "abc"):
+        try:
+            engine_lab.read_requirements(fields, "", "", 293.15, text)
+        except ValueError:
+            refused.append(text)
+    ok_req = engine_lab.read_requirements(fields, "HTPB", "", 293.15, "2.5")
+    check("bad safety factors are refused",
+          len(refused) == 6 and ok_req.structural_sf == 2.5
+          and ok_req.fuel == "HTPB",
+          f"refused {', '.join(refused)}; 2.5 accepted")
 
 
 def _check_form_handover(design):

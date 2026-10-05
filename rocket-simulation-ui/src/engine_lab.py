@@ -18,6 +18,7 @@ modified here. This module only adds a PyQt5 front end around it:
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -366,6 +367,122 @@ class _EngExportDialog(QtWidgets.QDialog):
         }
 
 
+# Sensible range for the pressure-vessel safety factor. Below 1 the wall is
+# sized to fail; far above 10 is a typo, and an infinite one made the wall
+# allowance zero, which the thickness floor then turned into the THINNEST
+# possible wall - the opposite of what was asked.
+SF_RANGE = (1.0, 10.0)
+
+
+def read_requirements(fields, fuel_text, injector_text, tank_temp_k,
+                      sf_text) -> "motor_designer.Requirements":
+    """A requirements brief from form values, in SI.
+
+    Shared by the Engine tab and the Engine Designer tab, so the same boxes
+    can never be read two different ways. ``fields`` maps Requirements
+    attribute names to UnitFields. Raises ValueError with a message worth
+    showing when the safety factor is not a usable number.
+    """
+    req = motor_designer.Requirements()
+    for key, widget in fields.items():
+        # An empty box is "no requirement". UnitField reads blank as 0.0,
+        # which is the same number the dataclass uses for "not asked for",
+        # so the two agree - but be explicit rather than relying on it.
+        value = 0.0 if widget.is_blank() else widget.value_si()
+        setattr(req, key, max(0.0, float(value)))
+    req.fuel = fuel_text if fuel_text in FUELS else ""
+    req.injector = injector_text if injector_text in INJECTOR_TYPES else ""
+    req.tank_temp_k = tank_temp_k
+    try:
+        sf = float(sf_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"the safety factor '{sf_text}' is not a number")
+    if not math.isfinite(sf) or not SF_RANGE[0] <= sf <= SF_RANGE[1]:
+        raise ValueError(f"the safety factor has to be between "
+                         f"{SF_RANGE[0]:g} and {SF_RANGE[1]:g}, not {sf_text}")
+    req.structural_sf = sf
+    return req
+
+
+def design_report_html(design) -> str:
+    """The compliance table, the length and mass budgets and the materials.
+
+    Module-level rather than a method so the Engine Designer tab renders a
+    design with exactly the same report as the Engine tab does.
+    """
+    pal = theme.PALETTE
+    ok_col, bad_col = pal['ok'], pal['critical']
+    rows = []
+    for c in design.compliance:
+        colour = ok_col if c.met else bad_col
+        mark = "meets" if c.met else "MISSES"
+        rows.append(
+            f"<tr><td>{c.label}</td><td>{c.required}</td>"
+            f"<td><b>{c.achieved}</b></td>"
+            f"<td style='color:{colour}'>{mark}</td>"
+            f"<td><i>{c.note}</i></td></tr>")
+    table = ("<table cellspacing='0' cellpadding='3'>"
+             "<tr><th align='left'>Requirement</th><th align='left'>Asked"
+             "</th><th align='left'>Delivered</th><th align='left'></th>"
+             "<th align='left'></th></tr>" + "".join(rows) + "</table>")
+
+    headline = ("<b>Motor meets every requirement.</b>"
+                if design.met_all else
+                f"<b style='color:{bad_col}'>Motor does not meet every "
+                f"requirement.</b> The closest fit is below; the rows "
+                f"marked MISSES say by how much.")
+
+    parts = "".join(
+        f"<tr><td>{k}</td><td align='right'>{v * 1000:.0f} mm</td></tr>"
+        for k, v in design.envelope.items() if not k.startswith("_"))
+    length = ("<table cellspacing='0' cellpadding='2'>" + parts
+              + "</table>")
+
+    # Designs made before the mass model existed carry no masses; say
+    # nothing rather than print a budget of zeros.
+    mass_html = ""
+    masses = getattr(design, "masses", None) or {}
+    if masses:
+        # Hardware, then its total, then the propellant, then the grand
+        # total - so each bold line is the sum of the rows directly above it.
+        def row(label, value, bold=False):
+            b0, b1 = ("<b>", "</b>") if bold else ("", "")
+            return (f"<tr><td>{b0}{label}{b1}</td><td align='right'>{b0}"
+                    f"{value:.2f} kg{b1}</td></tr>")
+        propellant = [k for k in masses if k.endswith("propellant")]
+        hardware = [k for k in masses
+                    if k not in propellant and k not in ("DRY", "LOADED")]
+        mass_html = (
+            "<br><b>Mass budget</b> <i>(estimate)</i>"
+            "<table cellspacing='0' cellpadding='2'>"
+            + "".join(row(k, masses[k]) for k in hardware)
+            + row("Dry", masses["DRY"], bold=True)
+            + "".join(row(k, masses[k]) for k in propellant)
+            + row("Loaded", masses["LOADED"], bold=True) + "</table>")
+
+    mats = []
+    for part in ("tank", "chamber", "nozzle"):
+        info = design.materials.get(part) or {}
+        wall = (f" &mdash; {info['wall_m'] * 1000:.2f} mm wall"
+                if info.get("wall_m") else "")
+        mats.append(
+            f"<li><b>{part.title()}:</b> {info.get('name', '?')}{wall}"
+            f"<br><i>{info.get('note', '')}</i></li>")
+
+    notes = "".join(f"<li>{n}</li>" for n in design.notes)
+    notes_html = f"<br><b>Worth knowing</b><ul>{notes}</ul>" if notes else ""
+
+    return (
+        f"{headline}<br><br>{table}"
+        f"<br><b>Chosen fuel:</b> {design.fuel_name} &nbsp; "
+        f"<b>Injector:</b> {design.injector_name} &nbsp; "
+        f"<i>({design.runs} simulations)</i>"
+        f"<br><br><b>Length budget</b>{length}"
+        f"{mass_html}"
+        f"<br><b>Pressure parts</b><ul>{''.join(mats)}</ul>"
+        f"{notes_html}")
+
+
 class EngineLabWidget(QtWidgets.QWidget):
     """Design a hybrid engine, run its internal-ballistics model, and (optionally)
     hand the resulting thrust curve off to the main Simulation tab."""
@@ -691,31 +808,14 @@ class EngineLabWidget(QtWidgets.QWidget):
 
     def _read_requirements(self):
         """The brief as the designer wants it, in SI."""
-        req = motor_designer.Requirements()
-        for _label, key, _qkey, _tip in _REQ_FIELDS:
-            widget = self._req_fields.get(key)
-            if widget is None:
-                continue
-            # An empty box is "no requirement". UnitField reads blank as 0.0,
-            # which is the same number the dataclass uses for "not asked for",
-            # so the two agree - but be explicit rather than relying on it.
-            value = 0.0 if widget.is_blank() else widget.value_si()
-            setattr(req, key, max(0.0, float(value)))
-
-        fuel = self.req_fuel_combo.currentText()
-        req.fuel = fuel if fuel in FUELS else ""
-        inj = self.req_inj_combo.currentText()
-        req.injector = inj if inj in INJECTOR_TYPES else ""
-
         # Tank fill temperature comes from the form rather than a box of its
         # own: it is already an engine field, and having it in two places is
         # how the two drift apart.
-        req.tank_temp_k = self._field_si("T_tank_0", 293.0) or 293.0
-        try:
-            req.structural_sf = max(1.0, float(self.req_sf_edit.text()))
-        except (TypeError, ValueError):
-            req.structural_sf = 2.0
-        return req
+        return read_requirements(
+            self._req_fields, self.req_fuel_combo.currentText(),
+            self.req_inj_combo.currentText(),
+            self._field_si("T_tank_0", 293.0) or 293.0,
+            self.req_sf_edit.text())
 
     def _generate_motor(self):
         self.error_label.setText("")
@@ -747,6 +847,16 @@ class EngineLabWidget(QtWidgets.QWidget):
         finally:
             self.generate_button.setEnabled(True)
 
+        self.load_design(design)
+
+    def load_design(self, design):
+        """Put a generated motor into this tab, exactly as if made here.
+
+        The Engine Designer tab sizes motors too, and hands them over through
+        this rather than writing the fields itself - so a motor sent from
+        there lands in precisely the state one generated here does: form
+        filled, report shown, materials passed on, curve run.
+        """
         self._last_design = design
         # Into the ordinary form, through the ordinary loader - so a generated
         # motor is in exactly the state a loaded one would be, and saving the
@@ -754,7 +864,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self.apply_config(self._si_to_form(design.engine_fields))
         pal = theme.PALETTE
         self.req_status.setText(
-            f"<b style='color:{pal.get('good', '#3fb950')}'>Motor generated "
+            f"<b style='color:{pal['ok']}'>Motor generated "
             f"and filled in below &mdash; it meets every requirement.</b> "
             f"See the design report."
             if design.met_all else
@@ -782,55 +892,7 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._run_engine()
 
     def _design_report(self, design) -> str:
-        """The compliance table, the length budget and the materials."""
-        pal = theme.PALETTE
-        ok_col, bad_col = pal.get('good', '#3fb950'), pal['critical']
-        rows = []
-        for c in design.compliance:
-            colour = ok_col if c.met else bad_col
-            mark = "meets" if c.met else "MISSES"
-            rows.append(
-                f"<tr><td>{c.label}</td><td>{c.required}</td>"
-                f"<td><b>{c.achieved}</b></td>"
-                f"<td style='color:{colour}'>{mark}</td>"
-                f"<td><i>{c.note}</i></td></tr>")
-        table = ("<table cellspacing='0' cellpadding='3'>"
-                 "<tr><th align='left'>Requirement</th><th align='left'>Asked"
-                 "</th><th align='left'>Delivered</th><th align='left'></th>"
-                 "<th align='left'></th></tr>" + "".join(rows) + "</table>")
-
-        headline = ("<b>Motor meets every requirement.</b>"
-                    if design.met_all else
-                    f"<b style='color:{bad_col}'>Motor does not meet every "
-                    f"requirement.</b> The closest fit is below; the rows "
-                    f"marked MISSES say by how much.")
-
-        parts = "".join(
-            f"<tr><td>{k}</td><td align='right'>{v * 1000:.0f} mm</td></tr>"
-            for k, v in design.envelope.items() if not k.startswith("_"))
-        length = ("<table cellspacing='0' cellpadding='2'>" + parts
-                  + "</table>")
-
-        mats = []
-        for part in ("tank", "chamber", "nozzle"):
-            info = design.materials.get(part) or {}
-            wall = (f" &mdash; {info['wall_m'] * 1000:.2f} mm wall"
-                    if info.get("wall_m") else "")
-            mats.append(
-                f"<li><b>{part.title()}:</b> {info.get('name', '?')}{wall}"
-                f"<br><i>{info.get('note', '')}</i></li>")
-
-        notes = "".join(f"<li>{n}</li>" for n in design.notes)
-        notes_html = f"<br><b>Worth knowing</b><ul>{notes}</ul>" if notes else ""
-
-        return (
-            f"{headline}<br><br>{table}"
-            f"<br><b>Chosen fuel:</b> {design.fuel_name} &nbsp; "
-            f"<b>Injector:</b> {design.injector_name} &nbsp; "
-            f"<i>({design.runs} simulations)</i>"
-            f"<br><br><b>Length budget</b>{length}"
-            f"<br><b>Pressure parts</b><ul>{''.join(mats)}</ul>"
-            f"{notes_html}")
+        return design_report_html(design)
 
     def get_config(self) -> dict:
         """The engine design as plain values, for saving into a rocket profile."""

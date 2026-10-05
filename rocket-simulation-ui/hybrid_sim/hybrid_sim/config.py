@@ -28,15 +28,25 @@ class Fuel:
     of_shift: float = 0.0
     cstar_scale: float = 1.0
 
+# of_shift is ADDED to the O/F before the HTPB c* table is read, so a
+# POSITIVE shift moves this fuel's c* peak to a LOWER O/F. Fuels carrying
+# their own oxygen need less N2O, so theirs are positive. Each is the HTPB
+# peak (6.0) scaled by the fuel's stoichiometric O/F with N2O against HTPB's
+# (8.96): PMMA 5.28, Sorbitol 3.14, Nylon-6 6.42, PLA 3.66, HDPE 9.41,
+# paraffin 9.48.
+#
+# ABS is the exception and stays as it is: it is what the HyperTEK motors
+# were fitted to published test data with, so its number is a fitted
+# parameter rather than a chemical one. Changing it means refitting them.
 FUELS = {
-    "HTPB":     Fuel("HTPB",     920, 4.5e-5, 0.681,  0.0, 1.00),
-    "Paraffin": Fuel("Paraffin", 900, 1.55e-4, 0.5,   0.0, 1.00),
-    "ABS":      Fuel("ABS",     1040, 6.5e-5, 0.498, -1.0, 0.99),
-    "HDPE":     Fuel("HDPE",     960, 5.5e-5, 0.5,    0.5, 1.00),
-    "PMMA":     Fuel("PMMA",    1180, 4.5e-5, 0.5,   -1.5, 0.96),
-    "Sorbitol": Fuel("Sorbitol",1490, 6.5e-5, 0.5,   -1.5, 0.96),
-    "Nylon":    Fuel("Nylon",   1140, 6.0e-5, 0.5,   -1.5, 0.98),
-    "PLA":      Fuel("PLA",     1240, 5.0e-5, 0.5,   -2.0, 0.96),
+    "HTPB":     Fuel("HTPB",     920, 4.5e-5, 0.681,  0.0,  1.00),
+    "Paraffin": Fuel("Paraffin", 900, 1.55e-4, 0.5,  -0.35, 1.00),
+    "ABS":      Fuel("ABS",     1040, 6.5e-5, 0.498, -1.0,  0.99),
+    "HDPE":     Fuel("HDPE",     960, 5.5e-5, 0.5,   -0.30, 1.00),
+    "PMMA":     Fuel("PMMA",    1180, 4.5e-5, 0.5,    2.47, 0.96),
+    "Sorbitol": Fuel("Sorbitol",1490, 6.5e-5, 0.5,    3.90, 0.96),
+    "Nylon":    Fuel("Nylon",   1140, 6.0e-5, 0.5,    1.70, 0.98),
+    "PLA":      Fuel("PLA",     1240, 5.0e-5, 0.5,    3.55, 0.96),
 }
 
 # c* vs O/F, HTPB/N2O baseline (NASA CEA)

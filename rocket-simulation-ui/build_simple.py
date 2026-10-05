@@ -106,6 +106,7 @@ def main():
         "--hidden-import=tolerances",
         "--hidden-import=tolerance_sim",
         "--hidden-import=tolerances_tab",
+        "--hidden-import=engine_designer_tab",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",
         "--hidden-import=scipy.optimize",
