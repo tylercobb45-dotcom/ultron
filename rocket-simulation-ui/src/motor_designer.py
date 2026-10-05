@@ -1450,9 +1450,18 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
     free = {}
 
     def free_at(od):
+        """A probe, or None if no motor that runs exists at this diameter.
+
+        Narrow enough and the grain, port and throat stop fitting at all.
+        That only says the search went too far - it must not take the
+        perfectly good motor already found down with it.
+        """
         key = round(od, 4)
         if key not in free:
-            free[key] = attempt(od, drop_mass=True, sweeps=PROBE_SWEEPS)
+            try:
+                free[key] = attempt(od, drop_mass=True, sweeps=PROBE_SWEEPS)
+            except ValueError:
+                free[key] = None
         return free[key]
 
     od_top = base["od"]
@@ -1461,14 +1470,15 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
     if req.min_length_m > 0:
         floor = req.min_length_m * (1.0 - LENGTH_SLACK)
         start = free_at(od_top) if req.max_motor_mass_kg > 0 else base
-        if start["length"] < floor:
+        if start is not None and start["length"] < floor:
             # A fixed tank volume grows in length as 1/d^2, which gives a
             # good first guess at the diameter.
             l_tank = start["eng"].L_tank
             short = req.min_length_m * (1.0 + LENGTH_SLACK) - start["length"]
             guess = od_top * math.sqrt(l_tank / (l_tank + max(0.0, short)))
             od_len = _widest_passing(
-                lambda od: free_at(od)["length"] >= floor, od_top, guess)
+                lambda od: (free_at(od) or {}).get("length", 0.0) >= floor,
+                od_top, guess)
             if od_len is not None:
                 caps.append(od_len)
                 reasons.append(f"reach the {req.min_length_m * 1000:.0f} mm "
@@ -1485,9 +1495,11 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
         # Propellant burned is what the impulse costs whatever the diameter;
         # if that alone is over the ceiling no motor can meet it, and there
         # is nothing to search for.
-        if start["loaded"] > ceiling and start["m"]["prop_mass"] < ceiling:
+        if (start is not None and start["loaded"] > ceiling
+                and start["m"]["prop_mass"] < ceiling):
             od_mass = _widest_passing(
-                lambda od: free_at(od)["loaded"] <= ceiling, top, top * 0.85)
+                lambda od: (free_at(od) or {}).get("loaded", math.inf)
+                <= ceiling, top, top * 0.85)
             if od_mass is not None:
                 caps.append(od_mass)
                 reasons.append(f"come in under {ceiling:.2f} kg - narrower "
@@ -1495,7 +1507,10 @@ def _design_fuel(req: Requirements, fuel_name: str, injector: str,
                                f"plates")
 
     if caps:
-        attempt(min(caps))
+        try:
+            attempt(min(caps))
+        except ValueError:
+            pass                    # the best motor found so far stands
 
     best = min(tried, key=lambda e: e["key"])
     notes = list(best["notes"])
