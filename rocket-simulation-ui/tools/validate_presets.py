@@ -1583,22 +1583,14 @@ def validate_engine_tab_default():
     # content. It rendered NOTHING: you could fill in a brief and never find
     # the button that acts on it. Measured on the real widget rather than
     # reasoned about, because that is the only way this kind of defect shows.
-    host = QtWidgets.QWidget()
-    host.resize(1366, 768)
-    box = QtWidgets.QVBoxLayout(host)
-    box.setContentsMargins(0, 0, 0, 0)
-    box.addWidget(lab)
-    host.show()
-    for _ in range(6):
-        _app.processEvents()
-    for name, w in (("Generate Motor button", lab.generate_button),
-                    ("Burn time field", lab._req_fields["burn_time_s"]),
-                    ("Average thrust field", lab._req_fields["avg_thrust_n"])):
-        r = w.visibleRegion().boundingRect()
-        check("  %s renders" % name, not r.isEmpty() and r.height() >= 10,
-              "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
-              else "NOTHING VISIBLE")
-    host.deleteLater()
+    # The Engine tab no longer carries its own requirements panel - designing
+    # from a brief is the Engine Designer's job, and two front ends over one
+    # motor_designer had already drifted apart. Assert it is gone, so it
+    # cannot quietly come back and start drifting again.
+    for gone in ("generate_button", "_req_fields", "req_sf_edit"):
+        check("  Engine tab has no duplicate design panel (%s)" % gone,
+              not hasattr(lab, gone), "absent" if not hasattr(lab, gone)
+              else "still present")
     lab.deleteLater()
 
     # The SAME check on the Engine Designer tab. This defect has now appeared
