@@ -88,9 +88,16 @@ class Knob:
     """One thing that can be wrong, and how to make it wrong.
 
     ``apply`` takes the engine and a factor and returns the pair the trial
-    needs: the Engine to run, and the model scales to run it under. A
-    hardware knob changes the Engine and scales nothing; a model knob leaves
-    the Engine alone and scales the solver. Both end up in the same search.
+    needs: the Engine to run, and the model scales to run it under. Most
+    hardware knobs change the Engine and scale nothing; most model knobs
+    leave the Engine alone and scale the solver. Both end up in the same
+    search.
+
+    ``kind`` says what the number MEANS - a part that can be built off the
+    print, or a number the model could simply have wrong - not which of
+    those two mechanisms applies it. Combustion and nozzle efficiency are
+    model doubts that happen to live as engine parameters, so they are
+    MODEL knobs applied by changing the Engine.
 
     ``observe`` pulls a representative baseline number out of the unperturbed
     run, purely so the report can say what 100% actually was.
@@ -240,11 +247,113 @@ def default_knobs() -> list:
              why="How much mass comes off for a given regression. A cast "
                  "grain with voids, or one packed denser than the datasheet, "
                  "moves this without changing how fast the wall recedes."),
+
+        # --- more of the hardware -------------------------------------
+        #
+        # Every one of these was measured on the Goddard baseline before it
+        # was added: +/-20% on the parameter, and the swing in apogee it
+        # produced. A knob that moves nothing is worse than no knob, because
+        # it reports a tolerance of "any value at all" and that reads as a
+        # part you need not control. Two candidates were dropped for exactly
+        # that - convergence half angle and molar mass, both 0.0%.
+        Knob(key="tank_length", component="Oxidiser tank", kind=HARDWARE,
+             quantity="Tank length", unit="mm", decimals=1,
+             apply=_hardware(lambda e, v: _set(e, L_tank=v)),
+             observe=lambda burn, e: e.L_tank,
+             why="How much nitrous the tank holds, for a given bore. The "
+                 "largest single hardware lever here - 20% either way moved "
+                 "apogee by 62% - because it sets the propellant load "
+                 "directly.",
+             lower_limit=0.01),
+        Knob(key="fill_temp", component="Oxidiser tank", kind=HARDWARE,
+             quantity="Temperature at fill", unit="K", decimals=1,
+             apply=_hardware(lambda e, v: _set(e, T_tank_0=v)),
+             observe=lambda burn, e: e.T_tank_0,
+             why="Nitrous makes its own pressure off the saturation curve, "
+                 "so the temperature it was filled at sets the tank pressure "
+                 "and with it the whole burn. This is a pad condition rather "
+                 "than a part: the same rocket on a cold morning and a hot "
+                 "afternoon is two different motors.",
+             lower_limit=220.0, upper_limit=309.0),
+        Knob(key="grain_od", component="Fuel grain", kind=HARDWARE,
+             quantity="Grain outer diameter", unit="mm", decimals=2,
+             apply=_hardware(lambda e, v: _set(e, d_grain_outer=v)),
+             observe=lambda burn, e: e.d_grain_outer,
+             why="The outside of the cast, and so how much web there is to "
+                 "burn through. Undersize and the grain burns out early; "
+                 "oversize mostly just adds fuel the burn never reaches.",
+             lower_limit=1e-4),
+        Knob(key="port_dia", component="Fuel grain", kind=HARDWARE,
+             quantity="Initial port diameter", unit="mm", decimals=2,
+             apply=_hardware(lambda e, v: _set(e, d_port_0=v)),
+             observe=lambda burn, e: e.d_port_0,
+             why="The bore the mandrel left. It sets the starting oxidiser "
+                 "flux, so it moves the mixture ratio at ignition and the "
+                 "web thickness at the same time.",
+             lower_limit=1e-4),
+        Knob(key="grain_length", component="Fuel grain", kind=HARDWARE,
+             quantity="Grain length", unit="mm", decimals=1,
+             apply=_hardware(lambda e, v: _set(e, L_grain=v)),
+             observe=lambda burn, e: e.L_grain,
+             why="Burning area goes with it, so fuel flow and mixture ratio "
+                 "follow. A grain cut short runs oxidiser-rich.",
+             lower_limit=1e-3),
+        Knob(key="nozzle_angle", component="Nozzle", kind=HARDWARE,
+             quantity="Divergence half angle", unit="deg", decimals=2,
+             apply=_hardware(lambda e, v: _set(e, alpha_deg=v)),
+             observe=lambda burn, e: e.alpha_deg,
+             why="The cone of the bell. Exhaust leaving at an angle carries "
+                 "momentum sideways instead of backwards, and the divergence "
+                 "loss that represents it goes as (1 + cos a) / 2 - so this "
+                 "is a small lever, but it is a real one and it is set by "
+                 "how the bell was cut.",
+             lower_limit=1.0, upper_limit=45.0),
+        Knob(key="expansion", component="Nozzle", kind=HARDWARE,
+             quantity="Expansion ratio Ae/At", unit="", decimals=3,
+             apply=_hardware(lambda e, v: _set(e, eps_exp=v)),
+             observe=lambda burn, e: e.eps_exp,
+             why="Exit area over throat area. Over-expand and the flow "
+                 "separates off the wall low down; under-expand and pressure "
+                 "is still pushing when the gas leaves.",
+             lower_limit=1.05),
+        Knob(key="inj_cd", component="Injector", kind=HARDWARE,
+             quantity="Discharge coefficient Cd", unit="", decimals=4,
+             apply=_hardware(lambda e, v: _set(e, Cd_inj=v)),
+             observe=lambda burn, e: e.Cd_inj,
+             why="How cleanly the orifices flow, as opposed to how big they "
+                 "are. Edge break, surface finish and the entry radius all "
+                 "move it, and none of them are on the drawing.",
+             lower_limit=0.05, upper_limit=1.0),
+
+        # --- more of what the model says ------------------------------
+        Knob(key="eta_cstar", component="Combustion", kind=MODEL,
+             quantity="Combustion efficiency", unit="", decimals=4,
+             apply=_hardware(lambda e, v: _set(e, eta_cstar=v)),
+             observe=lambda burn, e: e.eta_cstar,
+             why="The fraction of the theoretical c* the chamber actually "
+                 "delivers. This is where fuel purity shows up, along with "
+                 "mixing quality and residence time: a grain with the wrong "
+                 "binder ratio, contamination, or voids burns less "
+                 "completely, and that is this number rather than the "
+                 "density or the regression law. The strongest knob in the "
+                 "whole list - 20% either way moved apogee by 89%.",
+             lower_limit=0.3, upper_limit=1.0),
+        Knob(key="eta_nozzle", component="Nozzle", kind=MODEL,
+             quantity="Nozzle efficiency", unit="", decimals=4,
+             apply=_hardware(lambda e, v: _set(e, eta_nozzle=v)),
+             observe=lambda burn, e: e.eta_nozzle,
+             why="What the bell actually delivers against the isentropic "
+                 "ideal, after friction, heat loss and a boundary layer the "
+                 "one-dimensional model does not carry. Second strongest "
+                 "here at 77%.",
+             lower_limit=0.3, upper_limit=1.0),
     ]
 
 
 # Display scaling, so a report reads in the unit a person would measure in.
-DISPLAY_SCALE = {"injector": 1e6, "throat": 1e3}
+DISPLAY_SCALE = {"injector": 1e6, "throat": 1e3,
+                 "tank_length": 1e3, "grain_od": 1e3,
+                 "port_dia": 1e3, "grain_length": 1e3}
 
 
 def display_value(knob: Knob, si_value: float) -> str:
@@ -425,14 +534,18 @@ def _bisect(knob, base_engine, ctx, goals, baseline, downward,
     rocket survives - never one it does not.
     """
     trials = []
-    if knob.kind == MODEL:
-        # A model scale has no hardware bound to run into: the question is
-        # how wrong the number can be, and "wrong by all of it" is a
-        # perfectly askable question. The limits below belong to parts.
-        limit_factor = None
-    else:
-        limit = knob.lower_limit if downward else knob.upper_limit
-        limit_factor = (limit / baseline) if baseline else None
+    # A limit belongs to the QUANTITY, not to the kind of doubt it is.
+    #
+    # This used to skip limits for every MODEL knob, on the grounds that a
+    # scale on a number the model guessed has no hardware bound to hit and
+    # "wrong by all of it" is a perfectly askable question. That is still
+    # true of the pure scales, and they declare no limits, so nothing about
+    # them changes here. It stopped being true when efficiencies arrived: c*
+    # efficiency is bounded at 1 by what it MEANS, whoever is asking, and the
+    # search was reporting that it could be 300% of modelled - a chamber
+    # handing back more energy than the propellant holds.
+    limit = knob.lower_limit if downward else knob.upper_limit
+    limit_factor = (limit / baseline) if baseline else None
     if limit_factor is not None and not math.isfinite(limit_factor):
         limit_factor = None
 

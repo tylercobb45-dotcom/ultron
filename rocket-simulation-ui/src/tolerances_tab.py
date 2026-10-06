@@ -115,7 +115,14 @@ class TolerancesTab(QtWidgets.QWidget):
             "&mdash; the same goals the Flight Report uses. The order is "
             "measured first, so the things this rocket actually cares about "
             "come out on top. Nothing here changes the loaded rocket.<br><br>"
-            "<i>All ten takes a couple of minutes. Stop works at any "
+            "Some of these are different <i>causes</i> of the same effect, "
+            "and will report the same tolerance: combustion efficiency, c* "
+            "and chamber pressure all move the same lever, as do nozzle "
+            "efficiency and Cf, and grain length and fuel density. They are "
+            "listed separately because you can do something about a short "
+            "grain and nothing about a c* table.<br><br>"
+            "<i>All twenty takes several minutes &mdash; tick only the ones "
+            "you care about if you are in a hurry. Stop works at any "
             "point.</i>")
         intro.setWordWrap(True)
         lv.addWidget(intro)
@@ -148,19 +155,43 @@ class TolerancesTab(QtWidgets.QWidget):
                 cv.addWidget(box)
             lv.addWidget(group)
 
+        lv.addStretch()
+        # Scroll the CHECKBOXES. Twenty of them, two explanatory notes and an
+        # intro are taller than 768 px leaves for this column, and a
+        # QVBoxLayout with nowhere to put the overflow crushes its children
+        # instead: the intro text was cut mid-sentence and the rows
+        # overlapped. Every other form-heavy tab here is scrollable for
+        # exactly this reason.
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(left_inner)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+
+        # The ACTIONS do not scroll. They used to sit inside the scroll with
+        # the checkboxes, which was survivable at ten knobs and is not at
+        # twenty: Find Tolerances, Stop, the progress bar and the status line
+        # all rendered nothing, so the panel offered no way to start the
+        # search it was describing. This is the third tab to need this fix,
+        # and section 12 measures it on all of them.
+        left = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(left)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        outer.addWidget(scroll, 1)
+
         self.run_button = QtWidgets.QPushButton("Find Tolerances")
         self.run_button.clicked.connect(self._run)
-        lv.addWidget(self.run_button)
+        outer.addWidget(self.run_button)
 
         self.stop_button = QtWidgets.QPushButton("Stop")
         self.stop_button.clicked.connect(self._request_cancel)
         self.stop_button.setEnabled(False)
-        lv.addWidget(self.stop_button)
+        outer.addWidget(self.stop_button)
 
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(True)
         self.progress.setValue(0)
-        lv.addWidget(self.progress)
+        outer.addWidget(self.progress)
 
         self.status = QtWidgets.QLabel(
             "Load a rocket, then press Find Tolerances.")
@@ -171,19 +202,9 @@ class TolerancesTab(QtWidgets.QWidget):
             f"border:1px solid {theme.PALETTE['border']}; "
             f"border-left:3px solid {theme.PALETTE['accent']}; padding:8px; "
             f"color:{theme.PALETTE['text']}; }}")
-        lv.addWidget(self.status)
-        lv.addStretch()
-        # Scroll it. Ten checkboxes, two explanatory notes and a status panel
-        # are taller than 768 px leaves for this column, and a QVBoxLayout
-        # with nowhere to put the overflow crushes its children instead: the
-        # intro text was cut mid-sentence and the checkbox rows overlapped
-        # each other. Every other form-heavy tab in this app is already
-        # scrollable for exactly this reason.
-        left = QtWidgets.QScrollArea()
-        left.setWidgetResizable(True)
-        left.setWidget(left_inner)
+        outer.addWidget(self.status)
+
         left.setMinimumWidth(455)
-        left.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
@@ -192,9 +213,16 @@ class TolerancesTab(QtWidgets.QWidget):
 
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(7)
+        # Wrapped onto two lines, not shortened further. Sized to their own
+        # headers on one line these seven columns wanted 826 px in a 721 px
+        # viewport, so the table always carried a horizontal scrollbar and the
+        # last column - the tolerance, which is the answer the tab exists to
+        # give - sat off the right edge. Wrapping sizes each column to its
+        # longest WORD instead of its whole title, which fits without taking a
+        # word away from any of them.
         self.table.setHorizontalHeaderLabels(
-            ["Component", "What was varied", "As modelled",
-             "Lowest OK", "Highest OK", "Tolerance", "Impact"])
+            ["Component", "What was\nvaried", "As\nmodelled",
+             "Lowest\nOK", "Highest\nOK", "Tolerance", "Impact"])
         # Short headers on purpose. The full phrases needed more width than
         # the values under them, so capping those columns to fit the numbers
         # clipped their own titles to "WEST THAT WOR".

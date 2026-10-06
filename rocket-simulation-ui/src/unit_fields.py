@@ -123,14 +123,6 @@ FIELDS: dict[str, U.Quantity] = {q.key: q for q in [
     _q("eta_nozzle", "Nozzle efficiency"),             # dimensionless
     # --- gas properties ----------------------------------------------------
     _q("gamma", "Gas gamma (Cp/Cv)"),                  # dimensionless
-    _q("molar_mass", "Molar mass",
-       dimension="mass", metric="g", imperial="g", decimals=2,
-       help="Per mole; grams per mole is universal in both systems."),
-    # --- motor requirements ------------------------------------------------
-    # What a motor has to DELIVER, as opposed to what it is made of. These
-    # feed the requirements-driven motor designer, and they are the numbers a
-    # team writes on a requirements sheet - so they get unit selectors like
-    # everything else, because half of that sheet will be in pounds.
     _q("req_total_impulse", "Total impulse required", dimension="impulse",
        metric="N.s", imperial="lbf.s", decimals=0),
     _q("req_avg_thrust", "Average thrust required", dimension="force",

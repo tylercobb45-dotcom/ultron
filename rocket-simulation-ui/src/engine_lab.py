@@ -16,6 +16,14 @@ modified here. This module only adds a PyQt5 front end around it:
     * "Send to Simulation", which writes the generated thrust curve to a
       CSV in the format the existing Simulation tab already knows how to
       load, and hands it back to the caller via a callback.
+
+Designing a motor FROM A BRIEF - total impulse, burn time, the envelope it
+has to fit - is the Engine Designer tab's job, not this one's. This tab had
+its own copy of that panel for a while; it drove the same motor_designer but
+had drifted to a smaller set of requirements than the Designer offered, so a
+motor you asked for here could not be given a mass ceiling or a minimum
+length. ``load_design`` below is how a motor sized over there arrives here,
+which is the one direction that link runs.
 """
 from __future__ import annotations
 
@@ -110,16 +118,17 @@ _GRAIN_FIELDS = [
     ("Initial port diameter (mm)", "d_port_0", 1000.0, 1,
      "Starting bore. Small ports give high oxidizer flux and fast regression "
      "(low O/F); large ports start fuel-lean."),
-    ("Regression coeff a (0 = fuel default)", "fuel_a", 1.0, 8,
+    ("Regression coeff a", "fuel_a", 1.0, 8,
      "Fuel regression law: rdot = a * G_ox^n, SI units. The tabulated value "
      "for a named fuel is a literature average; a real grain's coefficient "
      "depends on the formulation, binder, additives and how it was made, and "
-     "manufacturers do not publish it for proprietary fuels. 0 = use the "
-     "selected fuel's own value."),
-    ("Regression exponent n (0 = fuel default)", "fuel_n", 1.0, 4,
+     "manufacturers do not publish it for proprietary fuels. Leave it at 0 "
+     "to use the selected fuel's own value."),
+    ("Regression exponent n", "fuel_n", 1.0, 4,
      "Flux exponent in rdot = a * G_ox^n. Typically 0.5-0.7. Higher means "
      "the grain is more sensitive to oxidizer flux, so regression falls off "
-     "faster as the port opens up."),
+     "faster as the port opens up. Leave it at 0 to use the selected fuel's "
+     "own value."),
     ("Number of ports", "n_ports", 1.0, 0,
      "Ports burning in parallel. Multi-port grains buy burn area in a short "
      "package, at the cost of lower flux per port and leftover slivers."),
@@ -157,7 +166,11 @@ _GAS_FIELDS = [
     ("Gas gamma (Cp/Cv)", "gamma", 1.0, 3,
      "Ratio of specific heats of the combustion products."),
     ("Molar mass (g/mol)", "MW", 1.0, 1,
-     "Mean molar mass of the exhaust."),
+     "Mean molar mass of the exhaust. NOT USED BY THE SOLVER: it feeds only "
+     "Engine.R_gas, which nothing reads, because c* comes from the CEA table "
+     "rather than from a gas constant. Changing it moves no result. It is "
+     "kept because profiles carry it and because a future closed-form c* "
+     "would need it, but do not spend time tuning it."),
 ]
 
 
@@ -166,35 +179,6 @@ _GAS_FIELDS = [
 # above, so the form is generated the same way and every box gets a unit
 # selector. An empty box means "no requirement", never "requires zero" - see
 # motor_designer.Requirements.
-_REQ_FIELDS = [
-    ("Total impulse", "total_impulse_ns", "req_total_impulse",
-     "The size of the motor, and the single most useful requirement. Area "
-     "under the whole thrust curve. Leave the rest blank and a motor will "
-     "still be sized around this."),
-    ("Average thrust", "avg_thrust_n", "req_avg_thrust",
-     "Mean thrust over the burn. With the total impulse this fixes the burn "
-     "time, since impulse is thrust times time."),
-    ("Burn time", "burn_time_s", "req_burn_time",
-     "How long it burns. Any two of impulse, thrust and burn time fix the "
-     "third - give two and leave the other blank."),
-    ("Minimum Isp", "min_isp_s", "req_min_isp",
-     "Specific impulse floor, in seconds. N2O with a hydrocarbon grain "
-     "realistically delivers 180-200 s at sea level; asking for much more "
-     "than that cannot be met by geometry alone."),
-    ("Peak thrust limit", "max_peak_thrust_n", "req_peak_thrust",
-     "Structural ceiling on the thrust spike. A blowdown hybrid starts hard "
-     "and decays, so the peak runs well above the average - this is what "
-     "protects the airframe, and it wins over the thrust requirement."),
-    ("Chamber pressure limit", "max_chamber_pressure_pa", "req_max_pc",
-     "Ceiling on chamber pressure, which is what sizes the case wall. "
-     "Leave blank to let the designer sit it below tank pressure."),
-    ("Maximum diameter", "max_diameter_m", "req_max_diameter",
-     "Outside diameter of the finished motor, walls and nozzle exit "
-     "included. Normally the inside of the airframe."),
-    ("Maximum length", "max_length_m", "req_max_length",
-     "Overall length of the assembled motor: forward hardware, tank, "
-     "bulkhead, chamber, grain and bell."),
-]
 
 
 # Which catalogue quantity each form key measures. Keys absent here are
@@ -209,7 +193,13 @@ _QUANTITY_FOR = {
     "L_pre": "pre_chamber", "L_post": "post_chamber",
     "d_throat": "throat_diameter", "alpha_deg": "div_angle",
     "beta_conv_deg": "conv_angle", "erosion_rate": "erosion_rate",
-    "MW": "molar_mass", "m_dry": "dry_mass", "d_body": "body_diameter",
+    # NOT MW: molar mass is mass PER MOLE, and the field holds g/mol - which
+    # is what engine_equations.gas_constant() divides by 1000. Treating it as
+    # a mass gave it an SI base of kg, so 26 g/mol was read as 26 kg and drawn
+    # as "26000.00 g": a thousand times out, in the wrong unit. It is a plain
+    # field with the unit in its label, like gamma and the efficiencies -
+    # g/mol is universal, so there is no conversion to offer anyway.
+    "m_dry": "dry_mass", "d_body": "body_diameter",
 }
 
 
@@ -392,6 +382,42 @@ class _EngExportDialog(QtWidgets.QDialog):
 SF_RANGE = (1.0, 10.0)
 
 
+# The requirement vocabulary: (label, Requirements attribute, unit-field key,
+# tooltip). This tab no longer has a panel of its own that uses it - the
+# Engine Designer does - but it stays here beside read_requirements(), which
+# the Designer also calls, so the wording of a requirement lives in one place
+# and the two cannot explain the same box two different ways.
+_REQ_FIELDS = [
+    ("Total impulse", "total_impulse_ns", "req_total_impulse",
+     "The size of the motor, and the single most useful requirement. Area "
+     "under the whole thrust curve. Leave the rest blank and a motor will "
+     "still be sized around this."),
+    ("Average thrust", "avg_thrust_n", "req_avg_thrust",
+     "Mean thrust over the burn. With the total impulse this fixes the burn "
+     "time, since impulse is thrust times time."),
+    ("Burn time", "burn_time_s", "req_burn_time",
+     "How long it burns. Any two of impulse, thrust and burn time fix the "
+     "third - give two and leave the other blank."),
+    ("Minimum Isp", "min_isp_s", "req_min_isp",
+     "Specific impulse floor, in seconds. N2O with a hydrocarbon grain "
+     "realistically delivers 180-200 s at sea level; asking for much more "
+     "than that cannot be met by geometry alone."),
+    ("Peak thrust limit", "max_peak_thrust_n", "req_peak_thrust",
+     "Structural ceiling on the thrust spike. A blowdown hybrid starts hard "
+     "and decays, so the peak runs well above the average - this is what "
+     "protects the airframe, and it wins over the thrust requirement."),
+    ("Chamber pressure limit", "max_chamber_pressure_pa", "req_max_pc",
+     "Ceiling on chamber pressure, which is what sizes the case wall. "
+     "Leave blank to let the designer sit it below tank pressure."),
+    ("Maximum diameter", "max_diameter_m", "req_max_diameter",
+     "Outside diameter of the finished motor, walls and nozzle exit "
+     "included. Normally the inside of the airframe."),
+    ("Maximum length", "max_length_m", "req_max_length",
+     "Overall length of the assembled motor: forward hardware, tank, "
+     "bulkhead, chamber, grain and bell."),
+]
+
+
 def read_requirements(fields, fuel_text, injector_text, tank_temp_k,
                       sf_text) -> "motor_designer.Requirements":
     """A requirements brief from form values, in SI.
@@ -518,7 +544,6 @@ class EngineLabWidget(QtWidgets.QWidget):
         self._last_metrics = None
         self._last_engine = None      # the Engine dataclass that produced it
         self._fields = {}             # field name -> QLineEdit
-        self._req_fields = {}         # requirement name -> UnitField
         self._loading = False         # suppress "helpful" edits while loading
         self._on_materials = on_materials
         self._last_design = None      # last motor_designer.DesignResult
@@ -564,12 +589,6 @@ class EngineLabWidget(QtWidgets.QWidget):
         scroll.setWidgetResizable(True)
         form_host = QtWidgets.QWidget()
         form_layout = QtWidgets.QVBoxLayout(form_host)
-
-        # Requirements first: this is the top-down way in, where you say what
-        # the motor has to do and the geometry below is filled in for you.
-        # Everything it writes lands in the ordinary fields, so the form stays
-        # the thing you edit afterwards.
-        form_layout.addWidget(self._build_requirements())
 
         self.fuel_combo = QtWidgets.QComboBox()
         self.fuel_combo.addItems(list(FUELS.keys()))
@@ -636,12 +655,6 @@ class EngineLabWidget(QtWidgets.QWidget):
         # takes an equal share and squeezes the form down to a few rows.
         left_layout.addWidget(scroll, 1)
 
-        # Generate first, then run, then send: the order you actually do them
-        # in. Pinned here rather than left at the bottom of the requirements
-        # group, where it was scrolled out of sight (see _build_requirements).
-        left_layout.addWidget(self.generate_button)
-        left_layout.addWidget(self.req_status)
-
         self.run_button = QtWidgets.QPushButton("Run Engine Simulation")
         self.run_button.clicked.connect(self._run_engine)
         left_layout.addWidget(self.run_button)
@@ -704,77 +717,6 @@ class EngineLabWidget(QtWidgets.QWidget):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter)
 
-    # ---- requirements-driven design --------------------------------------
-    def _build_requirements(self):
-        """The 'say what you need, get a motor' panel."""
-        group = QtWidgets.QGroupBox("Design a Motor to Requirements")
-        outer = QtWidgets.QVBoxLayout(group)
-
-        blurb = QtWidgets.QLabel(
-            "Fill in what the motor has to do and how much room it has. "
-            "Every box is optional except giving it some idea of size - a "
-            "total impulse, or a thrust and a burn time. What you leave "
-            "blank is not a requirement and will not be treated as one. "
-            "The generated motor lands in the fields below, where you can "
-            "change anything you like.")
-        blurb.setWordWrap(True)
-        outer.addWidget(blurb)
-
-        form = QtWidgets.QFormLayout()
-        for label, key, qkey, tip in _REQ_FIELDS:
-            widget = unit_fields.UnitField(unit_fields.FIELDS[qkey])
-            widget.setToolTip(tip)
-            widget.clear()
-            self._req_fields[key] = widget
-            row_label = QtWidgets.QLabel(label + ":")
-            row_label.setToolTip(tip)
-            form.addRow(row_label, widget)
-
-        # "Choose for me" is the first entry on both, and the default. A team
-        # that has already settled on a fuel says so; one that has not should
-        # not have to guess, which is the whole point of the panel.
-        self.req_fuel_combo = QtWidgets.QComboBox()
-        self.req_fuel_combo.addItem("Choose the best fuel")
-        self.req_fuel_combo.addItems(list(FUELS.keys()))
-        self.req_fuel_combo.setToolTip(
-            "Left on 'choose', the designer sizes a motor with each of the "
-            "well-characterised fuels and keeps whichever meets the brief.")
-        form.addRow("Fuel:", self.req_fuel_combo)
-
-        self.req_inj_combo = QtWidgets.QComboBox()
-        self.req_inj_combo.addItem("Choose for me")
-        self.req_inj_combo.addItems(list(INJECTOR_TYPES.keys()))
-        self.req_inj_combo.setToolTip(
-            "Injector style. It sets the discharge coefficient and how many "
-            "holes the pattern is allowed to have.")
-        form.addRow("Injector:", self.req_inj_combo)
-
-        self.req_sf_edit = QtWidgets.QLineEdit("2.0")
-        self.req_sf_edit.setToolTip(
-            "Safety factor on the yield strength of the tank and chamber. "
-            "This sizes the walls and so decides how much bore is left "
-            "inside the diameter you allowed.")
-        form.addRow("Pressure safety factor:", self.req_sf_edit)
-        outer.addLayout(form)
-
-        # The button and its status line are built here, next to the fields
-        # they act on, but they are NOT added to this group. _build_ui pins
-        # them outside the scroll area instead, for the same reason the design
-        # report moved out: this group is 500 px of form inside a 417 px
-        # viewport, so anything at the bottom of it renders nothing at all.
-        # The button that acts on the brief was invisible until you scrolled a
-        # nested scroll area, which reads as "this panel does not work".
-        self.generate_button = QtWidgets.QPushButton("Generate Motor")
-        self.generate_button.setToolTip(
-            "Size a complete motor against these requirements and fill in "
-            "every field below.")
-        self.generate_button.clicked.connect(self._generate_motor)
-
-        self.req_status = QtWidgets.QLabel("No motor generated yet.")
-        self.req_status.setWordWrap(True)
-        self.req_status.setTextFormat(QtCore.Qt.RichText)
-        return group
-
     def _build_design_report(self):
         """Where the compliance table lives: visible, and out of the scroll.
 
@@ -835,49 +777,6 @@ class EngineLabWidget(QtWidgets.QWidget):
                 out[key] = f"{number:.{decimals.get(key, 3)}f}"
         return out
 
-    def _read_requirements(self):
-        """The brief as the designer wants it, in SI."""
-        # Tank fill temperature comes from the form rather than a box of its
-        # own: it is already an engine field, and having it in two places is
-        # how the two drift apart.
-        return read_requirements(
-            self._req_fields, self.req_fuel_combo.currentText(),
-            self.req_inj_combo.currentText(),
-            self._field_si("T_tank_0", 293.0) or 293.0,
-            self.req_sf_edit.text())
-
-    def _generate_motor(self):
-        self.error_label.setText("")
-        try:
-            req = self._read_requirements()
-        except Exception as exc:
-            self.req_status.setText(
-                f"<b style='color:{theme.PALETTE['critical']}'>"
-                f"Could not read the requirements: {exc}</b>")
-            return
-
-        self.generate_button.setEnabled(False)
-        self.req_status.setText("Sizing...")
-        QtWidgets.QApplication.processEvents()
-
-        def progress(frac, message):
-            self.req_status.setText(
-                f"Sizing... {message} ({frac * 100:.0f}%)")
-            QtWidgets.QApplication.processEvents()
-
-        try:
-            design = motor_designer.design_motor(req, progress=progress)
-        except Exception as exc:
-            self.req_status.setText(
-                f"<b style='color:{theme.PALETTE['critical']}'>"
-                f"Could not size a motor: {exc}</b>")
-            traceback.print_exc()
-            return
-        finally:
-            self.generate_button.setEnabled(True)
-
-        self.load_design(design)
-
     def load_design(self, design):
         """Put a generated motor into this tab, exactly as if made here.
 
@@ -891,15 +790,10 @@ class EngineLabWidget(QtWidgets.QWidget):
         # motor is in exactly the state a loaded one would be, and saving the
         # rocket saves it like any other.
         self.apply_config(self._si_to_form(design.engine_fields))
-        pal = theme.PALETTE
-        self.req_status.setText(
-            f"<b style='color:{pal['ok']}'>Motor generated "
-            f"and filled in below &mdash; it meets every requirement.</b> "
-            f"See the design report."
-            if design.met_all else
-            f"<b style='color:{pal['critical']}'>Motor generated, but it "
-            f"does not meet every requirement.</b> The design report says "
-            f"which, and by how much.")
+        # No status line of its own any more: this tab no longer sizes
+        # motors, so the only way in here is from the Engine Designer, which
+        # has already said whether the brief was met. The Design Report tab
+        # selected below carries the verdict and the numbers behind it.
         self.design_report.setText(self._design_report(design))
         self.right_tabs.setTabEnabled(1, True)
         # Show the answer to what was asked, not the curve. The curve is the

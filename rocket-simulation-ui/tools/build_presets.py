@@ -194,7 +194,11 @@ def build(preset):
             "fin_thickness_unit": 1,
             "fin_length": f"{preset['airframe'].get('fin_root_chord_m', 0.3) * 1000:.0f}",
             "fin_length_unit": 1,
-            "body_diameter": f"{diameter:.4f}", "body_diameter_unit": 0,
+            # mm with unit index 1, matching unit_fields.FIELDS and the
+            # Aerodynamics tab. Written in metres with index 0, every preset
+            # opened the Simulation tab showing 0.1840 m for a body the next
+            # tab called 184.00 mm.
+            "body_diameter": f"{diameter * 1000:.2f}", "body_diameter_unit": 1,
             "chute_height": f"{preset.get('main_alt', 300):.0f}", "chute_height_unit": 0,
             "chute_size": f"{preset.get('main_area', 2.0):.2f}", "chute_size_unit": 0,
             "chute_cd": "1.50",

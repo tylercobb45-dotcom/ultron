@@ -1182,6 +1182,64 @@ def validate_tolerance_agreement():
           "%.0f m built, %.0f m wanted for a %.0f ft baseline"
           % (built, want, ref_ft))
 
+    # A knob that cannot be read, or that moves nothing when turned, is
+    # worse than no knob: it reports a tolerance of "any value at all", which
+    # reads as a part nobody needs to control. Every one is turned both ways
+    # and has to move the answer.
+    import tolerances as tol_mod
+    base_ft = base_out.apogee_ft
+    dead, unreadable = [], []
+    for knob in tol_mod.default_knobs():
+        value = knob.observe(base_burn, eng)
+        if value is None or value == 0:
+            unreadable.append(knob.key)
+            continue
+        swing = []
+        for factor in (0.8, 1.2):
+            e2, scales = knob.apply(eng, value, factor)
+            b2 = tsim.burn_engine(e2, scales=scales or None)
+            if not b2.ok():
+                swing.append(None)
+                continue
+            o2 = tsim.fly(tsim.Conditions(
+                airframe=airframe, site=site, recovery=fresh_recovery(),
+                mass_props=mass, tables=probe, cd_override=cd), b2)
+            swing.append(o2.apogee_ft)
+        lo, hi = swing
+        if lo is not None and hi is not None:
+            if abs(hi - lo) / base_ft < 0.0005:
+                dead.append(knob.key)
+    check("  every knob can be read off the baseline", not unreadable,
+          "all %d" % len(tol_mod.default_knobs()) if not unreadable
+          else "no baseline: " + ", ".join(unreadable))
+    check("  and every knob moves the answer when turned", not dead,
+          "all %d" % len(tol_mod.default_knobs()) if not dead
+          else "moves nothing: " + ", ".join(dead))
+    # An efficiency cannot exceed 1, whatever kind of doubt it is. The search
+    # skipped limits for every MODEL knob until the efficiencies arrived, and
+    # reported c* efficiency as good for 300% of modelled - a chamber giving
+    # back more than the propellant holds. Run the real search on the capped
+    # knob and check what it reports.
+    import failure_analysis as fa_lim
+    ctx_cap = tol_mod.FlightContext(
+        airframe=airframe, site=site, recovery=fresh_recovery(),
+        mass_props=mass, vehicle=fa_lim.VehicleConfig(), cd_override=cd)
+    ctx_cap.vehicle.goals = []
+    ctx_cap.vehicle.target_altitude_ft = 30000.0
+    capped = [k for k in tol_mod.default_knobs() if k.key == "eta_cstar"]
+    cap_run = tol_mod.find_tolerances(eng, ctx_cap, knobs=capped,
+                                      reference_apogee_ft=base_ft)
+    worst = ""
+    for r in cap_run.results:
+        if r.high_factor is None:
+            continue
+        reached = r.baseline * r.high_factor
+        if reached > r.knob.upper_limit * 1.001:
+            worst = "%s reaches %.3f, limit %.3f" % (
+                r.knob.key, reached, r.knob.upper_limit)
+    check("  no knob is searched past its physical limit", not worst,
+          worst or "c* efficiency stops at 1.000, not 3x modelled")
+
     # The sheet a trial opens has to answer the same questions as the
     # Simulation tab's, or the page disagrees with the main model in the one
     # place somebody goes to read the detail.
@@ -1393,6 +1451,55 @@ SMALL_SCREEN = (1366, 768)
 PLOT_MIN_HEIGHT_PX = 360
 
 
+def validate_shared_units():
+    """The same quantity, shown in the same unit on every page.
+
+    unit_fields.FIELDS is the one place that decides what unit a quantity is
+    read in, and its own comment says it exists because the app "had it both
+    ways ... for the same quantity". The Simulation tab predates it and builds
+    raw QLineEdit/QComboBox pairs instead of UnitFields, so nothing was
+    holding it to the registry: a 184 mm body read "0.1840 m" there and
+    "184.00 mm" on the Aerodynamics tab, for the same loaded rocket.
+    """
+    banner("15. SHARED QUANTITIES READ THE SAME ON EVERY PAGE")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import main as app_main
+        import unit_fields
+    except Exception as exc:
+        check("shared units", True, f"skipped - no Qt ({type(exc).__name__})")
+        return
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+    win = app_main.RocketSimulationUI()
+    win.show()
+    for _ in range(4):
+        app.processEvents()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           "SystemsGo Goddard Baseline.json")) as fh:
+        win.apply_configuration(json.load(fh))
+    app.processEvents()
+
+    # (registry key, the Simulation tab's combo for the same quantity)
+    for key, combo in (("body_diameter", win.body_diameter_unit),
+                       ("fin_root_chord", win.fin_length_unit),
+                       ("fin_thickness", win.fin_thickness_unit)):
+        want = unit_fields.FIELDS[key].metric
+        got = combo.currentText()
+        check("  Simulation tab shows %s in %s" % (key, want), got == want,
+              "showing %r" % got)
+
+    # And the value that goes with it has to be the right number for that
+    # unit - swapping the combo without converting is the other way to get
+    # this wrong, and it is worse because it looks right.
+    shown = float(win.body_diameter_input.text())
+    check("  and the number matches the unit", abs(shown - 184.0) < 0.05,
+          "%.2f mm for a 184 mm body" % shown)
+    win.close()
+
+
 def validate_ui_geometry():
     """Text that does not fit the box it is drawn in.
 
@@ -1462,9 +1569,27 @@ def validate_ui_geometry():
             item = tbl.horizontalHeaderItem(col)
             if not item:
                 continue
-            need = metrics.horizontalAdvance(item.text().upper()) + 14
+            # Per LINE: a header may be wrapped onto two, and measuring the
+            # whole string flat reports a column that fits as clipped.
+            need = max(metrics.horizontalAdvance(line.upper())
+                       for line in item.text().split("\n")) + 14
             if need > tbl.columnWidth(col):
                 clipped.append(f"{tab_name}/{item.text()}")
+    # A table whose columns add up to more than its viewport scrolls
+    # sideways for ever, and the columns pushed off the right are the ones
+    # nobody scrolls to find. The Tolerances results table wanted 826 px in
+    # 721 and hid its Tolerance and Impact columns - the two it exists for.
+    overflowing = []
+    for tab_name, tbl in (("Flight Report", win.flight_report.table),
+                          ("Tolerances", win.tolerances_tab.table),
+                          ("Tolerances log", win.tolerances_tab.log)):
+        total = sum(tbl.columnWidth(c) for c in range(tbl.columnCount()))
+        room = tbl.viewport().width()
+        if total > room:
+            overflowing.append("%s %d px of %d" % (tab_name, total, room))
+    check("every table fits the width it is given", not overflowing,
+          "; ".join(overflowing) if overflowing else "no sideways scrolling")
+
     check("no table heading is clipped", not clipped,
           "; ".join(clipped[:4]) if clipped else "all headings fit")
 
@@ -1534,23 +1659,67 @@ def validate_engine_tab_default():
     # content. It rendered NOTHING: you could fill in a brief and never find
     # the button that acts on it. Measured on the real widget rather than
     # reasoned about, because that is the only way this kind of defect shows.
-    host = QtWidgets.QWidget()
-    host.resize(1366, 768)
-    box = QtWidgets.QVBoxLayout(host)
-    box.setContentsMargins(0, 0, 0, 0)
-    box.addWidget(lab)
-    host.show()
+    # The Engine tab no longer carries its own requirements panel - designing
+    # from a brief is the Engine Designer's job, and two front ends over one
+    # motor_designer had already drifted apart. Assert it is gone, so it
+    # cannot quietly come back and start drifting again.
+    for gone in ("generate_button", "_req_fields", "req_sf_edit"):
+        check("  Engine tab has no duplicate design panel (%s)" % gone,
+              not hasattr(lab, gone), "absent" if not hasattr(lab, gone)
+              else "still present")
+    lab.deleteLater()
+
+    # The SAME check on the Engine Designer tab. This defect has now appeared
+    # twice - once on the Engine tab and once, independently, in the new tab -
+    # because each puts a tall form in a scroll area and it is easy to drop
+    # the action buttons in with it. Checking only the first place it happened
+    # is how the second one shipped.
+    import engine_designer_tab
+    des = engine_designer_tab.EngineDesignerTab()
+    host2 = QtWidgets.QWidget()
+    host2.resize(1366, 768)
+    box2 = QtWidgets.QVBoxLayout(host2)
+    box2.setContentsMargins(0, 0, 0, 0)
+    box2.addWidget(des)
+    host2.show()
     for _ in range(6):
         _app.processEvents()
-    for name, w in (("Generate Motor button", lab.generate_button),
-                    ("Burn time field", lab._req_fields["burn_time_s"]),
-                    ("Average thrust field", lab._req_fields["avg_thrust_n"])):
+    for name, w in (("Generate Engine button", des.generate_button),
+                    ("Send to Engine tab button", des.send_button),
+                    ("Export thrust curve button", des.export_button),
+                    ("status line", des.status)):
         r = w.visibleRegion().boundingRect()
-        check("  %s renders" % name, not r.isEmpty() and r.height() >= 10,
+        check("  Designer: %s renders" % name,
+              not r.isEmpty() and r.height() >= 10,
               "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
               else "NOTHING VISIBLE")
-    host.deleteLater()
-    lab.deleteLater()
+    host2.deleteLater()
+    des.deleteLater()
+
+    # And the Tolerances tab, which went the same way the moment its knob
+    # list grew from ten to twenty: Find Tolerances, Stop, the progress bar
+    # and the status line all stopped rendering.
+    import tolerances_tab as tol_tab_mod
+    tol_tab = tol_tab_mod.TolerancesTab()
+    host3 = QtWidgets.QWidget()
+    host3.resize(1366, 768)
+    box3 = QtWidgets.QVBoxLayout(host3)
+    box3.setContentsMargins(0, 0, 0, 0)
+    box3.addWidget(tol_tab)
+    host3.show()
+    for _ in range(6):
+        _app.processEvents()
+    for name, w in (("Find Tolerances button", tol_tab.run_button),
+                    ("Stop button", tol_tab.stop_button),
+                    ("progress bar", tol_tab.progress),
+                    ("status line", tol_tab.status)):
+        r = w.visibleRegion().boundingRect()
+        check("  Tolerances: %s renders" % name,
+              not r.isEmpty() and r.height() >= 10,
+              "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
+              else "NOTHING VISIBLE")
+    host3.deleteLater()
+    tol_tab.deleteLater()
 
 
 def validate_windows_scripts():
@@ -1733,6 +1902,7 @@ def main():
     validate_tolerance_agreement()
     validate_duty_resolution()
     validate_ui_geometry()
+    validate_shared_units()
     validate_engine_tab_default()
     validate_windows_scripts()
 
