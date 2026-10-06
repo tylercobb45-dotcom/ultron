@@ -1182,6 +1182,64 @@ def validate_tolerance_agreement():
           "%.0f m built, %.0f m wanted for a %.0f ft baseline"
           % (built, want, ref_ft))
 
+    # A knob that cannot be read, or that moves nothing when turned, is
+    # worse than no knob: it reports a tolerance of "any value at all", which
+    # reads as a part nobody needs to control. Every one is turned both ways
+    # and has to move the answer.
+    import tolerances as tol_mod
+    base_ft = base_out.apogee_ft
+    dead, unreadable = [], []
+    for knob in tol_mod.default_knobs():
+        value = knob.observe(base_burn, eng)
+        if value is None or value == 0:
+            unreadable.append(knob.key)
+            continue
+        swing = []
+        for factor in (0.8, 1.2):
+            e2, scales = knob.apply(eng, value, factor)
+            b2 = tsim.burn_engine(e2, scales=scales or None)
+            if not b2.ok():
+                swing.append(None)
+                continue
+            o2 = tsim.fly(tsim.Conditions(
+                airframe=airframe, site=site, recovery=fresh_recovery(),
+                mass_props=mass, tables=probe, cd_override=cd), b2)
+            swing.append(o2.apogee_ft)
+        lo, hi = swing
+        if lo is not None and hi is not None:
+            if abs(hi - lo) / base_ft < 0.0005:
+                dead.append(knob.key)
+    check("  every knob can be read off the baseline", not unreadable,
+          "all %d" % len(tol_mod.default_knobs()) if not unreadable
+          else "no baseline: " + ", ".join(unreadable))
+    check("  and every knob moves the answer when turned", not dead,
+          "all %d" % len(tol_mod.default_knobs()) if not dead
+          else "moves nothing: " + ", ".join(dead))
+    # An efficiency cannot exceed 1, whatever kind of doubt it is. The search
+    # skipped limits for every MODEL knob until the efficiencies arrived, and
+    # reported c* efficiency as good for 300% of modelled - a chamber giving
+    # back more than the propellant holds. Run the real search on the capped
+    # knob and check what it reports.
+    import failure_analysis as fa_lim
+    ctx_cap = tol_mod.FlightContext(
+        airframe=airframe, site=site, recovery=fresh_recovery(),
+        mass_props=mass, vehicle=fa_lim.VehicleConfig(), cd_override=cd)
+    ctx_cap.vehicle.goals = []
+    ctx_cap.vehicle.target_altitude_ft = 30000.0
+    capped = [k for k in tol_mod.default_knobs() if k.key == "eta_cstar"]
+    cap_run = tol_mod.find_tolerances(eng, ctx_cap, knobs=capped,
+                                      reference_apogee_ft=base_ft)
+    worst = ""
+    for r in cap_run.results:
+        if r.high_factor is None:
+            continue
+        reached = r.baseline * r.high_factor
+        if reached > r.knob.upper_limit * 1.001:
+            worst = "%s reaches %.3f, limit %.3f" % (
+                r.knob.key, reached, r.knob.upper_limit)
+    check("  no knob is searched past its physical limit", not worst,
+          worst or "c* efficiency stops at 1.000, not 3x modelled")
+
     # The sheet a trial opens has to answer the same questions as the
     # Simulation tab's, or the page disagrees with the main model in the one
     # place somebody goes to read the detail.
@@ -1637,6 +1695,31 @@ def validate_engine_tab_default():
               else "NOTHING VISIBLE")
     host2.deleteLater()
     des.deleteLater()
+
+    # And the Tolerances tab, which went the same way the moment its knob
+    # list grew from ten to twenty: Find Tolerances, Stop, the progress bar
+    # and the status line all stopped rendering.
+    import tolerances_tab as tol_tab_mod
+    tol_tab = tol_tab_mod.TolerancesTab()
+    host3 = QtWidgets.QWidget()
+    host3.resize(1366, 768)
+    box3 = QtWidgets.QVBoxLayout(host3)
+    box3.setContentsMargins(0, 0, 0, 0)
+    box3.addWidget(tol_tab)
+    host3.show()
+    for _ in range(6):
+        _app.processEvents()
+    for name, w in (("Find Tolerances button", tol_tab.run_button),
+                    ("Stop button", tol_tab.stop_button),
+                    ("progress bar", tol_tab.progress),
+                    ("status line", tol_tab.status)):
+        r = w.visibleRegion().boundingRect()
+        check("  Tolerances: %s renders" % name,
+              not r.isEmpty() and r.height() >= 10,
+              "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
+              else "NOTHING VISIBLE")
+    host3.deleteLater()
+    tol_tab.deleteLater()
 
 
 def validate_windows_scripts():

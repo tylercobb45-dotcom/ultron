@@ -166,7 +166,11 @@ _GAS_FIELDS = [
     ("Gas gamma (Cp/Cv)", "gamma", 1.0, 3,
      "Ratio of specific heats of the combustion products."),
     ("Molar mass (g/mol)", "MW", 1.0, 1,
-     "Mean molar mass of the exhaust."),
+     "Mean molar mass of the exhaust. NOT USED BY THE SOLVER: it feeds only "
+     "Engine.R_gas, which nothing reads, because c* comes from the CEA table "
+     "rather than from a gas constant. Changing it moves no result. It is "
+     "kept because profiles carry it and because a future closed-form c* "
+     "would need it, but do not spend time tuning it."),
 ]
 
 
