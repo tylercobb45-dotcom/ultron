@@ -1,37 +1,37 @@
 {
   "version": "2.0",
   "name": "SystemsGo Goddard Baseline",
-  "description": "The configuration hybrid_sim is validated against, with an independent spreadsheet reference for the whole flight: 9,292 ft, Mach 0.57. Transonic-adjacent.",
-  "created": "Sat Sep 05 13:09:18 2026",
-  "reference": "Engine and flight: hybrid_sim excel_ref.json (independent spreadsheet model)",
+  "description": "SystemsGo Goddard level: a scientific payload to 50,000 ft. 184 mm carbon airframe, 78.6 kN.s nitrous/HTPB hybrid, Mach 1.68. Reaches 53,459 ft.",
+  "created": "Thu Sep 24 17:31:07 2026",
+  "reference": "Motor and airframe sized in this repository against the Goddard brief; no measured curve of this class exists here. Modelled, not flown.",
   "rocket_parameters": {
-    "mass": "26.049",
+    "mass": "98.697",
     "mass_unit": 0,
-    "prop_mass": "6.049",
+    "prop_mass": "41.889",
     "prop_mass_unit": 0,
-    "cd": "0.60",
-    "area": "0.015394",
+    "cd": "0.55",
+    "area": "0.026590",
     "area_unit": 0,
     "rho": "1.225",
     "rho_unit": 0,
     "timestep": "0.05",
     "timestep_unit": 0,
     "fin_count": "4",
-    "fin_thickness": "5.0",
+    "fin_thickness": "9.0",
     "fin_thickness_unit": 1,
-    "fin_length": "300",
+    "fin_length": "440",
     "fin_length_unit": 1,
-    "body_diameter": "0.1400",
+    "body_diameter": "0.1840",
     "body_diameter_unit": 0,
-    "chute_height": "300",
+    "chute_height": "250",
     "chute_height_unit": 0,
-    "chute_size": "2.50",
+    "chute_size": "18.10",
     "chute_size_unit": 0,
     "chute_cd": "1.50"
   },
   "launch_conditions": {
-    "start_altitude": "0",
-    "temperature": "15.0",
+    "start_altitude": "1216",
+    "temperature": "25.0",
     "humidity": "0"
   },
   "stability_settings": {
@@ -41,23 +41,23 @@
     "launch_angle": 0.0
   },
   "wind_settings": {
-    "wind_speed": 0.0,
+    "wind_speed": 4.0,
     "wind_direction": 0
   },
-  "thrust_curve_path": "thrust_curves/csv/SystemsGo_Goddard_baseline.csv",
+  "thrust_curve_path": "thrust_curves/csv/SystemsGo_Goddard_50k.csv",
   "engine": {
-    "d_tank": "100.00",
-    "L_tank": "1019.00",
+    "d_tank": "170.80",
+    "L_tank": "2600.00",
     "fill_frac": "85.0",
-    "T_tank_0": "293",
-    "n_holes": "4",
-    "d_hole": "2.520",
-    "Cd_inj": "0.700",
-    "L_grain": "300",
-    "d_grain_outer": "76.0",
-    "d_port_0": "36.0",
-    "d_throat": "18.000",
-    "eps_exp": "5.00",
+    "T_tank_0": "298",
+    "n_holes": "12",
+    "d_hole": "2.600",
+    "Cd_inj": "0.750",
+    "L_grain": "600",
+    "d_grain_outer": "171",
+    "d_port_0": "90.0",
+    "d_throat": "42.000",
+    "eps_exp": "6.50",
     "alpha_deg": "15.0",
     "eta_cstar": "0.900",
     "eta_nozzle": "0.950",
@@ -77,35 +77,35 @@
   },
   "airframe": {
     "fields": {
-      "nose_length_m": "600",
-      "body_diameter_m": "140",
-      "body_length_m": "2500",
-      "surface_roughness_um": "25.0",
-      "cd_override": "1.625",
+      "nose_length_m": "1000",
+      "body_diameter_m": "184",
+      "body_length_m": "4761",
+      "surface_roughness_um": "20.0",
+      "cd_override": "0.000",
       "boattail_length_m": "0.00",
       "boattail_exit_diameter_m": "0.00",
       "fin_count": "4",
-      "fin_root_chord_m": "300",
-      "fin_tip_chord_m": "150",
-      "fin_span_m": "150",
-      "fin_sweep_m": "100",
-      "fin_thickness_m": "5.00",
-      "dry_mass_kg": "20.0",
-      "propellant_mass_kg": "6.05",
-      "dry_cg_m": "1850",
-      "propellant_cg_m": "2550",
-      "elevation_m": "0.00",
+      "fin_root_chord_m": "440",
+      "fin_tip_chord_m": "180",
+      "fin_span_m": "130",
+      "fin_sweep_m": "220",
+      "fin_thickness_m": "9.00",
+      "dry_mass_kg": "56.8",
+      "propellant_mass_kg": "41.9",
+      "dry_cg_m": "3496",
+      "propellant_cg_m": "3739",
+      "elevation_m": "1216",
       "latitude_deg": "28.5",
-      "temperature_c": "15.0",
+      "temperature_c": "25.0",
       "pressure_pa": "1013",
       "humidity_pct": "0.00",
-      "wind_speed_ms": "0.00",
+      "wind_speed_ms": "4.00",
       "wind_ref_height_m": "10.0",
       "wind_shear_exp": "0.143",
-      "rail_length_m": "5.18",
+      "rail_length_m": "10.0",
       "rail_angle_deg": "0.00"
     },
-    "nose_shape": "Tangent Ogive",
+    "nose_shape": "Von Karman (LV-Haack)",
     "fin_profile": "Rounded leading",
     "recovery": {
       "mode": "Dual deploy (drogue + main)",
@@ -113,7 +113,7 @@
         {
           "name": "Drogue",
           "canopy_type": "Drogue slider",
-          "diameter_m": 0.892,
+          "diameter_m": 1.2,
           "cd": 1.5,
           "trigger": "apogee",
           "trigger_altitude_m": 300.0,
@@ -130,10 +130,10 @@
         {
           "name": "Main",
           "canopy_type": "Round parachute",
-          "diameter_m": 2.61,
+          "diameter_m": 4.8,
           "cd": 1.5,
           "trigger": "altitude",
-          "trigger_altitude_m": 305,
+          "trigger_altitude_m": 250,
           "trigger_time_s": 0.0,
           "inflation_time_s": 2.0,
           "reefed": false,
@@ -145,29 +145,129 @@
           "position_m": 0.0
         }
       ]
-    }
+    },
+    "mass_components": [
+      {
+        "name": "Nose cone",
+        "mass_kg": 2.508,
+        "position_m": 0.55,
+        "length_m": 1.0,
+        "kind": "Structure"
+      },
+      {
+        "name": "Payload",
+        "mass_kg": 2.0,
+        "position_m": 1.2,
+        "length_m": 0.3,
+        "kind": "Payload"
+      },
+      {
+        "name": "Avionics bay",
+        "mass_kg": 1.8,
+        "position_m": 1.5,
+        "length_m": 0.35,
+        "kind": "Avionics"
+      },
+      {
+        "name": "Recovery",
+        "mass_kg": 4.6,
+        "position_m": 1.7,
+        "length_m": 0.5,
+        "kind": "Recovery"
+      },
+      {
+        "name": "Fwd closure / fill",
+        "mass_kg": 1.4,
+        "position_m": 2.05,
+        "length_m": 0.1,
+        "kind": "Structure"
+      },
+      {
+        "name": "Oxidiser tank",
+        "mass_kg": 12.148,
+        "position_m": 3.4,
+        "length_m": 2.6,
+        "kind": "Structure"
+      },
+      {
+        "name": "Plumbing / main valve",
+        "mass_kg": 2.6,
+        "position_m": 4.55,
+        "length_m": 0.4,
+        "kind": "Other"
+      },
+      {
+        "name": "Injector bulkhead",
+        "mass_kg": 1.6,
+        "position_m": 4.73,
+        "length_m": 0.06,
+        "kind": "Structure"
+      },
+      {
+        "name": "Chamber case",
+        "mass_kg": 3.044,
+        "position_m": 5.17,
+        "length_m": 0.82,
+        "kind": "Structure"
+      },
+      {
+        "name": "Chamber liner",
+        "mass_kg": 2.75,
+        "position_m": 5.17,
+        "length_m": 0.82,
+        "kind": "Structure"
+      },
+      {
+        "name": "Nozzle",
+        "mass_kg": 3.507,
+        "position_m": 5.671,
+        "length_m": 0.181,
+        "kind": "Structure"
+      },
+      {
+        "name": "Body tube",
+        "mass_kg": 11.288,
+        "position_m": 3.381,
+        "length_m": 4.761,
+        "kind": "Structure"
+      },
+      {
+        "name": "Fins",
+        "mass_kg": 3.355,
+        "position_m": 5.519,
+        "length_m": 0.44,
+        "kind": "Structure"
+      },
+      {
+        "name": "Fasteners / bonding",
+        "mass_kg": 4.208,
+        "position_m": 3.381,
+        "length_m": 4.761,
+        "kind": "Other"
+      }
+    ]
   },
   "vehicle": {
-    "body_od_m": "140",
-    "body_wall_m": "3.00",
-    "body_length_m": "3.10",
+    "body_od_m": "184",
+    "body_wall_m": "2.60",
+    "body_length_m": "5.76",
     "fin_count": "4",
-    "fin_root_chord_m": "300",
-    "fin_tip_chord_m": "150",
-    "fin_span_m": "150",
-    "fin_thickness_m": "5.00",
-    "chamber_wall_m": "4.00",
-    "tank_wall_m": "3.00",
-    "target_altitude_ft": "9292",
-    "rail_length_m": "5.18",
-    "harness_rating_n": "4000",
+    "fin_root_chord_m": "440",
+    "fin_tip_chord_m": "180",
+    "fin_span_m": "130",
+    "fin_thickness_m": "9.00",
+    "chamber_wall_m": "2.23",
+    "tank_wall_m": "2.38",
+    "target_altitude_ft": "50000",
+    "rail_length_m": "10.0",
+    "harness_rating_n": "13000",
     "min_pressure_sf": "2.00",
     "min_structure_sf": "1.50",
-    "airframe_material": "Fiberglass G10/FR4",
-    "nose_material": "Fiberglass G10/FR4",
+    "airframe_material": "Carbon Fiber / Epoxy",
+    "nose_material": "Carbon Fiber / Epoxy",
     "fin_material": "Fiberglass G10/FR4",
     "nozzle_material": "Graphite",
     "chamber_material": "Aluminum 6061-T6",
-    "tank_material": "Aluminum 6061-T6"
+    "tank_material": "Aluminum 7075-T6"
   }
 }
