@@ -1461,6 +1461,12 @@ class RocketSimulationUI(QtWidgets.QWidget):
         self.body_diameter_input = QtWidgets.QLineEdit()
         self.body_diameter_input.setPlaceholderText("e.g., 0.06")
         self.body_diameter_unit = QtWidgets.QComboBox(); self.body_diameter_unit.addItems(["m", "mm", "in"])
+        # mm, not m: unit_fields.FIELDS makes body_diameter a _LEN_SMALL
+        # quantity and the Aerodynamics tab shows "184.00 mm", so leaving this
+        # on index 0 put the same number on two pages as 0.1840 m and
+        # 184.00 mm. The registry's own comment exists because the app "had it
+        # both ways ... for the same quantity"; this tab predates it.
+        self.body_diameter_unit.setCurrentIndex(1)
         body_diameter_row = QtWidgets.QHBoxLayout(); body_diameter_row.addWidget(self.body_diameter_input); body_diameter_row.addWidget(self.body_diameter_unit)
 
         self.chute_height_input = QtWidgets.QLineEdit()
@@ -1519,9 +1525,9 @@ class RocketSimulationUI(QtWidgets.QWidget):
         form_layout.addRow("Air Density:", rho_row)
         form_layout.addRow("Time Step:", timestep_row)
         form_layout.addRow("Fin Count:", self.fin_count_input)
-        form_layout.addRow("Fin Thickness:", fin_thickness_row)
-        form_layout.addRow("Fin Length:", fin_length_row)
-        form_layout.addRow("Body Tube Diameter:", body_diameter_row)
+        form_layout.addRow("Fin thickness:", fin_thickness_row)
+        form_layout.addRow("Fin root chord:", fin_length_row)
+        form_layout.addRow("Body diameter:", body_diameter_row)
         form_layout.addRow("Parachute Deploy Height:", chute_height_row)
         form_layout.addRow("Parachute Size:", chute_size_row)
         # New row for parachute drag coefficient
@@ -5553,6 +5559,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
 
         plotted = False
         units_shown = []
+        labels_shown = []
         tooltip_label = 'Altitude'
         tooltip_values, tooltip_unit = converted('Altitude')
         for i, label in enumerate(labels):
@@ -5561,6 +5568,7 @@ class RocketSimulationUI(QtWidgets.QWidget):
                 ax.plot(times, values, label=f"{label} ({unit})",
                         color=series_colors[i % len(series_colors)])
                 units_shown.append(unit)
+                labels_shown.append(label)
                 if not plotted:
                     tooltip_label, tooltip_values, tooltip_unit = label, values, unit
                 plotted = True
@@ -5569,13 +5577,25 @@ class RocketSimulationUI(QtWidgets.QWidget):
             ax.plot(times, tooltip_values, label=f"{tooltip_label} ({tooltip_unit})",
                     color=series_colors[0])
             units_shown.append(tooltip_unit)
+            labels_shown.append(tooltip_label)
         ax.set_xlabel('Time (s)')
         # One unit on the axis when everything shares it; otherwise say plainly
         # that the axis is mixed rather than pretend a single scale means
         # something across metres, newtons and kilograms at once.
         distinct = sorted(set(units_shown))
-        ax.set_ylabel(distinct[0] if len(distinct) == 1
-                      else "mixed units - see legend")
+        if len(labels_shown) == 1:
+            # One series: name the quantity, the way every other plot in the
+            # app does ("Altitude (ft)" on the Flight Report). Labelling the
+            # axis "m" said only what the number was measured in, not what it
+            # was - and the legend directly above it already said "Altitude
+            # (m)", so the two disagreed about how much to tell you.
+            ax.set_ylabel(f"{labels_shown[0]} ({units_shown[0]})")
+        elif len(distinct) == 1:
+            # Several series sharing a unit: the unit alone is right, because
+            # naming one of them would mislabel the others.
+            ax.set_ylabel(distinct[0])
+        else:
+            ax.set_ylabel("mixed units - see legend")
         ax.legend(ncol=2, loc='best')
         self._plot_altitude_factor = FT if imperial else 1.0
         ax.figure.tight_layout()

@@ -135,15 +135,37 @@ class EngineDesignerTab(QtWidgets.QWidget):
             "inside the diameter allowed and how much the engine weighs.")
         form.addRow("Pressure safety factor:", self.sf_edit)
         lv.addWidget(build)
+        lv.addStretch()
+
+        # Scrollable for the same reason as every other form-heavy tab: at
+        # 768 px tall a QVBoxLayout with nowhere to put the overflow crushes
+        # its children instead of scrolling them.
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(left_inner)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+
+        # The FORM scrolls; the actions do not. Everything below used to sit
+        # inside the scroll area with the form, and at 1366x768 the brief is
+        # taller than the viewport - so Generate Engine, the progress bar and
+        # both export buttons rendered nothing at all. You could fill the
+        # whole brief in and never find the control that acts on it, which
+        # reads as the tab being broken. The Engine tab had the identical
+        # defect and was fixed the same way; section 12 now measures both.
+        left = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(left)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        outer.addWidget(scroll, 1)
 
         self.generate_button = QtWidgets.QPushButton("Generate Engine")
         self.generate_button.clicked.connect(self._generate)
-        lv.addWidget(self.generate_button)
+        outer.addWidget(self.generate_button)
 
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(True)
         self.progress.setValue(0)
-        lv.addWidget(self.progress)
+        outer.addWidget(self.progress)
 
         self.send_button = QtWidgets.QPushButton("Send to Engine tab")
         self.send_button.setToolTip(
@@ -151,12 +173,12 @@ class EngineDesignerTab(QtWidgets.QWidget):
             "be edited, saved with the rocket, and flown.")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._send)
-        lv.addWidget(self.send_button)
+        outer.addWidget(self.send_button)
 
         self.export_button = QtWidgets.QPushButton("Export thrust curve (CSV)")
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self._export_curve)
-        lv.addWidget(self.export_button)
+        outer.addWidget(self.export_button)
 
         self.status = QtWidgets.QLabel("No engine generated yet.")
         self.status.setWordWrap(True)
@@ -166,17 +188,9 @@ class EngineDesignerTab(QtWidgets.QWidget):
             f"border:1px solid {theme.PALETTE['border']}; "
             f"border-left:3px solid {theme.PALETTE['accent']}; padding:8px; "
             f"color:{theme.PALETTE['text']}; }}")
-        lv.addWidget(self.status)
-        lv.addStretch()
+        outer.addWidget(self.status)
 
-        # Scrollable for the same reason as every other form-heavy tab: at
-        # 768 px tall a QVBoxLayout with nowhere to put the overflow crushes
-        # its children instead of scrolling them.
-        left = QtWidgets.QScrollArea()
-        left.setWidgetResizable(True)
-        left.setWidget(left_inner)
         left.setMinimumWidth(455)
-        left.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         splitter.addWidget(left)
 
         right = QtWidgets.QWidget()

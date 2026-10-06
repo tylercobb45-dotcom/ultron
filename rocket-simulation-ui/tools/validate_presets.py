@@ -1393,6 +1393,55 @@ SMALL_SCREEN = (1366, 768)
 PLOT_MIN_HEIGHT_PX = 360
 
 
+def validate_shared_units():
+    """The same quantity, shown in the same unit on every page.
+
+    unit_fields.FIELDS is the one place that decides what unit a quantity is
+    read in, and its own comment says it exists because the app "had it both
+    ways ... for the same quantity". The Simulation tab predates it and builds
+    raw QLineEdit/QComboBox pairs instead of UnitFields, so nothing was
+    holding it to the registry: a 184 mm body read "0.1840 m" there and
+    "184.00 mm" on the Aerodynamics tab, for the same loaded rocket.
+    """
+    banner("15. SHARED QUANTITIES READ THE SAME ON EVERY PAGE")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import main as app_main
+        import unit_fields
+    except Exception as exc:
+        check("shared units", True, f"skipped - no Qt ({type(exc).__name__})")
+        return
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+    win = app_main.RocketSimulationUI()
+    win.show()
+    for _ in range(4):
+        app.processEvents()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           "SystemsGo Goddard Baseline.json")) as fh:
+        win.apply_configuration(json.load(fh))
+    app.processEvents()
+
+    # (registry key, the Simulation tab's combo for the same quantity)
+    for key, combo in (("body_diameter", win.body_diameter_unit),
+                       ("fin_root_chord", win.fin_length_unit),
+                       ("fin_thickness", win.fin_thickness_unit)):
+        want = unit_fields.FIELDS[key].metric
+        got = combo.currentText()
+        check("  Simulation tab shows %s in %s" % (key, want), got == want,
+              "showing %r" % got)
+
+    # And the value that goes with it has to be the right number for that
+    # unit - swapping the combo without converting is the other way to get
+    # this wrong, and it is worse because it looks right.
+    shown = float(win.body_diameter_input.text())
+    check("  and the number matches the unit", abs(shown - 184.0) < 0.05,
+          "%.2f mm for a 184 mm body" % shown)
+    win.close()
+
+
 def validate_ui_geometry():
     """Text that does not fit the box it is drawn in.
 
@@ -1551,6 +1600,33 @@ def validate_engine_tab_default():
               else "NOTHING VISIBLE")
     host.deleteLater()
     lab.deleteLater()
+
+    # The SAME check on the Engine Designer tab. This defect has now appeared
+    # twice - once on the Engine tab and once, independently, in the new tab -
+    # because each puts a tall form in a scroll area and it is easy to drop
+    # the action buttons in with it. Checking only the first place it happened
+    # is how the second one shipped.
+    import engine_designer_tab
+    des = engine_designer_tab.EngineDesignerTab()
+    host2 = QtWidgets.QWidget()
+    host2.resize(1366, 768)
+    box2 = QtWidgets.QVBoxLayout(host2)
+    box2.setContentsMargins(0, 0, 0, 0)
+    box2.addWidget(des)
+    host2.show()
+    for _ in range(6):
+        _app.processEvents()
+    for name, w in (("Generate Engine button", des.generate_button),
+                    ("Send to Engine tab button", des.send_button),
+                    ("Export thrust curve button", des.export_button),
+                    ("status line", des.status)):
+        r = w.visibleRegion().boundingRect()
+        check("  Designer: %s renders" % name,
+              not r.isEmpty() and r.height() >= 10,
+              "%dx%d px" % (r.width(), r.height()) if not r.isEmpty()
+              else "NOTHING VISIBLE")
+    host2.deleteLater()
+    des.deleteLater()
 
 
 def validate_windows_scripts():
@@ -1733,6 +1809,7 @@ def main():
     validate_tolerance_agreement()
     validate_duty_resolution()
     validate_ui_geometry()
+    validate_shared_units()
     validate_engine_tab_default()
     validate_windows_scripts()
 
