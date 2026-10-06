@@ -23,7 +23,14 @@ import tolerances as tol
 class TrialSheetDialog(QtWidgets.QDialog):
     """One trial's flight and motor data, in the app's own spreadsheet."""
 
-    def __init__(self, title, summary, flight_rows, engine_rows, parent=None):
+    def __init__(self, title, summary, flight_capture, engine_result,
+                 parent=None):
+        """``flight_capture`` is Outcome.rows; ``engine_result`` is
+        Burn.as_result(). Both are raw simulator output - the derived columns
+        are added here, by the same datasheet helpers the Simulation tab uses.
+        Named for what they are: they used to be called flight_rows and
+        engine_rows, which shadowed the two datasheet functions applied to
+        them and described neither argument's actual shape."""
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(1100, 700)
@@ -38,14 +45,25 @@ class TrialSheetDialog(QtWidgets.QDialog):
         # The app's own DataSheet, with the same column spec the Simulation
         # tab uses - so this reads like the sheets beside it and exports the
         # same way, rather than being a third kind of table.
+        #
+        # Through datasheet.flight_rows() for the same reason: that is where
+        # energy, impulse, the delta-v split and the structural indicators are
+        # derived. Handing the raw capture rows straight to the sheet filled 25
+        # of its 81 columns and exported the same reduced set, so a trial
+        # spreadsheet quietly answered fewer questions than the Simulation
+        # tab's - for the same flight.
         flight = datasheet.DataSheet(datasheet.FLIGHT_COLUMNS,
                                      title="tolerance_flight")
-        flight.set_rows(flight_rows)
+        flight.set_rows(datasheet.flight_rows(flight_capture))
         tabs.addTab(flight, "Flight Data")
 
         engine = datasheet.DataSheet(datasheet.ENGINE_COLUMNS,
                                      title="tolerance_engine")
-        engine.set_rows(engine_rows)
+        # Same reasoning as the flight sheet above: engine_rows() is where the
+        # psi columns, the areas and ratios, the consumed masses and the
+        # cumulative impulse come from. Burn.as_result() hands it the parallel
+        # arrays it reads rather than this file reimplementing the arithmetic.
+        engine.set_rows(datasheet.engine_rows(engine_result))
         tabs.addTab(engine, "Engine Data")
         layout.addWidget(tabs)
 
@@ -411,8 +429,8 @@ class TolerancesTab(QtWidgets.QWidget):
                    f"landing {outcome.landing_speed_ms:.1f} m/s. "
                    + ("Meets the goals." if met
                       else "MISSES: " + "; ".join(missed)))
-        dialog = TrialSheetDialog(title, summary, outcome.rows, burn.rows,
-                                  parent=self)
+        dialog = TrialSheetDialog(title, summary, outcome.rows,
+                                  burn.as_result(), parent=self)
         # Kept alive while open (it is non-modal), and released when it is
         # closed. Appending without ever removing held every opened trial's
         # rows and table items for the rest of the session - tens of

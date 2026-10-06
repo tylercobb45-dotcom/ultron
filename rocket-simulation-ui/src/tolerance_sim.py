@@ -71,8 +71,17 @@ class Tables:
     """Atmosphere and drag, evaluated once and interpolated after.
 
     Both are functions of things the sweep holds fixed, so tabulating them is
-    bookkeeping rather than modelling. The grids are sized from the baseline
-    flight so a rocket that goes twice as high still lands inside them.
+    bookkeeping rather than modelling.
+
+    The grid is a CACHE, not a domain. Anything outside it is computed exactly
+    from the same atmosphere and drag code the main simulator calls, because
+    the alternative - clamping to the edge - is silently wrong exactly where
+    the search spends its time. A tolerance sweep runs to MAX_FACTOR on every
+    knob, and on a Goddard-class vehicle a x3 on chamber pressure flies to
+    359 km at Mach 7.1: 7.3x past a box sized at three times the baseline
+    apogee, and 1.8x past its Mach ceiling. Clamped, that trial kept feeling
+    49 km air all the way up and read its Cd off the Mach 4 column, and the
+    tolerance answer disagreed with the main model by about 3%.
     """
     z0: float
     dz: float
@@ -82,20 +91,47 @@ class Tables:
     cd: list                        # cd[thrusting][iz][imach]
     n_z: int
     n_m: int
+    site: object = None             # for the exact fallback outside the box
+    airframe: object = None
+    #: Counts of how often each fallback fired, so a caller can see whether a
+    #: run left the cached box at all rather than having to guess.
+    misses: dict = field(default_factory=lambda: {"air": 0, "cd": 0})
+
+    @property
+    def z_top(self) -> float:
+        return self.z0 + self.dz * (self.n_z - 1)
+
+    @property
+    def mach_top(self) -> float:
+        return self.mach0 + self.dmach * (self.n_m - 1)
 
     def air(self, z: float):
         """(T, P, rho, a, mu) at altitude z, linearly interpolated."""
         f = (z - self.z0) / self.dz
         i = int(f)
         if i < 0:
-            return self.alt[0]
+            return self.alt[0]      # below the pad: the ground row is correct
         if i >= self.n_z - 1:
+            # Off the top of the cache: compute it rather than freeze the air
+            # at the ceiling for the rest of the climb.
+            if self.site is not None:
+                self.misses["air"] += 1
+                return self.site.properties(z)
             return self.alt[self.n_z - 1]
         frac = f - i
         lo, hi = self.alt[i], self.alt[i + 1]
         return tuple(a + (b - a) * frac for a, b in zip(lo, hi))
 
     def drag_cd(self, z: float, mach: float, thrusting: bool) -> float:
+        outside = (z < self.z0 or z > self.z_top
+                   or mach < self.mach0 or mach > self.mach_top)
+        if outside and self.site is not None and self.airframe is not None:
+            self.misses["cd"] += 1
+            a_sound = self.air(z)[3]
+            value, _breakdown = aero_mod.drag_coefficient(
+                mach, z, mach * a_sound, self.airframe, self.site,
+                thrusting=thrusting)
+            return float(value)
         grid = self.cd[1 if thrusting else 0]
         fz = (z - self.z0) / self.dz
         iz = min(max(int(fz), 0), self.n_z - 2)
@@ -137,7 +173,7 @@ def build_tables(airframe, site, max_altitude_m: float,
             grid.append(row)
         cd.append(grid)
     return Tables(z0=0.0, dz=dz, alt=alt, mach0=0.0, dmach=dmach, cd=cd,
-                  n_z=n_z, n_m=n_m)
+                  n_z=n_z, n_m=n_m, site=site, airframe=airframe)
 
 
 @dataclass
@@ -183,9 +219,37 @@ class Burn:
     #: Throwing these away is most of why this module is worth having, so
     #: nothing collects them unless somebody is about to look at them.
     rows: list = field(default_factory=list)
+    #: Initial loads. Scalars, not columns - "consumed so far" and "burn
+    #: progress" are measured against them, and datasheet.engine_rows reads
+    #: them off the result it is given.
+    m_l0: float = 0.0
+    m_v0: float = 0.0
+    m_f0: float = 0.0
+    L_grain: float = 0.0
 
     def ok(self):
         return len(self.t) > 1 and self.total_impulse > 0.0
+
+    def as_result(self) -> dict:
+        """The captured rows in the shape datasheet.engine_rows() reads.
+
+        That function derives the psi columns, the areas and ratios, the
+        consumed masses and the cumulative impulse from parallel arrays plus
+        these scalars. Rebuilding its arithmetic here would be a second copy
+        of it to keep in step, so this hands it the shape it wants instead.
+        Returns {} when nothing was captured.
+        """
+        if not self.rows:
+            return {}
+        keys = set()
+        for row in self.rows:
+            keys.update(row)
+        out = {k: [float(row.get(k, 0.0)) for row in self.rows] for k in keys}
+        out["m_l0"] = self.m_l0
+        out["m_v0"] = self.m_v0
+        out["m_f0"] = self.m_f0
+        out["L_grain"] = self.L_grain
+        return out
 
 
 def burn_engine(eng, scales=None, dt: float = 0.01,
@@ -333,20 +397,48 @@ def burn_engine(eng, scales=None, dt: float = 0.01,
             # carries the same headings and units as the Engine Data sheet
             # the rest of the app shows rather than a parallel vocabulary.
             p_tank = eq.n2o_saturation_pressure(state[1])
+            thrust_now = out.thrust[-1]
+            mdot_tot = mdot_ox + mdot_f
+            a_port = eng.A_port(state[2])
+            m_liq = eq.tank_liquid_mass(max(0.0, state[0]), state[1],
+                                        eng.V_tank)
+            chamber_v = eq.chamber_volume(eng.n_ports, state[2], eng.L_grain,
+                                          eng.R_outer, eng.L_pre, eng.L_post)
+            l_star = eq.characteristic_length(chamber_v, at)
             out.rows.append({
-                "t": t, "thrust": out.thrust[-1],
+                "t": t, "thrust": thrust_now,
                 "Pc": pc, "P_tank": p_tank, "T_tank": state[1],
                 "inj_dP": max(0.0, p_tank - pc),
                 "inj_stiffness": eq.injector_stiffness(p_tank, pc),
                 "Pc_over_Pt": (pc / p_tank) if p_tank > 0 else 0.0,
                 "mdot_ox": mdot_ox, "mdot_fuel": mdot_f,
-                "mdot_tot": mdot_ox + mdot_f,
+                "mdot_tot": mdot_tot,
                 "OF": of, "cstar": cstar, "c_star_eff": cstar * eng.eta_cstar,
                 "cf": cf,
-                "G_ox": eq.oxidiser_flux(mdot_ox, eng.A_port(state[2])),
+                "G_ox": eq.oxidiser_flux(mdot_ox, a_port),
                 "rdot": rdot, "r_port": state[2],
                 "web_left": max(0.0, eng.R_outer - state[2]),
                 "m_ox": state[0], "m_fuel": state[3],
+                # Below here: the rest of what the Engine Data sheet reports.
+                # All of it is a function of state this loop already has, and
+                # leaving it out meant a trial's engine sheet filled 21 of its
+                # 55 columns while the Engine tab's filled all of them.
+                "d_throat": math.sqrt(4.0 * at / math.pi) if at > 0 else 0.0,
+                "eps": eps_exp, "expansion_ratio": eps_exp,
+                "A_port": a_port,
+                "P_exit": eq.exit_pressure(pc, me, eng.gamma),
+                "m_liquid": m_liq,
+                "m_vapor": max(0.0, state[0] - m_liq),
+                "fill_frac": eq.tank_fill_fraction(m_liq, state[1],
+                                                   eng.V_tank),
+                "Isp_inst": (thrust_now / (mdot_tot * G0)
+                             if mdot_tot > 1e-12 else 0.0),
+                "L_star": l_star,
+                "t_residence": eq.gas_residence_time(
+                    l_star, cstar * eng.eta_cstar),
+                # This simulator has no vent model, so the column stays at
+                # zero rather than being filled with a number nobody computed.
+                "mdot_vent": 0.0,
             })
     y_end = list(sol.y[:, -1])
     m_start = y0[0] + y0[3]
@@ -380,6 +472,11 @@ def burn_engine(eng, scales=None, dt: float = 0.01,
     # flow rates - the integral picks up the step error of every one of those
     # rates, and the mass difference picks up none of it.
     out.prop_mass = max(0.0, m_start - (y[0] + y[3]))
+    m_l0 = eq.tank_liquid_mass(max(0.0, y0[0]), y0[1], eng.V_tank)
+    out.m_l0 = m_l0
+    out.m_v0 = max(0.0, y0[0] - m_l0)
+    out.m_f0 = y0[3]
+    out.L_grain = eng.L_grain
     return out
 
 
@@ -503,14 +600,21 @@ def fly(cond: Conditions, burn: Burn, capture: bool = False,
         # Attitude from the moments acting on the vehicle, exactly as the main
         # model does it: the normal force acts at the CP, so its moment about
         # the CG restores when the CP is behind and diverges when it is not.
+        # Hoisted out of the attitude branch below: the sheet reports these
+        # every sample, including on the rail, and the main model reports them
+        # the same way. They are cheap, and computing them here is what lets a
+        # trial sheet carry the same stability columns as the Simulation tab.
+        cg = mass_props.cg(prop_left)
+        cp = (cond.cp_override if cond.cp_override is not None
+              else airframe.center_of_pressure(mach))
+        inertia = max(1e-6, mass_props.inertia(prop_left, length))
+        stability_cal = (cp - cg) / diameter
+        alpha = 0.0
+
         if on_rail:
             theta, omega = rail_angle, 0.0
         elif speed_rel > 1e-6:
             theta_rel = math.atan2(rvx, rvz if abs(rvz) > 1e-9 else 1e-9)
-            cg = mass_props.cg(prop_left)
-            cp = (cond.cp_override if cond.cp_override is not None
-                  else airframe.center_of_pressure(mach))
-            inertia = max(1e-6, mass_props.inertia(prop_left, length))
             alpha = math.atan2(math.sin(theta - theta_rel),
                                math.cos(theta - theta_rel))
             arm = cp - cg
@@ -563,6 +667,8 @@ def fly(cond: Conditions, burn: Burn, capture: bool = False,
 
         if capture and t >= next_sample - 1e-12:
             next_sample = t + output_dt
+            full_cda_rec = sum(st.full_drag_area for st in rec.active_stages())
+            signed_drag = -drag_mag if vz >= 0 else drag_mag
             out.rows.append({
                 "time": t, "altitude": z, "altitude_ft": z * FT_PER_M,
                 "downrange": x, "velocity": vz, "horizontal_velocity": vx,
@@ -578,7 +684,46 @@ def fly(cond: Conditions, burn: Burn, capture: bool = False,
                 "Cd_body_eff": cd_body, "A_eff": a_ref,
                 "cda_recovery": cda_recovery,
                 "chute_deployed": cda_recovery > 0,
-                "tilt_deg": math.degrees(theta),
+                # The name the rest of the app reads. It was "tilt_deg" here,
+                # which no column spec knows, so the Tilt column of every trial
+                # sheet read 0.0 while the Simulation tab's filled normally.
+                "angle_from_vertical_deg": math.degrees(theta),
+                "angle_of_attack_deg": abs(math.degrees(alpha)),
+                # Everything below is state this integrator already had and
+                # simply was not reporting, so a trial sheet and the Simulation
+                # tab's sheet now answer the same questions.
+                "mdot": (thrust / (isp * G0)) if (isp > 0 and thrusting) else 0.0,
+                "gravity": g,
+                "wind_speed": wind,
+                "on_rail": on_rail,
+                "cg_m": cg, "cp_m": cp, "stability_cal": stability_cal,
+                "pitch_inertia": inertia,
+                "chute_fill": (cda_recovery / full_cda_rec
+                               if full_cda_rec > 0 else 0.0),
+                "recovery_deployed": ", ".join(rec.deployed_names()),
+                "terminal_v_body": _terminal_v(mass, g, rho, cda_body),
+                "terminal_v_current": _terminal_v(mass, g, rho, cda_total),
+                "ballistic_coeff_body": (mass / cda_body) if cda_body > 0 else 0.0,
+                "ballistic_coeff_current": ((mass / cda_total)
+                                            if cda_total > 0 else 0.0),
+                "drag_signed": signed_drag,
+                "drag_raw_signed": signed_drag,
+                "drag_signed_uncapped": signed_drag,
+                "drag_cap_applied": False,
+                "drag_cap_method": "none",
+                "rocket_drag_signed_raw": -(q * cda_body),
+                "rocket_drag_signed_smoothed": -(q * cda_body),
+                "chute_drag_signed_raw": -(q * cda_recovery),
+                "chute_drag_signed_smoothed": -(q * cda_recovery),
+                "chute_drag_signed_smoothed_uncapped": -(q * cda_recovery),
+                "dry_mass": dry_mass,
+                "propellant_mass": prop_mass,
+                "initial_mass": dry_mass + prop_mass,
+                # No sim_version: that column is the MAIN model's version
+                # marker, and this file deliberately does not import it. This
+                # simulator exists so the sweep does not depend on the main
+                # one, and borrowing its constant would put the dependency
+                # back for the sake of one cosmetic column.
             })
 
         dt = _dt_for(thrusting, past_apogee, rec)
@@ -618,6 +763,13 @@ def fly(cond: Conditions, burn: Burn, capture: bool = False,
     if not out.landed:
         out.landing_speed_ms = abs(vz)
     return out
+
+
+def _terminal_v(mass, g, rho, cda):
+    """Steady descent speed under a given drag area. Mirrors flight_model."""
+    if cda <= 0 or rho <= 0:
+        return 0.0
+    return math.sqrt(2.0 * mass * g / (rho * cda))
 
 
 def _dt_for(thrusting, past_apogee, rec):

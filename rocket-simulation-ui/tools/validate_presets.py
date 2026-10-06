@@ -1083,6 +1083,145 @@ def validate_duty_resolution():
     check("  an empty brief is refused", ok, detail)
 
 
+def validate_tolerance_agreement():
+    """The tolerance simulator against the main one AWAY FROM the baseline.
+
+    The existing agreement check flies the unperturbed rocket, which is the
+    one point a tolerance search never reports on. Every number the Tolerances
+    tab prints comes from a PERTURBED flight, so that is where the two have to
+    agree - and it is where they did not: a x2 on chamber pressure took a
+    Goddard-class vehicle to 120 km and a x3 took it to 359 km at Mach 8.5,
+    far outside the cached atmosphere and drag box, which used to clamp to its
+    edge. The trajectory then disagreed with the main model by about 3%.
+    """
+    banner("14. TOLERANCE SIMULATOR vs MAIN SIMULATOR, UNDER PERTURBATION")
+    import copy
+    import tolerance_sim as tsim
+    import datasheet
+    import failure_analysis as fa_mod
+
+    preset = next(p for p in preset_defs.PRESET_ROCKETS
+                  if p["name"] == "SystemsGo Goddard Baseline")
+    fit = dict(preset["engine"])
+    fuel = FUELS[fit.pop("fuel", "HTPB")]
+    fit["n_holes"] = int(fit.get("n_holes", 1))
+    eng = Engine(fuel=fuel, **fit)
+    _rows, _summary, airframe, site, mass, system, _points = fly_preset(preset)
+    cd = preset["airframe"].get("cd_override") or None
+
+    def fresh_recovery():
+        spec = preset["recovery_spec"]
+        if spec.get("kind") == "single":
+            return recovery_mod.RecoverySystem.single_deploy(
+                diameter_m=spec["main_d"])
+        return recovery_mod.RecoverySystem.dual_deploy(
+            drogue_d=spec.get("drogue_d", 0.9), main_d=spec["main_d"],
+            main_altitude_m=spec.get("main_alt", 300))
+
+    # The box the app builds: three times the baseline apogee, Mach 4.
+    base_burn = tsim.burn_engine(eng)
+    probe = tsim.build_tables(airframe, site, 50000.0)
+    base_out = tsim.fly(tsim.Conditions(
+        airframe=airframe, site=site, recovery=fresh_recovery(),
+        mass_props=mass, tables=probe, cd_override=cd), base_burn)
+    ceiling = max(1000.0, base_out.apogee_m * 3.0)
+    print("   baseline %.0f m, so the cached box is %.0f m and Mach 4.\n"
+          % (base_out.apogee_m, ceiling))
+
+    worst, worst_label, left_box = 0.0, "", 0
+    for key in tsim.SCALES:
+        for factor in (0.5, 2.0, 3.0):
+            burn = tsim.burn_engine(eng, scales={key: factor})
+            if not burn.ok():
+                continue
+            tables = tsim.build_tables(airframe, site, ceiling)
+            out = tsim.fly(tsim.Conditions(
+                airframe=airframe, site=site, recovery=fresh_recovery(),
+                mass_props=mass, tables=tables, cd_override=cd), burn)
+            # The main model has to fly the SAME rocket: a perturbed burn
+            # consumes a different propellant mass, and comparing against the
+            # unperturbed figure measures this harness, not the simulators.
+            mp = copy.copy(mass)
+            mp.propellant_mass_kg = burn.prop_mass
+            _r, summary = flight_model.run_flight(
+                list(zip(burn.t, burn.thrust)), airframe, site,
+                fresh_recovery(), mp, cd_override=cd)
+            if summary["apogee_ft"] <= 0:
+                continue
+            err = abs(out.apogee_ft - summary["apogee_ft"]) / summary["apogee_ft"]
+            if tables.misses["air"] or tables.misses["cd"]:
+                left_box += 1
+            if err > worst:
+                worst, worst_label = err, "%s x%.1f" % (key, factor)
+
+    check("  every knob agrees at x0.5, x2 and x3", worst <= 0.01,
+          "worst %.3f%% (%s), limit 1%%" % (worst * 100, worst_label))
+    check("  and some of those trials really did leave the cached box",
+          left_box > 0,
+          "%d trial(s) fell back to the exact atmosphere and drag" % left_box)
+
+    # The box has to be sized by the APP's path, not just by a test that
+    # hands prepare() a number. find_tolerances() is the only entry point the
+    # Tolerances tab uses, and it called prepare() with no argument - so every
+    # sweep built a 9 km box from the 3,000 m default while this harness,
+    # which passed a real apogee, saw a correctly sized one. A check that only
+    # ever exercises the harness path cannot catch that.
+    import tolerances as tol_mod
+    ctx_probe = tol_mod.FlightContext(
+        airframe=airframe, site=site, recovery=fresh_recovery(),
+        mass_props=mass, vehicle=fa_mod.VehicleConfig(), cd_override=cd)
+    ctx_probe.vehicle.goals = []
+    ctx_probe.vehicle.target_altitude_ft = 1000.0
+    ref_ft = base_out.apogee_ft
+    tol_mod.find_tolerances(eng, ctx_probe, knobs=[],
+                            reference_apogee_ft=ref_ft)
+    built = ctx_probe.conditions.tables.z_top if ctx_probe.conditions else 0.0
+    want = ref_ft / tsim.FT_PER_M * 3.0
+    check("  the app's own entry point sizes the box from the real flight",
+          built >= want * 0.99,
+          "%.0f m built, %.0f m wanted for a %.0f ft baseline"
+          % (built, want, ref_ft))
+
+    # The sheet a trial opens has to answer the same questions as the
+    # Simulation tab's, or the page disagrees with the main model in the one
+    # place somebody goes to read the detail.
+    cap_burn = tsim.burn_engine(eng, capture=True)
+    cap_tables = tsim.build_tables(airframe, site, ceiling)
+    cap = tsim.fly(tsim.Conditions(
+        airframe=airframe, site=site, recovery=fresh_recovery(),
+        mass_props=mass, tables=cap_tables, cd_override=cd),
+        cap_burn, capture=True)
+    frows = datasheet.flight_rows(cap.rows)
+    erows = datasheet.engine_rows(cap_burn.as_result())
+    fcols = [c[0] for c in datasheet.FLIGHT_COLUMNS]
+    ecols = [c[0] for c in datasheet.ENGINE_COLUMNS]
+    f_have = len([k for k in fcols if k in frows[0]]) if frows else 0
+    e_have = len([k for k in ecols if k in erows[0]]) if erows else 0
+    # Six flight columns are the drag buildup (friction/base/wave/fins and
+    # Reynolds) plus sim_version. The cached Cd is a scalar, so the breakdown
+    # is genuinely not computed here, and sim_version is the MAIN model's
+    # marker which this simulator deliberately does not import.
+    check("  a trial's flight sheet fills the columns it can", f_have >= 75,
+          "%d of %d" % (f_have, len(fcols)))
+    check("  a trial's engine sheet fills every column", e_have == len(ecols),
+          "%d of %d" % (e_have, len(ecols)))
+
+    # The one that was silently zero: the column spec reads
+    # angle_from_vertical_deg, and this simulator used to emit "tilt_deg".
+    tilts = [abs(r.get("angle_from_vertical_deg", 0.0)) for r in frows]
+    check("  the Tilt column is actually filled", any(x > 1e-6 for x in tilts),
+          "max %.2f deg over %d samples" % (max(tilts) if tilts else 0.0,
+                                            len(tilts)))
+    # Derived columns have to be right, not merely present. The cumulative
+    # impulse at the last sample is the motor's total impulse by definition.
+    if erows:
+        last = erows[-1]["impulse_ns"]
+        err = abs(last - cap_burn.total_impulse) / cap_burn.total_impulse
+        check("  and the derived columns reconstruct the motor", err <= 0.001,
+              "cumulative impulse %.0f N.s vs %.0f reported (%.3f%%)"
+              % (last, cap_burn.total_impulse, err * 100))
+
+
 def validate_tolerances():
     """The tolerance search, against the properties that make it meaningful.
 
@@ -1591,6 +1730,7 @@ def main():
     validate_mass_components()
     validate_motor_designer()
     validate_tolerances()
+    validate_tolerance_agreement()
     validate_duty_resolution()
     validate_ui_geometry()
     validate_engine_tab_default()
