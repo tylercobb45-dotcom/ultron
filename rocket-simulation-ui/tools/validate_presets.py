@@ -1511,9 +1511,27 @@ def validate_ui_geometry():
             item = tbl.horizontalHeaderItem(col)
             if not item:
                 continue
-            need = metrics.horizontalAdvance(item.text().upper()) + 14
+            # Per LINE: a header may be wrapped onto two, and measuring the
+            # whole string flat reports a column that fits as clipped.
+            need = max(metrics.horizontalAdvance(line.upper())
+                       for line in item.text().split("\n")) + 14
             if need > tbl.columnWidth(col):
                 clipped.append(f"{tab_name}/{item.text()}")
+    # A table whose columns add up to more than its viewport scrolls
+    # sideways for ever, and the columns pushed off the right are the ones
+    # nobody scrolls to find. The Tolerances results table wanted 826 px in
+    # 721 and hid its Tolerance and Impact columns - the two it exists for.
+    overflowing = []
+    for tab_name, tbl in (("Flight Report", win.flight_report.table),
+                          ("Tolerances", win.tolerances_tab.table),
+                          ("Tolerances log", win.tolerances_tab.log)):
+        total = sum(tbl.columnWidth(c) for c in range(tbl.columnCount()))
+        room = tbl.viewport().width()
+        if total > room:
+            overflowing.append("%s %d px of %d" % (tab_name, total, room))
+    check("every table fits the width it is given", not overflowing,
+          "; ".join(overflowing) if overflowing else "no sideways scrolling")
+
     check("no table heading is clipped", not clipped,
           "; ".join(clipped[:4]) if clipped else "all headings fit")
 

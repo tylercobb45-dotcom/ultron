@@ -118,16 +118,17 @@ _GRAIN_FIELDS = [
     ("Initial port diameter (mm)", "d_port_0", 1000.0, 1,
      "Starting bore. Small ports give high oxidizer flux and fast regression "
      "(low O/F); large ports start fuel-lean."),
-    ("Regression coeff a (0 = fuel default)", "fuel_a", 1.0, 8,
+    ("Regression coeff a", "fuel_a", 1.0, 8,
      "Fuel regression law: rdot = a * G_ox^n, SI units. The tabulated value "
      "for a named fuel is a literature average; a real grain's coefficient "
      "depends on the formulation, binder, additives and how it was made, and "
-     "manufacturers do not publish it for proprietary fuels. 0 = use the "
-     "selected fuel's own value."),
-    ("Regression exponent n (0 = fuel default)", "fuel_n", 1.0, 4,
+     "manufacturers do not publish it for proprietary fuels. Leave it at 0 "
+     "to use the selected fuel's own value."),
+    ("Regression exponent n", "fuel_n", 1.0, 4,
      "Flux exponent in rdot = a * G_ox^n. Typically 0.5-0.7. Higher means "
      "the grain is more sensitive to oxidizer flux, so regression falls off "
-     "faster as the port opens up."),
+     "faster as the port opens up. Leave it at 0 to use the selected fuel's "
+     "own value."),
     ("Number of ports", "n_ports", 1.0, 0,
      "Ports burning in parallel. Multi-port grains buy burn area in a short "
      "package, at the cost of lower flux per port and leftover slivers."),
@@ -188,7 +189,13 @@ _QUANTITY_FOR = {
     "L_pre": "pre_chamber", "L_post": "post_chamber",
     "d_throat": "throat_diameter", "alpha_deg": "div_angle",
     "beta_conv_deg": "conv_angle", "erosion_rate": "erosion_rate",
-    "MW": "molar_mass", "m_dry": "dry_mass", "d_body": "body_diameter",
+    # NOT MW: molar mass is mass PER MOLE, and the field holds g/mol - which
+    # is what engine_equations.gas_constant() divides by 1000. Treating it as
+    # a mass gave it an SI base of kg, so 26 g/mol was read as 26 kg and drawn
+    # as "26000.00 g": a thousand times out, in the wrong unit. It is a plain
+    # field with the unit in its label, like gamma and the efficiencies -
+    # g/mol is universal, so there is no conversion to offer anyway.
+    "m_dry": "dry_mass", "d_body": "body_diameter",
 }
 
 

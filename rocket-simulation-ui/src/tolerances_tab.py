@@ -192,9 +192,16 @@ class TolerancesTab(QtWidgets.QWidget):
 
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(7)
+        # Wrapped onto two lines, not shortened further. Sized to their own
+        # headers on one line these seven columns wanted 826 px in a 721 px
+        # viewport, so the table always carried a horizontal scrollbar and the
+        # last column - the tolerance, which is the answer the tab exists to
+        # give - sat off the right edge. Wrapping sizes each column to its
+        # longest WORD instead of its whole title, which fits without taking a
+        # word away from any of them.
         self.table.setHorizontalHeaderLabels(
-            ["Component", "What was varied", "As modelled",
-             "Lowest OK", "Highest OK", "Tolerance", "Impact"])
+            ["Component", "What was\nvaried", "As\nmodelled",
+             "Lowest\nOK", "Highest\nOK", "Tolerance", "Impact"])
         # Short headers on purpose. The full phrases needed more width than
         # the values under them, so capping those columns to fit the numbers
         # clipped their own titles to "WEST THAT WOR".
