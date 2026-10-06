@@ -326,7 +326,7 @@ PRESET_ROCKETS = [
     # scientific payload to 50,000 ft, flown at White Sands. Nothing in the
     # measured-curve library is that motor, so this one was sized here against
     # the app's own engine and trajectory models and then graded by the same
-    # Flight Report the user sees. It reaches 53,459 ft with no CRITICAL check
+    # Flight Report the user sees. It reaches 54,004 ft with no CRITICAL check
     # outstanding - see docs/VALIDATION.md for the three CAUTIONs that remain
     # and why they are inherent to a nitrous blowdown flying this profile.
     #
@@ -347,7 +347,7 @@ PRESET_ROCKETS = [
         name="SystemsGo Goddard Baseline",
         description=("SystemsGo Goddard level: a scientific payload to 50,000 "
                      "ft. 184 mm carbon airframe, 78.6 kN.s nitrous/HTPB "
-                     "hybrid, Mach 1.68. Reaches 53,459 ft."),
+                     "hybrid, Mach 1.77. Reaches 54,004 ft."),
         reference=("Motor and airframe sized in this repository against the "
                    "Goddard brief; no measured curve of this class exists "
                    "here. Modelled, not flown."),

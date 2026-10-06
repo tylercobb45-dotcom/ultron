@@ -2,7 +2,7 @@
   "version": "2.0",
   "name": "HyperTEK K240 Altitude",
   "description": "98 mm airframe on a real K240. Long 6 s burn, modest thrust-to-weight, still comfortably subsonic.",
-  "created": "Thu Sep 24 17:31:07 2026",
+  "created": "Tue Oct 06 14:30:21 2026",
   "reference": "Motor: thrustcurve.org Hypertek_835CC125J-K240 (measured)",
   "rocket_parameters": {
     "mass": "5.789",

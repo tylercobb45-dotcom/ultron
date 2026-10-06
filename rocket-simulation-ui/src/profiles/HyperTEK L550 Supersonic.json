@@ -2,7 +2,7 @@
   "version": "2.0",
   "name": "HyperTEK L550 Supersonic",
   "description": "76 mm minimum-diameter carbon airframe on a real L550. Thrust-to-weight near 14, goes supersonic on the way up.",
-  "created": "Thu Sep 24 17:31:07 2026",
+  "created": "Tue Oct 06 14:30:21 2026",
   "reference": "Motor: thrustcurve.org Hypertek_1685CCRGL-L550 (measured)",
   "rocket_parameters": {
     "mass": "5.852",

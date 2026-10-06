@@ -2,7 +2,7 @@
   "version": "2.0",
   "name": "HyperTEK J317 Sport",
   "description": "98 mm sport airframe on a real J317 hybrid. Subsonic, low altitude, high thrust-to-weight - the easy case.",
-  "created": "Thu Sep 24 17:30:58 2026",
+  "created": "Tue Oct 06 14:30:20 2026",
   "reference": "Motor: thrustcurve.org Hypertek_835CC172J-J317 (measured)",
   "rocket_parameters": {
     "mass": "6.212",

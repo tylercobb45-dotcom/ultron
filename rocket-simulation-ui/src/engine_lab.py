@@ -273,7 +273,7 @@ _PRESETS = {
         rocket=dict(m_dry=20.0, Cd_body=1.625, d_body=0.14),
     ),
     # Sized here against the SystemsGo Goddard brief - a payload to 50,000 ft.
-    # 78.6 kN.s, 21.4 s, Isp 191 s; the vehicle it flies reaches 53,459 ft.
+    # 78.6 kN.s, 21.4 s, Isp 191 s; the vehicle it flies reaches 54,004 ft.
     "Goddard baseline (50k)": dict(
         d_tank=0.1708, L_tank=2.60, fill_frac=0.85, T_tank_0=298,
         n_holes=12, d_hole=0.0026, Cd_inj=0.75, fuel="HTPB",

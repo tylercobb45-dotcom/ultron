@@ -2,7 +2,7 @@
   "version": "2.0",
   "name": "hybrid_sim Reference Flight",
   "description": "The configuration hybrid_sim is validated against, with an independent spreadsheet reference for the whole flight: 9,292 ft, Mach 0.57. Transonic-adjacent. A reference case, not a Goddard-level vehicle.",
-  "created": "Thu Sep 24 17:31:07 2026",
+  "created": "Tue Oct 06 14:30:21 2026",
   "reference": "Engine and flight: hybrid_sim excel_ref.json (independent spreadsheet model)",
   "rocket_parameters": {
     "mass": "26.049",
