@@ -7,8 +7,9 @@ what matched, what did not, and why. Run it yourself with
 python tools/validate_presets.py
 ```
 
-**97 / 97 checks pass.** Nothing here is asserted without a number behind it,
-and every disagreement is explained or flagged as unexplained.
+**163 / 163 checks pass**, alongside `python hybrid_sim/verify.py` at 31 / 31.
+Nothing here is asserted without a number behind it, and every disagreement is
+explained or flagged as unexplained.
 
 ---
 
@@ -19,7 +20,8 @@ and every disagreement is explained or flagged as unexplained.
 | HyperTEK J317, K240, L550 thrust curves | **Measured** test-stand data | `thrust_curves/csv/`, from thrustcurve.org, contributed by John Coker. Source URLs are in each file header. |
 | HyperTEK I260 performance | Published certification figures | Carried in `hybrid_sim/validation.py` |
 | HyperTEK hardware dimensions | **Manufacturer-published** | Motor designations, vendor product listings and the HyperTEK manual introduction — see below |
-| SystemsGo Goddard flight | An **independent spreadsheet model** by another author | `hybrid_sim/excel_ref.json` |
+| hybrid_sim reference flight | An **independent spreadsheet model** by another author | `hybrid_sim/excel_ref.json` |
+| SystemsGo Goddard Baseline | **Nothing** — the motor and airframe were sized here against the competition brief. Modelled, not measured; graded by the same Flight Report the user sees. | `src/presets.py` |
 | ISA-1976 atmosphere | Published standard-atmosphere tables | Base pressures at each layer boundary |
 
 ---
@@ -162,8 +164,18 @@ is long and shallow, so the cutoff threshold moves the answer:
 
 ## 2. Flight model vs an independent implementation
 
-The Goddard baseline has a full independent reference — a spreadsheet model by
-another author, covering the whole flight.
+The **hybrid_sim reference flight** has a full independent reference — a
+spreadsheet model by another author, covering the whole flight.
+
+This preset was called "SystemsGo Goddard Baseline" until September 2026. It
+never was a Goddard-level vehicle: SystemsGo's Goddard level asks for a
+scientific payload at **50,000 ft**, and this configuration reaches 9,292 ft.
+The name was doing real damage — it implied the app shipped a competition
+baseline that missed its own mission by a factor of five. It is now named for
+what it is, a validation fixture, and the Goddard name belongs to the vehicle
+in section 3a that actually flies the brief. **Nothing about this
+configuration changed**; renaming it is what let the real baseline exist
+without destroying the only end-to-end flight reference in the repository.
 
 Flown with **the same drag coefficient the reference used (Cd = 1.625)**:
 
@@ -200,7 +212,7 @@ drag coefficient dominates the altitude answer.** Getting the trajectory
 integration right buys you about 1%. Getting Cd wrong by 3× costs you a factor
 of two in altitude.
 
-The Goddard preset therefore ships with the reference's Cd = 1.625 in the
+The reference preset therefore ships with the reference's Cd = 1.625 in the
 "Measured Cd override" field on the Vehicle tab, so it reproduces its
 documented flight. Clear that field to zero and the model falls back to its
 own drag buildup.
@@ -213,24 +225,117 @@ own drag buildup.
 |---|---|---|---|---|---|
 | HyperTEK J317 Sport | 3,336 ft | 0.40 | 6.8 | 19.8 m/s | 699 m |
 | HyperTEK K240 Altitude | 5,792 ft | 0.56 | 5.0 | 16.1 m/s | 339 m |
-| SystemsGo Goddard Baseline | 9,172 ft | 0.57 | 4.2 | 20.7 m/s | 0 m |
+| hybrid_sim Reference Flight | 9,172 ft | 0.57 | 4.2 | 20.7 m/s | 0 m |
+| SystemsGo Goddard Baseline | 54,004 ft | **1.77** | 5.2 | 31.8 m/s | 1,094 m |
 | HyperTEK L550 Supersonic | 15,917 ft | **1.27** | 13.3 | 31.3 m/s | 1,516 m |
 
-Three subsonic cases and one supersonic, spanning 3,000 to 16,000 ft and
+Three subsonic cases and two supersonic, spanning 3,000 to 54,000 ft and
 4 to 13 g.
 
-These moved twice. They rose 3-4% when double-counted fin friction was fixed,
+The four measured-curve presets moved twice. They rose 3-4% when double-counted fin friction was fixed,
 then fell about 0.2% when `total_impulse` started counting the lead-in segment
 the model was already flying - the derived Isp had been 3.4% low, so
-propellant ran out at 4.90 s while thrust continued to 6.41 s. The Goddard
+propellant ran out at 4.90 s while thrust continued to 6.41 s. The reference-flight
 figure is unaffected by the second change because its curve starts at t = 0
 and so has no lead-in.
 
 On the first of those: skin friction on the fins was
 being charged twice, once in the body's wetted area and again in the fin term,
-inflating the friction component by about 17%. The Goddard figure is unchanged
+inflating the friction component by about 17%. The reference-flight figure is unchanged
 because it flies on a measured-Cd override rather than the buildup, which is
 exactly the behaviour you would expect from that fix.
+
+## 3a. The Goddard baseline against its brief
+
+Every other section of this document checks the **model** against data from
+outside it. This one checks a **design** against its requirement, which is a
+different kind of claim and is kept separate for that reason.
+
+SystemsGo's Goddard level asks for a scratch-built vehicle carrying a
+scientific payload to **50,000 ft**, flown at White Sands. No measured thrust
+curve of that class ships here, so the motor and the airframe were sized in
+this repository — and then graded by the same Flight Report a user sees, with
+no check relaxed to let it pass.
+
+| | |
+|---|---|
+| Airframe | 184 mm carbon/epoxy, 5.76 m overall, Von Karman nose |
+| Fins | 4 × G10, 130 mm span, 9 mm thick |
+| Motor | N2O/HTPB hybrid, 78.6 kN·s, 21.4 s, Isp 191 s |
+| Tank | 170.8 mm × 2.60 m, 7075-T6, 85% fill at 298 K |
+| Grain | 600 mm, 90 mm initial port in a 170.8 mm bore |
+| Nozzle | 42 mm throat, ε = 6.5, graphite |
+| Mass | 56.8 kg dry (14 placed parts) + 41.9 kg propellant = 98.7 kg |
+| Launch | 1,216 m elevation, 10 m rail, 4 m/s wind |
+| **Result** | **54,004 ft**, Mach 1.77, 5.2 g, rail exit 32.8 m/s |
+
+**No CRITICAL check is outstanding.** The margins the design was actually
+traded against:
+
+| Check | Value | Limit |
+|---|---|---|
+| P-06 fuel grain burn-through | 11.7 mm web left (29%) | ≥ 15% |
+| P-07 oxidiser mass flux | 472 kg/m²s peak | ≤ 500 |
+| W-01 static stability | 2.90 cal minimum | 1.5 – 4.0 |
+| R-01 rail exit velocity | 32.8 m/s | ≥ 20 m/s |
+| S-05 fin flutter | SF 3.60 | ≥ 1.0 |
+| R-04 landing descent rate | 5.7 m/s | ≤ 6 m/s |
+
+### The two trades that set the motor
+
+Neither was free, and both are worth understanding before editing any number
+in the preset.
+
+**Port diameter is oxidiser flux against fuel web.** Opening the port drops
+peak flux (P-07), because flux is mass flow per unit port area — but it also
+thins the web that P-06 wants still present at burnout, and it thins it faster
+than the lower flux saves it. 90 mm in a 170.8 mm bore is where both clear:
+472 kg/m²s with 29% of the web left. At 80 mm the flux runs to 555; at 150 mm
+the grain burns through.
+
+**Injector area is thrust-to-weight against injector stiffness.** Opening the
+orifices raises mass flow and so liftoff thrust (P-01), and simultaneously
+drops the injector pressure drop that stops the feed system coupling to the
+chamber (P-03). At 2.8 mm orifices P-01 reaches its 5:1 convention and flux
+goes to 528 — over the limit. The design keeps 2.6 mm and accepts P-01 at
+4.70:1, because **the flux limit is physical** (it is the range the HTPB
+regression data is valid over, and where the flame stays attached) while the
+5:1 thrust-to-weight is a convention standing in for rail-departure stability
+— which R-01 measures directly, and which passes at 32.8 m/s.
+
+### The three CAUTIONs that remain, and why they are not defects
+
+| Check | Value | Why it stays |
+|---|---|---|
+| P-09 flame temperature | 3,571 K | N2O/HTPB at an efficient mixture ratio simply burns this hot. The 2,800 K figure is a service temperature for metals; the throat is graphite, which sublimes at ~3,900 K rather than melting. The reference flight cautions identically at 3,557 K. |
+| P-12 tank thermal collapse | 219 K minimum | Self-pressurising nitrous cools as it empties. Avoiding this needs a pressure-fed or heated tank, which is a different feed system, not a better number. Still 37 K above the 182 K freezing point. |
+| S-01 maximum dynamic pressure | 112 kPa | Reaching 50,000 ft on a 21 s burn means Mach 1.77 in thick air. The 80 kPa figure is a caution threshold; the critical one is 150 kPa. |
+
+A fourth, **P-00 "engine source: modelled, not flown"**, appears when the
+preset is loaded in the app. It is correct and deliberate: this motor has
+never been on a test stand, and the report says so rather than letting a
+modelled curve pass as a measured one.
+
+### What would make this wrong
+
+The honest limits of the claim:
+
+- The drag is this model's own buildup, not a measurement. Section 2 shows a
+  3.5× disagreement between a buildup and one measured Cd on a different
+  vehicle. **Drag dominates the altitude answer**, so treat 54,004 ft as what
+  this model says, not as a prediction of a flight.
+- The dry mass is a parts list with engineering estimates for the non-
+  structural items (avionics 1.8 kg, recovery 4.6 kg, plumbing 2.6 kg). A team
+  building this would substitute their own and should expect the altitude to
+  move.
+- The motor is modelled. The regression coefficients are literature values for
+  HTPB, not a fit to this grain.
+
+`tools/validate_presets.py` section 3a re-checks every number in the tables
+above on each run, and each of those checks has been mutation-tested to
+confirm it can fail.
+
+---
 
 ## 4. Physical bounds
 

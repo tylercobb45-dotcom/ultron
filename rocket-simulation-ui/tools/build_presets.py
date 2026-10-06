@@ -8,9 +8,11 @@ measured on a test stand.
 
 The airframes are representative of what each motor class is normally flown
 in - they are not claimed to be any specific named vehicle - except for the
-SystemsGo Goddard baseline, which is the configuration the vendored
+hybrid_sim reference flight, which is the configuration the vendored
 hybrid_sim package is validated against and which has an independent
-spreadsheet reference to compare with.
+spreadsheet reference to compare with, and the SystemsGo Goddard baseline,
+whose motor was sized in this repository because no measured curve of that
+class ships here.
 
 Run:  python tools/build_presets.py
 """
@@ -78,7 +80,7 @@ def _fmt(value, factor, decimals=None):
 
 def engine_section(spec):
     from engine_lab import _PRESETS
-    base = dict(_PRESETS["Goddard baseline"])
+    base = dict(_PRESETS["hybrid_sim reference"])
     base.pop("rocket", None)
     base.update(spec)
     fuel = base.pop("fuel", "HTPB")
@@ -114,10 +116,16 @@ def airframe_section(spec, recovery):
         decimals = {"fin_count": 0, "cd_override": 3, "wind_shear_exp": 3}.get(key)
         fields[key] = _fmt(float(defaults[key]), factor, decimals)
     return {
+        # NO "_units" marker here on purpose: the fields above are written in
+        # DISPLAY units by _fmt (metres x 1000 and so on), which is the format
+        # apply_config reads when the marker is absent. Claiming "storage"
+        # would tell the loader these numbers are already SI and a 184 mm body
+        # would load as 184 m.
         "fields": fields,
         "nose_shape": spec.get("nose_shape", "Tangent Ogive"),
         "fin_profile": spec.get("fin_profile", "Rounded leading"),
         "recovery": recovery,
+        "mass_components": [dict(c) for c in spec.get("mass_components") or []],
     }
 
 

@@ -624,7 +624,15 @@ def find_tolerances(base_engine: Engine, ctx: FlightContext, knobs=None,
     knobs = list(knobs if knobs is not None else default_knobs())
     run = ToleranceRun(goals=goal_list(ctx.vehicle))
     if ctx.conditions is None:
-        ctx.prepare()
+        # Size the simulator's cached box from the flight we are measuring
+        # against, not from the 3,000 m placeholder. The caller already knows
+        # the baseline apogee - it passes it in for the agreement line - and
+        # nothing in the app was handing it to prepare(), so every sweep of a
+        # rocket that goes higher than 3 km built a 9 km box. Only the
+        # validation harness passed a real number, which meant the check was
+        # exercising a path the app never took.
+        ctx.prepare(expected_apogee_m=(reference_apogee_ft / sim.FT_PER_M)
+                    if reference_apogee_ft > 0 else 3000.0)
 
     counter = {"n": 0}
 
