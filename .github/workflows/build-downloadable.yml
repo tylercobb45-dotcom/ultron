@@ -68,6 +68,12 @@ jobs:
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-cursor0
 
       - name: Install dependencies
+        # bash on every runner, Windows included. PowerShell is the default
+        # shell there, and GitHub only propagates the LAST command's exit
+        # code out of a pwsh block - so a failed requirements install would
+        # be hidden by the pyinstaller install succeeding after it. The bash
+        # default carries -e, so the first failure stops the step.
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r rocket-simulation-ui/requirements.txt
@@ -75,6 +81,16 @@ jobs:
 
       - name: Run the physics test suites
         # Never ship a build whose numbers have not been checked.
+        #
+        # shell: bash is what makes that true on Windows, and it was not
+        # always here. PowerShell is the default shell on a Windows runner
+        # and GitHub ends a pwsh block with `exit $LASTEXITCODE`, which is
+        # the exit code of the LAST line only. validate_presets.py failing
+        # was therefore masked by verify.py passing on the line after it:
+        # v1.5.0 built, released and published a zip with three failing
+        # checks, and this step reported success. bash defaults to -e, so
+        # the first failure stops the step and the build.
+        shell: bash
         working-directory: rocket-simulation-ui
         run: |
           python tools/validate_presets.py

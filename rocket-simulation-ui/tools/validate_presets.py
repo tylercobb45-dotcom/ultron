@@ -26,6 +26,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import warnings
@@ -1624,6 +1625,270 @@ def validate_ui_geometry():
     app.processEvents()
 
 
+# Windows draws this UI in Segoe UI, and at the 125% display scaling that a
+# great many Windows laptops ship with, every width in it comes out about a
+# quarter larger than it does here. Neither is reachable from Linux by asking
+# for a different font family, but both are reachable by scaling the point
+# sizes in the stylesheet, which is the only place this app sets them.
+#
+# This is the check that was missing. v1.5.0 was built and released with
+# three table geometry failures that appeared only on the Windows runner -
+# the Tolerances table asking for 888 px in 803, the Flight Report's Category
+# heading clipped, its Check column down to 114 px against a 150 px floor -
+# and all three passed here, because the Linux font is narrow enough to hide
+# every one of them.
+FONT_STRESS = 1.25
+
+
+def validate_ui_geometry_wide_font():
+    """The same tables, measured in a font a quarter wider.
+
+    A layout that only fits in the font it was tuned against is not a
+    layout. Everything measured here is measured again at FONT_STRESS, and
+    the two facts that have to survive are the useful ones: no table asks
+    for more room than it has, and no column is narrower than its own
+    heading.
+    """
+    banner("11b. UI GEOMETRY IN A WIDER FONT (Windows / 125% scaling)")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        from PyQt5.QtGui import QFontMetrics
+        import theme as app_theme
+        import main as app_main
+        import report_tab
+    except Exception as exc:
+        check("UI geometry in a wider font", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+
+    # Scale every point size in the stylesheet. Setting the application font
+    # does nothing here: the stylesheet names a size, and a stylesheet rule
+    # beats the widget font.
+    original = app_theme.stylesheet
+    before = app.styleSheet()
+
+    def wider():
+        return re.sub(r"font-size:\s*([0-9.]+)pt",
+                      lambda m: "font-size: %gpt" % (float(m.group(1))
+                                                     * FONT_STRESS),
+                      original())
+
+    app_theme.stylesheet = wider
+    try:
+        win = app_main.RocketSimulationUI()
+        win.show()
+        for _ in range(4):
+            app.processEvents()
+        with open(os.path.join(ROOT, "src", "profiles",
+                               "hybrid_sim Reference Flight.json")) as fh:
+            win.apply_configuration(json.load(fh))
+        app.processEvents()
+        win.start_simulation()
+        for _ in range(6):
+            app.processEvents()
+
+        W, H = SMALL_SCREEN
+        pages = []
+        for i in range(win.tabs.count()):
+            win.tabs.setCurrentIndex(i)
+            for _ in range(3):
+                app.processEvents()
+            pages.append(win.tabs.widget(i))
+        for page in pages:
+            page.setParent(None)
+            page.resize(W - 20, H - 80)
+            page.show()
+            for _ in range(4):
+                app.processEvents()
+
+        tables = (("Flight Report", win.flight_report.table),
+                  ("Tolerances", win.tolerances_tab.table),
+                  ("Tolerances log", win.tolerances_tab.log))
+
+        width = win.flight_report.table.columnWidth(3)
+        check("  Check column still readable",
+              width >= report_tab.CHECK_MIN_PX,
+              f"{width} px, floor {report_tab.CHECK_MIN_PX} px")
+
+        overflowing = []
+        for name, tbl in tables:
+            total = sum(tbl.columnWidth(c) for c in range(tbl.columnCount()))
+            room = tbl.viewport().width()
+            if total > room:
+                overflowing.append("%s %d px of %d" % (name, total, room))
+        check("  every table still fits the width it is given",
+              not overflowing,
+              "; ".join(overflowing) if overflowing
+              else "no sideways scrolling")
+
+        clipped = []
+        for name, tbl in tables + (("Engine Designer",
+                                    win.engine_designer_tab.spec),):
+            metrics = QFontMetrics(tbl.horizontalHeader().font())
+            for col in range(tbl.columnCount()):
+                item = tbl.horizontalHeaderItem(col)
+                if not item:
+                    continue
+                need = max(metrics.horizontalAdvance(line.upper())
+                           for line in item.text().split("\n")) + 14
+                if need > tbl.columnWidth(col):
+                    clipped.append("%s/%s" % (name, item.text()))
+        check("  no heading clipped in the wider font", not clipped,
+              "; ".join(clipped[:4]) if clipped else "all headings fit")
+
+        win.close()
+        app.processEvents()
+    finally:
+        # Section 12 measures button widths with the real stylesheet. Leaving
+        # the scaled one installed would have it grading the wrong numbers.
+        app_theme.stylesheet = original
+        app.setStyleSheet(before)
+        app.processEvents()
+
+
+def validate_table_fitter():
+    """The fitter's guarantee, on a table built to break it.
+
+    A header carries a minimum section size that the fitter does not choose
+    and cannot see in the widths it computes: ask for a narrower column and
+    Qt quietly hands back the minimum instead. The totals then come out
+    above the budget, and the column left to absorb the leftovers - the
+    description, the one that says what the row is about - is handed less
+    than its own heading needs and clips.
+
+    That is a six pixel bug, it clipped a real heading, and no table in the
+    app reaches it any more now that the Tolerances panel is capped. So it
+    is cornered here instead, on a table whose widths are measured at
+    runtime rather than written down, since every number involved is a font
+    metric.
+    """
+    banner("11c. THE TABLE FITTER HONOURS A MINIMUM IT DID NOT CHOOSE")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import table_fit
+    except Exception as exc:
+        check("table fitter", True,
+              f"skipped - no Qt available ({type(exc).__name__})")
+        return
+    hook = sys.excepthook
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    sys.excepthook = hook
+
+    probe = QtWidgets.QTableWidget()
+    probe.setColumnCount(5)
+    probe.setHorizontalHeaderLabels(["A", "Description", "B", "C", "D"])
+    # Well above what the one-letter columns would ask for, so the minimum -
+    # not the content and not the heading - is what decides their width.
+    probe.horizontalHeader().setMinimumSectionSize(80)
+    probe.setRowCount(1)
+    for col, text in enumerate(["1", "what the row is about", "up", "1.250",
+                                "a value long enough to leave real slack "
+                                "in this column and nowhere else"]):
+        probe.setItem(0, col, QtWidgets.QTableWidgetItem(text))
+    probe.show()
+    app.processEvents()
+
+    # Width measured, not chosen: just enough for every heading and the
+    # header minimum, and less than the contents want. Writing a pixel count
+    # here would be tuning the test to one platform's font, which is the
+    # mistake the whole section exists to catch.
+    floors = [max(table_fit.header_need(probe, c),
+                  probe.horizontalHeader().minimumSectionSize())
+              for c in range(5)]
+    probe.resize(sum(floors) + 8 + probe.verticalHeader().width() + 4, 120)
+    app.processEvents()
+
+    table_fit.fit_columns(probe, stretch_col=1)
+    app.processEvents()
+
+    total = sum(probe.columnWidth(c) for c in range(5))
+    room = probe.viewport().width()
+    need = table_fit.header_need(probe, 1)
+    got = probe.columnWidth(1)
+    check("  room enough for the headings, and no more",
+          room >= sum(floors), "%d px of viewport, headings need %d"
+          % (room, sum(floors)))
+    check("  the columns fit and the description keeps its heading",
+          total <= room and got >= need,
+          "%d px of %d, description %d px against %d needed"
+          % (total, room, got, need))
+    probe.close()
+    app.processEvents()
+
+
+def validate_workflow_reports_failures():
+    """A test step that cannot fail the build is not a test step.
+
+    The `build` job runs on a Windows runner, where the default shell is
+    PowerShell, and GitHub closes a pwsh block with `exit $LASTEXITCODE` -
+    the exit code of the LAST line in the block, and nothing else. So
+
+        run: |
+          python tools/validate_presets.py
+          python hybrid_sim/verify.py
+
+    reported success whenever verify.py passed, whatever validate_presets.py
+    had just done. That is not hypothetical: v1.5.0 was built, released and
+    published with three failing checks under a green tick, and the step
+    above it was commented "Never ship a build whose numbers have not been
+    checked". Declaring `shell: bash` fixes it, because GitHub's bash
+    default carries -e and the first failure ends the step.
+    """
+    banner("16. THE BUILD WORKFLOW CAN ACTUALLY FAIL")
+    path = os.path.join(os.path.dirname(ROOT), ".github", "workflows",
+                        "build-downloadable.yml")
+    if not os.path.exists(path):
+        check("build workflow found", False, path)
+        return
+    text = open(path, encoding="utf-8").read()
+
+    # Steps of the `build` job only: it is the one with a Windows runner in
+    # its matrix. The release job is ubuntu-only.
+    start = text.index("\n  build:")
+    end = text.index("\n  release:")
+    body = text[start:end]
+    check("  the build job is the one that runs on Windows",
+          "windows" in body, "matrix names a windows runner")
+
+    blocks = re.split(r"\n      - (?=name:|uses:)", body)[1:]
+    # If the file is ever reindented this finds nothing, and a check that
+    # finds nothing must fail rather than pass quietly.
+    check("  its steps can be read", len(blocks) >= 5,
+          "%d steps parsed" % len(blocks))
+
+    unguarded = []
+    for block in blocks:
+        if not re.search(r"^        run: \|", block, re.M):
+            continue                      # single-line run, or an action
+        if re.search(r"runner\.os == 'Linux'", block):
+            continue                      # never runs under PowerShell
+        if re.search(r"^        shell: ", block, re.M):
+            continue
+        name = re.match(r"name: (.+)", block)
+        unguarded.append(name.group(1).strip() if name else "unnamed step")
+    check("  every multi-line Windows step declares a shell",
+          not unguarded,
+          "; ".join(unguarded) if unguarded
+          else "all multi-line steps pinned to bash")
+
+    # And the suites specifically: this is the step whose silence shipped a
+    # broken release.
+    tests = [b for b in blocks if "validate_presets.py" in b]
+    check("  the test step is one of them", len(tests) == 1,
+          "%d steps run the suites" % len(tests))
+    if tests:
+        check("  the test step stops on the first failing suite",
+              re.search(r"^        shell: bash", tests[0], re.M) is not None,
+              "shell: bash" if re.search(r"^        shell: bash", tests[0],
+                                         re.M) else "no shell declared")
+
+
 def validate_engine_tab_default():
     """The Engine tab's dropdown must name the motor its fields actually hold.
 
@@ -1902,8 +2167,11 @@ def main():
     validate_tolerance_agreement()
     validate_duty_resolution()
     validate_ui_geometry()
+    validate_ui_geometry_wide_font()
+    validate_table_fitter()
     validate_shared_units()
     validate_engine_tab_default()
+    validate_workflow_reports_failures()
     validate_windows_scripts()
 
     banner("SUMMARY")

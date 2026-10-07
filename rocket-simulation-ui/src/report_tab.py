@@ -21,6 +21,7 @@ from pathlib import Path
 
 from PyQt5 import QtWidgets, QtGui, QtCore
 import theme
+import table_fit
 import graphs_tab
 import portable_paths
 import unit_fields
@@ -648,39 +649,16 @@ class FlightReportWidget(QtWidgets.QWidget):
                     font.setBold(True)
                     item.setFont(font)
                 self.table.setItem(row, col, item)
-        self.table.resizeColumnsToContents()
-        # Cap the free-text columns before letting "Check" stretch. Sizing
-        # every column to its contents first gives Measured and Limit whatever
-        # their longest row needs, and those rows are long - which left the
-        # Check column, the one that says WHAT was tested, stretched into
-        # nothing and showing "Apo...", "Fuel...", "Oxi...". The table is only
-        # readable if the description survives.
-        header = self.table.horizontalHeader()
-        # Caps sized from the width there actually is, not from a fixed
-        # number. Hard caps of 210 px each on Measured and Limit are fine on
-        # a wide screen and ruinous on a laptop: at 1366x768 the table is
-        # 837 px, the fixed columns take all of it, and "Check" - the column
-        # that says WHAT was tested - stretched to 31 px and showed "A...",
-        # "F...", "...". Give that column a floor first and let the free-text
-        # columns have what is left.
-        fixed = sum(self.table.columnWidth(c) for c in (0, 1, 2, 4, 7))
-        spare = max(0, self.table.viewport().width() - fixed - CHECK_MIN_PX)
-        # Never below the column's own title. Capping to a flat 90 px shaved
-        # three pixels off "Measured" and clipped the heading - a column too
-        # narrow to say what it contains is worse than one that elides its
-        # rows, because the rows are readable in the detail pane below and
-        # the heading is not readable anywhere.
-        metrics = QtGui.QFontMetrics(self.table.horizontalHeader().font())
-        for col in (5, 6):
-            item = self.table.horizontalHeaderItem(col)
-            floor = (metrics.horizontalAdvance(item.text().upper()) + 16
-                     if item else 90)
-            cap = max(floor, min(210, spare // 2))
-            if self.table.columnWidth(col) > cap:
-                self.table.setColumnWidth(col, cap)
-        if self.table.columnWidth(2) > 110:
-            self.table.setColumnWidth(2, 110)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        # Fit the columns to the room there is, re-fitting whenever the
+        # table is given a new width. "Check" takes the slack: it says WHAT
+        # was tested, and everything else on the row is a number that means
+        # nothing without it. Measured and Limit are long free text, so they
+        # are capped before Check is squeezed; their rows stay readable in
+        # the detail pane below, which a clipped heading never is.
+        table_fit.keep_fitted(
+            self.table, stretch_col=3,
+            caps={2: 110, 5: 210, 6: 210},
+            min_widths={3: CHECK_MIN_PX})
         if rep.checks:
             self.table.selectRow(0)
         self._plot(rep)

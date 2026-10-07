@@ -17,6 +17,7 @@ from PyQt5 import QtWidgets, QtCore
 
 import datasheet
 import theme
+import table_fit
 import tolerances as tol
 
 
@@ -90,6 +91,7 @@ class TolerancesTab(QtWidgets.QWidget):
 
     # ---- construction ----------------------------------------------------
     def _build_ui(self):
+        self._capping = False
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -98,7 +100,7 @@ class TolerancesTab(QtWidgets.QWidget):
         left_inner = QtWidgets.QWidget()
         # Same lesson as the Engine tab: a panel narrower than its form clips
         # the right-hand side of every row.
-        left_inner.setMinimumWidth(430)
+        left_inner.setMinimumWidth(400)
         lv = QtWidgets.QVBoxLayout(left_inner)
 
         intro = QtWidgets.QLabel(
@@ -204,7 +206,10 @@ class TolerancesTab(QtWidgets.QWidget):
             f"color:{theme.PALETTE['text']}; }}")
         outer.addWidget(self.status)
 
-        left.setMinimumWidth(455)
+        # Floor low enough that the cap below can always be honoured; the
+        # scroll area inside handles anything that does not fit.
+        left.setMinimumWidth(360)
+        self._left_panel = left
         splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
@@ -244,9 +249,9 @@ class TolerancesTab(QtWidgets.QWidget):
         # stretch for - made Stretch from the start it was handed whatever
         # was left over, which on a laptop was 64 px and clipped its own
         # title.
-        _th = self.table.horizontalHeader()
-        _th.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        _th.setStretchLastSection(True)
+        table_fit.keep_fitted(
+            self.table, stretch_col=1,
+            caps={2: 130, 3: 140, 4: 140, 5: 150, 6: 130})
         rv.addWidget(self.table, stretch=1)
 
         self.goals_label = QtWidgets.QLabel("")
@@ -278,16 +283,14 @@ class TolerancesTab(QtWidgets.QWidget):
         # Let the description take the slack and pin the rest to their
         # contents, so the column saying WHAT was varied is not the one that
         # gets squeezed to "Throat ..." while empty space sits to its right.
-        _hdr = self.log.horizontalHeader()
-        _hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        _hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
-        _hdr.setStretchLastSection(False)
+        table_fit.keep_fitted(self.log, stretch_col=1)
         lg.addWidget(self.log)
         rv.addWidget(log_group, stretch=1)
         splitter.addWidget(right)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        self._splitter = splitter
         layout.addWidget(splitter)
 
     # ---- running ---------------------------------------------------------
@@ -298,6 +301,40 @@ class TolerancesTab(QtWidgets.QWidget):
     def _request_cancel(self):
         self._cancel = True
         self.status.setText("Stopping after this flight...")
+
+    def _cap_left_panel(self):
+        """Stop the controls panel growing into the results.
+
+        Its width used to be whatever its own contents asked for, and that is
+        a font metric, not a layout: the panel is sized from a long rich-text
+        intro and a column of buttons, all of which grow with the font. At
+        125% display scaling - the default on a lot of Windows laptops - it
+        took 745 px of a 1346 px tab, leaving the results table less room
+        than its own headings needed, so the Tolerance and Impact columns
+        went off the right edge. Capped at a share of the tab instead, with
+        the scroll area inside taking care of whatever does not fit.
+        """
+        panel = getattr(self, "_left_panel", None)
+        splitter = getattr(self, "_splitter", None)
+        if panel is None or splitter is None or self._capping:
+            return
+        width = splitter.width()
+        if width <= 0:
+            return
+        cap = max(360, int(width * 0.42))
+        panel.setMaximumWidth(cap)
+        # A maximum on its own changes nothing: the splitter keeps the sizes
+        # it already worked out and only consults the child's limits when it
+        # is asked to lay out again. Hand it the split directly.
+        self._capping = True
+        try:
+            splitter.setSizes([cap, max(1, width - cap)])
+        finally:
+            self._capping = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._cap_left_panel()
 
     def _say(self, html):
         self.status.setText(html)
@@ -370,6 +407,10 @@ class TolerancesTab(QtWidgets.QWidget):
                     item.setData(QtCore.Qt.UserRole,
                                  (knob.key, float(trial.factor)))
                 self.log.setItem(row, col, item)
+            # Re-fit now there are rows: the widths worked out while the
+            # table was empty were sized from the headings alone, and the
+            # description column has to be measured against what is in it.
+            table_fit.fit_columns(self.log, stretch_col=1)
             self.log.scrollToBottom()
             self._say(f"{knob.component}: {knob.quantity} &mdash; "
                       f"{arrow} at {trial.factor * 100:.1f}% of baseline "
@@ -532,18 +573,15 @@ class TolerancesTab(QtWidgets.QWidget):
             put(5, f"{down}  /  {up}")
             put(6, "-" if r.sensitivity_pct is None
                 else f"{r.sensitivity_pct:+.1f}% apogee")
-        self.table.resizeColumnsToContents()
-        header = self.table.horizontalHeader()
-        # Cap the value columns BEFORE stretching the description. Sizing
-        # every column to its contents first gives the three number columns
-        # whatever their widest row needs, and "What was varied" - the column
-        # that says what the row is about - gets the crumbs and shows
-        # "Pressure the mod...". Capping a column that is about to be
-        # stretched, as this did, achieves nothing at all.
-        for col, cap in ((2, 130), (3, 140), (4, 140), (5, 150), (6, 130)):
-            if self.table.columnWidth(col) > cap:
-                self.table.setColumnWidth(col, cap)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        # "What was varied" takes the slack; the number columns are capped
+        # first so the column that says what the row is about does not get
+        # the crumbs. Re-fits on every resize, because these widths depend on
+        # the font and on the room there is: capped by hand to fit 721 px in
+        # the Linux font, the seven columns asked for 888 px in 803 on
+        # Windows and pushed Tolerance and Impact off the right edge.
+        table_fit.keep_fitted(
+            self.table, stretch_col=1,
+            caps={2: 130, 3: 140, 4: 140, 5: 150, 6: 130})
 
         notes = []
         for r in run.results:

@@ -35,7 +35,8 @@ REQUIRED_MODULES = [
     "engine_lab", "failure_analysis", "flight_model", "graphs_tab",
     "live_code_viewer", "mass_model", "mass_tab", "materials",
     "portable_paths", "presets", "rasp", "recovery", "report_tab",
-    "rocket_library", "sections", "simulation", "theme", "unit_fields",
+    "rocket_library", "sections", "simulation", "table_fit", "theme",
+    "unit_fields",
     "units", "utils", "vehicle_tab",
     # The vendored engine package, shipped as data AND imported.
     "hybrid_sim", "hybrid_sim.config", "hybrid_sim.engine",
