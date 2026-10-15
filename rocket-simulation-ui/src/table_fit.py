@@ -44,6 +44,16 @@ def header_need(table, col, pad=PAD):
                for line in item.text().split("\n")) + pad
 
 
+def headings_width(table, extra=28):
+    """The narrowest the table can be and still show every heading.
+
+    `extra` covers the frame, the grid and a vertical scrollbar, which sit
+    outside the viewport the columns are measured against.
+    """
+    return sum(header_need(table, col)
+               for col in range(table.columnCount())) + extra
+
+
 def fit_columns(table, stretch_col=None, caps=None, min_widths=None):
     """Size every column of `table` to fit inside the table's viewport.
 

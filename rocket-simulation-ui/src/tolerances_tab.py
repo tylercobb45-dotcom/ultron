@@ -321,7 +321,22 @@ class TolerancesTab(QtWidgets.QWidget):
         width = splitter.width()
         if width <= 0:
             return
-        cap = max(360, int(width * 0.42))
+        # A fixed share is still a guess. Give the results table at least
+        # what its own headings need and let the panel have the rest: on
+        # Windows a flat 42% left the table 749 px when Segoe UI wanted more
+        # than that for seven headings, and the column carrying the leftovers
+        # - the description - was the one that clipped.
+        # The table sits inside a group box and a layout, so the room it
+        # ends up with is less than the panel's width by whatever those
+        # take. Measure that overhead rather than allowing for it: a guess
+        # that is one pixel short still clips a heading.
+        right = self._splitter.widget(1)
+        overhead = right.width() - self.table.viewport().width()
+        if overhead < 0:
+            overhead = 40
+        needed = table_fit.headings_width(self.table) + overhead
+        cap = min(int(width * 0.42), width - needed)
+        cap = max(360, cap)
         panel.setMaximumWidth(cap)
         # A maximum on its own changes nothing: the splitter keeps the sizes
         # it already worked out and only consults the child's limits when it
