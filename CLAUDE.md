@@ -31,15 +31,17 @@ The rule is about the DELIVERABLE, not about where work gets done:
   two lines and the second one passed. Section 16 of the preset suite now
   reads the workflow back and fails if any multi-line Windows step loses its
   shell.
-- **Measure the UI in a wider font than this one.** Section 11b re-renders
-  the tables at 125%, which is what Windows display scaling does on a great
-  many laptops, and is the only reason the v1.5.0 defects are catchable from
-  here.
+- **Measure the UI where it is actually laid out.** Section 11d renders the
+  tables inside the real window at 1366 px AND at the narrowest width the app
+  allows, because that is where they break: detached pages resized to 1346 px
+  hid a Check column at 47 px and 31 px cut off every Tolerances row while the
+  suite stayed green. There is no font-scaling stress check - one was written,
+  it scaled nothing, and it was removed rather than left passing vacuously.
 
 ## Verification expectations
 
 - Both suites must pass before any commit: `python tools/validate_presets.py`
-  (216 checks) and `python hybrid_sim/verify.py` (31 checks).
+  (237 checks) and `python hybrid_sim/verify.py` (31 checks).
 - The app is PyQt5; test headless with `QT_QPA_PLATFORM=offscreen`.
 - Do not trust a static read of UI code. Several bugs here were only found by
   rendering frames and looking at them.

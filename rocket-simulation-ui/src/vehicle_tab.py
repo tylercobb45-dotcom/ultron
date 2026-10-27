@@ -98,6 +98,201 @@ _RECOVERY_PRESETS = [
 ]
 
 
+class _EjectionChargeEditor(QtWidgets.QGroupBox):
+    """Sizes the charge that has to open a bay, and the pins holding it shut.
+
+    Every term in this is known - pin shear area, bay area, bay volume, the
+    gas constant of black powder - so the panel works the sum rather than
+    offering a rule of thumb. It answers it in both directions, because both
+    get asked: how much powder shears the pins I have, and how many pins can
+    the charge I can fit actually break.
+
+    It does not replace a ground test and says so on the face of it.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("Ejection charge", parent)
+        form = QtWidgets.QFormLayout(self)
+
+        self.charge_type = QtWidgets.QComboBox()
+        self.charge_type.addItems([recovery_mod.CHARGE_BLACK_POWDER,
+                                   recovery_mod.CHARGE_CO2])
+        self.charge_type.setToolTip(
+            "Black powder burns to a hot gas and is sized from its own gas "
+            "constant. CO2 arrives cold out of a cartridge, so the same "
+            "pressure takes several times the mass - and you buy it in fixed "
+            "cartridge sizes.")
+        form.addRow("Charge:", self.charge_type)
+
+        self.bay_diameter = QtWidgets.QDoubleSpinBox()
+        self.bay_diameter.setRange(10.0, 1000.0)
+        self.bay_diameter.setDecimals(1)
+        self.bay_diameter.setValue(101.6)
+        self.bay_diameter.setToolTip(
+            "The inside diameter of the bay being pressurised. This is the "
+            "area the pressure pushes on, so it drives the whole sum.")
+        form.addRow("Bay diameter (mm):", self.bay_diameter)
+
+        self.bay_length = QtWidgets.QDoubleSpinBox()
+        self.bay_length.setRange(10.0, 5000.0)
+        self.bay_length.setDecimals(1)
+        self.bay_length.setValue(254.0)
+        form.addRow("Bay length (mm):", self.bay_length)
+
+        self.free_volume = QtWidgets.QDoubleSpinBox()
+        self.free_volume.setRange(0.0, 500000.0)
+        self.free_volume.setDecimals(0)
+        self.free_volume.setValue(0.0)
+        self.free_volume.setToolTip(
+            "Leave at 0 to use the bay's own cylinder volume. Set it to the "
+            "volume the gas can actually reach once the chute, the harness "
+            "and the av-bay are in there - which is smaller, and is what the "
+            "pressure has to fill.")
+        form.addRow("Free volume (cm3, 0 = geometry):", self.free_volume)
+
+        self.pin_type = QtWidgets.QComboBox()
+        self.pin_type.addItems(list(recovery_mod.SHEAR_PINS.keys()))
+        form.addRow("Shear pin:", self.pin_type)
+
+        self.pin_material = QtWidgets.QComboBox()
+        self.pin_material.addItems(list(recovery_mod.SHEAR_PIN_MATERIALS.keys()))
+        self.pin_material.setToolTip(
+            "Nylon is the shear pin. Brass and steel are in the list so that "
+            "choosing one shows up as an absurd charge instead of quietly "
+            "sizing a charge that will never break them.")
+        form.addRow("Pin material:", self.pin_material)
+
+        self.pin_count = QtWidgets.QSpinBox()
+        self.pin_count.setRange(0, 24)
+        self.pin_count.setValue(2)
+        form.addRow("Pins in the joint:", self.pin_count)
+
+        self.friction = QtWidgets.QDoubleSpinBox()
+        self.friction.setRange(0.0, 10000.0)
+        self.friction.setDecimals(0)
+        self.friction.setToolTip(
+            "Whatever the coupler and nose cone fit add on top of the pins. "
+            "Nobody can correlate this - it is a measurement, taken by "
+            "pulling the joint apart - so it is an input and defaults to 0.")
+        form.addRow("Friction allowance (N):", self.friction)
+
+        self.safety = QtWidgets.QDoubleSpinBox()
+        self.safety.setRange(1.0, 5.0)
+        self.safety.setSingleStep(0.1)
+        self.safety.setDecimals(2)
+        self.safety.setValue(1.5)
+        self.safety.setToolTip(
+            "The published shear force for a given pin spans a range and the "
+            "figures here sit at the bottom of it, so this factor is doing "
+            "real work. 1.5 is the floor, not a starting point to trim.")
+        form.addRow("Safety factor:", self.safety)
+
+        # The other direction: how many pins will hold a given load.
+        self.hold_force = QtWidgets.QDoubleSpinBox()
+        self.hold_force.setRange(0.0, 100000.0)
+        self.hold_force.setDecimals(0)
+        self.hold_force.setToolTip(
+            "The load the joint has to survive without shearing - drogue "
+            "snatch, or the drag trying to pull the bay apart on the way "
+            "down. The answer below is how many of the chosen pin that takes.")
+        form.addRow("Load the pins must hold (N):", self.hold_force)
+
+        self.pins_needed = QtWidgets.QLabel("-")
+        form.addRow("Pins needed for that load:", self.pins_needed)
+
+        self.brief = QtWidgets.QTextEdit()
+        self.brief.setReadOnly(True)
+        self.brief.setMinimumHeight(190)
+        self.brief.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self.brief.setFontFamily("monospace")
+        form.addRow(self.brief)
+
+        warn = QtWidgets.QLabel(
+            "<b>Ground test every charge.</b> This sizes it. Only a ground "
+            "test shows the bay actually opens, that the pins were in the "
+            "holes you think they were, and that the gas did not just vent "
+            "past a bulkhead that does not seal.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(
+            f"QLabel {{ background:{_P['panel']}; color:{_P['text']}; "
+            f"border:1px solid {_P['border']}; "
+            f"border-left:3px solid {_P['critical']}; padding:8px; }}")
+        form.addRow(warn)
+
+        for w in (self.bay_diameter, self.bay_length, self.free_volume,
+                  self.friction, self.safety, self.hold_force):
+            w.valueChanged.connect(self._recompute)
+        self.pin_count.valueChanged.connect(self._recompute)
+        for w in (self.charge_type, self.pin_type, self.pin_material):
+            w.currentTextChanged.connect(self._recompute)
+        self._recompute()
+
+    def charge(self) -> recovery_mod.EjectionCharge:
+        return recovery_mod.EjectionCharge(
+            name="Ejection bay",
+            bay_diameter_m=self.bay_diameter.value() / 1000.0,
+            bay_length_m=self.bay_length.value() / 1000.0,
+            free_volume_m3=self.free_volume.value() * 1e-6,
+            pin_type=self.pin_type.currentText(),
+            pin_count=self.pin_count.value(),
+            pin_material=self.pin_material.currentText(),
+            friction_n=self.friction.value(),
+            safety_factor=self.safety.value(),
+            charge_type=self.charge_type.currentText(),
+        )
+
+    def apply_charge(self, charge: recovery_mod.EjectionCharge):
+        """Put a saved charge back on the form.
+
+        Signals are held down across the lot so the brief is rebuilt once at
+        the end rather than once per field, which would otherwise show the
+        reader six wrong answers on the way to the right one.
+        """
+        widgets = (self.bay_diameter, self.bay_length, self.free_volume,
+                   self.pin_count, self.friction, self.safety,
+                   self.charge_type, self.pin_type, self.pin_material)
+        blocked = [w.blockSignals(True) for w in widgets]
+        try:
+            self.bay_diameter.setValue(charge.bay_diameter_m * 1000.0)
+            self.bay_length.setValue(charge.bay_length_m * 1000.0)
+            self.free_volume.setValue(charge.free_volume_m3 * 1e6)
+            self.pin_count.setValue(int(charge.pin_count))
+            self.friction.setValue(charge.friction_n)
+            self.safety.setValue(charge.safety_factor)
+            for combo, text in ((self.charge_type, charge.charge_type),
+                                (self.pin_type, charge.pin_type),
+                                (self.pin_material, charge.pin_material)):
+                idx = combo.findText(text)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+        finally:
+            for w, was in zip(widgets, blocked):
+                w.blockSignals(was)
+        self._recompute()
+
+    def set_bay_diameter_m(self, diameter_m: float):
+        """Follow the airframe, so the bay is not sized for a different rocket."""
+        if diameter_m and diameter_m > 0:
+            mm = diameter_m * 1000.0
+            if abs(mm - self.bay_diameter.value()) > 0.05:
+                blocked = self.bay_diameter.blockSignals(True)
+                self.bay_diameter.setValue(mm)
+                self.bay_diameter.blockSignals(blocked)
+                self._recompute()
+
+    def _recompute(self):
+        charge = self.charge()
+        self.brief.setPlainText(charge.brief())
+        pin = self.pin_type.currentText()
+        material = self.pin_material.currentText()
+        one = recovery_mod.pin_shear_force(pin, 1, material)
+        need = recovery_mod.pins_for_force(self.hold_force.value(), pin,
+                                           material)
+        self.pins_needed.setText(
+            "%d  (each %s holds %.0f N / %.0f lbf)"
+            % (need, pin, one, one / 4.44822))
+
+
 class _StageEditor(QtWidgets.QGroupBox):
     """Editor for one recovery stage."""
 
@@ -387,6 +582,10 @@ class VehicleTabWidget(QtWidgets.QWidget):
         btns.addWidget(remove)
         btns.addStretch()
         v.addLayout(btns)
+
+        self.charge_editor = _EjectionChargeEditor()
+        v.addWidget(self.charge_editor)
+
         v.addStretch()
         return self._scroll(host)
 
@@ -611,6 +810,8 @@ class VehicleTabWidget(QtWidgets.QWidget):
             "nose_shape": self.nose_shape.currentText(),
             "fin_profile": self.fin_profile.currentText(),
             "recovery": self.recovery_system().to_dict(),
+            "ejection_charge": (self.charge_editor.charge().to_dict()
+                                if hasattr(self, "charge_editor") else {}),
             "mass_components": (self.mass_builder.get_config()
                                 if hasattr(self, "mass_builder") else []),
         }
@@ -653,4 +854,8 @@ class VehicleTabWidget(QtWidgets.QWidget):
                 else self.recovery_preset.findText("Custom"))
             self.recovery_preset.blockSignals(False)
             self._load_stages(system.stages)
+        charge_cfg = cfg.get("ejection_charge")
+        if charge_cfg and hasattr(self, "charge_editor"):
+            self.charge_editor.apply_charge(
+                recovery_mod.EjectionCharge.from_dict(charge_cfg))
         self._refresh_summary()

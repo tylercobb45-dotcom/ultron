@@ -314,3 +314,288 @@ class RecoverySystem:
                     setattr(stage, key, value)
             stages.append(stage)
         return RecoverySystem(data.get("mode", "Custom"), stages)
+
+
+# ---------------------------------------------------------------------------
+# Ejection charges: how much black powder, or how much CO2, to shear the pins
+# ---------------------------------------------------------------------------
+#
+# A deployment charge has one job: raise the pressure inside a bay until the
+# force on the bulkhead exceeds whatever is holding the airframe together,
+# which on anything that flies fast is a set of shear pins. The sum is small
+# and every term in it is known, so there is no reason to guess it:
+#
+#     force to break out   F = n * tau * A_pin      (+ friction)
+#     pressure that needs  P = F * safety / A_bay
+#     powder for that      m = P * V / (R * T)
+#
+# NOTHING HERE REPLACES A GROUND TEST. The numbers below size the charge; the
+# ground test is what tells you the bay actually opens, that the shear pins
+# were in the holes you think they were, and that the charge did not simply
+# blow past a badly fitting bulkhead. Every reference on this says the same
+# thing and so does this module: calculate, then test, then fly.
+
+#: Ultimate SHEAR strength, Pa. Shear, not tensile - a pin in a shear pin hole
+#: fails by being cut through, and quoting tensile here would undersize the
+#: charge by roughly a third.
+SHEAR_PIN_MATERIALS = {
+    "Nylon 6/6":      65.5e6,   # 9,500 psi. The usual shear pin.
+    "Nylon 6":        60.0e6,   # 8,700 psi.
+    "Polycarbonate":  69.0e6,   # 10,000 psi. Tougher, less predictable.
+    "Delrin / POM":   67.0e6,   # 9,700 psi.
+    "Brass":         200.0e6,   # Not a shear pin. Here so a wrong choice
+    "Steel":         340.0e6,   # shows up as an absurd charge, not silently.
+}
+
+#: Thread sizes, as (major diameter m, minor diameter m). The MINOR diameter
+#: is what carries the shear: a screw shears at the thread root, not across
+#: the crests. Using the major diameter overstates a 2-56 pin by 80%, and the
+#: minor-diameter figures below land on the 30-35 lbf that vendors publish
+#: for exactly that pin, which is the check that the choice is right.
+SHEAR_PINS = {
+    "2-56 nylon":  (0.086 * 0.0254, 0.0642 * 0.0254),
+    "4-40 nylon":  (0.112 * 0.0254, 0.0813 * 0.0254),
+    "6-32 nylon":  (0.138 * 0.0254, 0.0997 * 0.0254),
+    "8-32 nylon":  (0.164 * 0.0254, 0.1257 * 0.0254),
+    "10-24 nylon": (0.190 * 0.0254, 0.1389 * 0.0254),
+    "M3 nylon":    (0.0030, 0.00239),
+    "M4 nylon":    (0.0040, 0.00314),
+}
+
+#: Black powder combustion gas, as the standard sizing figures give it:
+#: R = 266 in.lbf/(lbm.R) and T = 3307 R. Converted once, here, so the
+#: arithmetic below is SI and still checkable against any published table.
+#: 266 in.lbf/(lbm.R) -> 119.26 J/(kg.K); 3307 R -> 1837 K.
+BP_GAS_CONSTANT = 119.26          # J/(kg.K)
+BP_GAS_TEMPERATURE_K = 1837.0
+
+#: CO2 leaves a cartridge as a gas that has just boiled and expanded, so it
+#: is nowhere near flame temperature. Sizing it at roughly cabin temperature
+#: is the conservative reading: colder gas means more mass for the same
+#: pressure, and this number being slightly pessimistic costs grams.
+CO2_MOLAR_MASS = 0.04401          # kg/mol
+CO2_TEMPERATURE_K = 293.0
+_R_UNIVERSAL = 8.31446
+
+#: The cartridges actually sold, in grams.
+CO2_CARTRIDGES = (8, 12, 16, 25, 33, 38, 45, 50, 60, 74, 88)
+
+CHARGE_BLACK_POWDER = "Black powder"
+CHARGE_CO2 = "CO2"
+
+
+def pin_shear_force(pin: str = "2-56 nylon", count: int = 2,
+                    material: str = "Nylon 6/6") -> float:
+    """Force in newtons needed to shear `count` pins of this size.
+
+    Single shear: each pin is cut on one plane, because the airframe wall and
+    the coupler slide past each other in one place. Double shear would halve
+    the required pressure and does not describe a shear pin hole.
+
+    These come out at the BOTTOM of the range vendors publish - 30.8 lbf for
+    a 2-56 against a published 30-40, 74 lbf for a 6-32 against 75-100 - and
+    that is the direction that undersizes a charge, so it matters. The
+    safety factor is what covers it: at the default 1.5 a 2-56 bay is sized
+    to 46 lbf against a pin that breaks by 40 at worst. Do not drop the
+    safety factor below 1.5 on the strength of these numbers, and ground
+    test, which settles it properly.
+    """
+    _major, minor = SHEAR_PINS.get(pin, SHEAR_PINS["2-56 nylon"])
+    tau = SHEAR_PIN_MATERIALS.get(material, SHEAR_PIN_MATERIALS["Nylon 6/6"])
+    area = math.pi * 0.25 * minor * minor
+    return tau * area * max(0, int(count))
+
+
+def pins_for_force(hold_force_n: float, pin: str = "2-56 nylon",
+                   material: str = "Nylon 6/6") -> int:
+    """How many pins it takes to hold `hold_force_n` without shearing.
+
+    The other direction of the same sum, and the one that decides how many
+    pins go in the airframe: the pins have to survive drogue descent and the
+    drag trying to pull the bay apart, and they have to break on the charge
+    you can fit. Rounded UP - a fractional pin holds nothing.
+    """
+    one = pin_shear_force(pin, 1, material)
+    if one <= 0:
+        return 0
+    return int(math.ceil(max(0.0, hold_force_n) / one))
+
+
+@dataclass
+class EjectionCharge:
+    """One bay, its pins, and the charge that has to open it."""
+    name: str = "Drogue bay"
+    bay_diameter_m: float = 0.1016          # 4 in
+    bay_length_m: float = 0.3048            # 12 in
+    #: Set non-zero to override the cylinder volume - a bay packed with a
+    #: chute and an av-bay does not contain its own geometric volume. The
+    #: free volume is what the gas fills, and it is smaller.
+    free_volume_m3: float = 0.0
+    pin_type: str = "2-56 nylon"
+    pin_count: int = 2
+    pin_material: str = "Nylon 6/6"
+    #: Friction of the coupler and the nose cone fit, in newtons. Real and
+    #: unmeasurable without pulling the thing apart, so it is an input, not a
+    #: correlation pretending to know.
+    friction_n: float = 0.0
+    safety_factor: float = 1.5
+    charge_type: str = CHARGE_BLACK_POWDER
+    co2_temperature_k: float = CO2_TEMPERATURE_K
+
+    # --- geometry ----------------------------------------------------------
+    @property
+    def bay_area_m2(self) -> float:
+        return math.pi * 0.25 * self.bay_diameter_m ** 2
+
+    @property
+    def volume_m3(self) -> float:
+        if self.free_volume_m3 and self.free_volume_m3 > 0:
+            return self.free_volume_m3
+        return self.bay_area_m2 * self.bay_length_m
+
+    # --- what has to break ---------------------------------------------------
+    @property
+    def shear_force_n(self) -> float:
+        return pin_shear_force(self.pin_type, self.pin_count,
+                               self.pin_material)
+
+    @property
+    def break_force_n(self) -> float:
+        """Everything holding the bay shut."""
+        return self.shear_force_n + max(0.0, self.friction_n)
+
+    @property
+    def required_pressure_pa(self) -> float:
+        """Differential pressure the charge has to build, safety included."""
+        area = self.bay_area_m2
+        if area <= 0:
+            return 0.0
+        return self.break_force_n * max(1.0, self.safety_factor) / area
+
+    # --- what it takes to build it -------------------------------------------
+    @property
+    def black_powder_kg(self) -> float:
+        """m = P.V / (R.T). Independent of the altitude it fires at.
+
+        Adding gas to a volume raises the pressure by m.R.T/V whatever is
+        already in there - partial pressures simply add - so the powder a bay
+        needs is set by the pressure RISE and the volume, and not by how high
+        up it happens to be. The altitude term that does exist is a help, not
+        a cost, and is reported separately below.
+        """
+        denom = BP_GAS_CONSTANT * BP_GAS_TEMPERATURE_K
+        if denom <= 0:
+            return 0.0
+        return self.required_pressure_pa * self.volume_m3 / denom
+
+    @property
+    def black_powder_g(self) -> float:
+        return self.black_powder_kg * 1000.0
+
+    @property
+    def co2_g(self) -> float:
+        """Ideal gas, at the temperature the expanded gas actually arrives at."""
+        t = max(1.0, self.co2_temperature_k)
+        kg = (self.required_pressure_pa * self.volume_m3 * CO2_MOLAR_MASS
+              / (_R_UNIVERSAL * t))
+        return kg * 1000.0
+
+    @property
+    def co2_cartridge_g(self):
+        """The smallest cartridge sold that covers it, or None if none does."""
+        need = self.co2_g
+        for size in CO2_CARTRIDGES:
+            if size >= need:
+                return size
+        return None
+
+    @property
+    def charge_mass_g(self) -> float:
+        """Whichever charge this bay is configured to use."""
+        if self.charge_type == CHARGE_CO2:
+            return self.co2_g
+        return self.black_powder_g
+
+    def trapped_air_assist_pa(self, ground_pressure_pa: float,
+                              deploy_pressure_pa: float) -> float:
+        """Pressure already trying to open the bay, from air sealed in at the pad.
+
+        A bay closed at ground level and flown to altitude carries its ground
+        pressure while the air outside falls away, and that difference pushes
+        outwards for free. It is reported and never subtracted: the bay cools
+        on the way up, which takes some of it back, and any vent hole - and
+        there should be a vent hole - gives the rest away. Sizing a charge on
+        help that leaks out through a hole drilled on purpose is how a bay
+        fails to open.
+        """
+        return max(0.0, ground_pressure_pa - deploy_pressure_pa)
+
+    # --- the brief -----------------------------------------------------------
+    def brief(self, ground_pressure_pa: float = 0.0,
+              deploy_pressure_pa: float = 0.0) -> str:
+        """The whole sum, in the order it is worked, with the numbers in it."""
+        psi = self.required_pressure_pa / 6894.757
+        lines = [
+            "%s - %.0f mm x %.0f mm bay" % (
+                self.name, self.bay_diameter_m * 1000,
+                self.bay_length_m * 1000),
+            "  free volume          %.0f cm3 (%.1f in3)" % (
+                self.volume_m3 * 1e6, self.volume_m3 / 1.6387e-5),
+            "  %d x %s             %.0f N to shear (%.0f lbf)" % (
+                self.pin_count, self.pin_type, self.shear_force_n,
+                self.shear_force_n / 4.44822),
+        ]
+        if self.friction_n > 0:
+            lines.append("  friction allowance   %.0f N" % self.friction_n)
+        lines += [
+            "  with x%.2f safety     %.0f N over %.0f cm2" % (
+                self.safety_factor, self.break_force_n * self.safety_factor,
+                self.bay_area_m2 * 1e4),
+            "  pressure needed      %.1f kPa (%.1f psi)" % (
+                self.required_pressure_pa / 1000.0, psi),
+        ]
+        if self.charge_type == CHARGE_CO2:
+            cart = self.co2_cartridge_g
+            lines.append("  CO2 needed           %.2f g at %.0f K"
+                         % (self.co2_g, self.co2_temperature_k))
+            lines.append("  cartridge            %s"
+                         % ("%d g" % cart if cart
+                            else "larger than any cartridge sold - split the "
+                                 "bay or use black powder"))
+            lines.append("  the charge that punctures the cartridge is")
+            lines.append("  the device maker's figure, not this one")
+        else:
+            lines.append("  black powder         %.2f g" % self.black_powder_g)
+        if ground_pressure_pa > 0 and deploy_pressure_pa > 0:
+            assist = self.trapped_air_assist_pa(ground_pressure_pa,
+                                                deploy_pressure_pa)
+            lines.append("  air sealed in at the pad is already")
+            lines.append("  pushing %.1f kPa (%.1f psi) up here - not"
+                         % (assist / 1000.0, assist / 6894.757))
+            lines.append("  counted; a vent hole gives it away")
+        lines.append("  GROUND TEST THIS. The sum sizes the")
+        lines.append("  charge; the test proves the bay opens.")
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "bay_diameter_m": self.bay_diameter_m,
+            "bay_length_m": self.bay_length_m,
+            "free_volume_m3": self.free_volume_m3,
+            "pin_type": self.pin_type,
+            "pin_count": self.pin_count,
+            "pin_material": self.pin_material,
+            "friction_n": self.friction_n,
+            "safety_factor": self.safety_factor,
+            "charge_type": self.charge_type,
+            "co2_temperature_k": self.co2_temperature_k,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "EjectionCharge":
+        charge = EjectionCharge()
+        for key, value in (data or {}).items():
+            if hasattr(charge, key):
+                setattr(charge, key, value)
+        return charge

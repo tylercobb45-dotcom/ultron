@@ -418,7 +418,133 @@ under it.
 
 ---
 
-## 15. Quick reference card
+## 15. Ejection charges: black powder and CO2
+
+A deployment charge has one job: raise the pressure inside a bay until the
+force on the bulkhead beats whatever is holding the airframe shut. On anything
+that flies fast that is a set of nylon shear pins, and every term in the sum is
+a number you already know.
+
+**Nothing here replaces a ground test.** These equations size the charge. The
+ground test is what shows the bay actually opens, that the pins were in the
+holes you think they were, and that the gas did not simply vent past a
+bulkhead that does not seal. Calculate, then test, then fly.
+
+### 15.1 Force to shear the pins
+
+A shear pin is cut on one plane - single shear - because the airframe wall and
+the coupler slide past each other in one place:
+
+```
+A_pin  = pi/4 * d_minor^2
+F_pins = n * tau * A_pin
+```
+
+`d_minor` is the thread's MINOR diameter, not the major. A screw shears at the
+thread root, and using the major diameter overstates a 2-56 pin by about 80%.
+With nylon 6/6 at `tau = 65.5 MPa` (9,500 psi) that gives:
+
+| Pin | Minor dia | Force each |
+|---|---|---|
+| 2-56 nylon | 0.0642 in | 137 N (30.8 lbf) |
+| 4-40 nylon | 0.0813 in | 219 N (49.3 lbf) |
+| 6-32 nylon | 0.0997 in | 330 N (74.2 lbf) |
+
+These land at the **bottom** of the ranges vendors publish (2-56 is sold as
+30-40 lbf), and that is the direction that undersizes a charge. The safety
+factor below is what covers it, so do not trim it under 1.5 on the strength of
+this table.
+
+### 15.2 Pressure that needs
+
+```
+A_bay = pi/4 * D_bay^2
+P     = (F_pins + F_friction) * SF / A_bay
+```
+
+`F_friction` is the coupler and nose-cone fit. Nobody can correlate it - it is
+a measurement, taken by pulling the joint apart - so it is an input and
+defaults to zero.
+
+### 15.3 Black powder for that pressure
+
+```
+m = P * V / (R * T)        R = 119.26 J/(kg.K),  T = 1837 K
+```
+
+Those are the standard sizing figures (`R = 266 in.lbf/(lbm.R)`,
+`T = 3307 R`) converted to SI once, so the result is checkable against any
+published table. The worked example every reference carries - a 4 in x 12 in
+bay (150.8 in^3) taken to 15 psi - comes out at **1.17 g**, against the 1.1-1.2 g
+those tables print.
+
+`V` is the FREE volume: the space the gas can actually reach once the chute,
+the harness and the av-bay are in there. That is smaller than the cylinder,
+and the cylinder figure oversizes the charge.
+
+### 15.4 Why altitude does not appear
+
+Adding gas to a volume raises the pressure by `m*R*T/V` whatever is already in
+there - partial pressures simply add - so the powder a bay needs is set by the
+pressure **rise** and the volume, not by the altitude it fires at.
+
+There is a real altitude term, and it is help rather than cost: a bay sealed at
+the pad carries ground pressure while the air outside falls away, which pushes
+outward for free:
+
+```
+P_assist = P_ground - P_altitude
+```
+
+This is reported and never subtracted. The bay cools on the way up, which takes
+some of it back, and any vent hole - and there should be a vent hole - gives
+the rest away. Sizing a charge on help that leaks out of a hole drilled on
+purpose is how a bay fails to open.
+
+### 15.5 CO2 instead
+
+CO2 arrives as gas that has just boiled and expanded, nowhere near flame
+temperature, so it is sized as an ideal gas at roughly cabin temperature:
+
+```
+m = P * V * M / (R_u * T)   M = 0.04401 kg/mol, R_u = 8.3145, T ~ 293 K
+```
+
+Cold gas means far more mass for the same pressure - about **4x** the black
+powder figure for the same bay - and it is bought in fixed cartridge sizes
+(8, 12, 16, 25, 33, 38, 45, 50, 60, 74, 88 g), so the answer is rounded up to
+the smallest one sold. The small charge that punctures the cartridge is the
+device manufacturer's figure, not this one.
+
+### 15.6 The other direction: how many pins
+
+The same sum run backwards, and the one that decides what goes in the airframe.
+The pins have to survive drogue descent and the drag trying to pull the bay
+apart, and still break on a charge that fits:
+
+```
+n = ceil(F_hold / F_one_pin)
+```
+
+Rounded up, always - a fractional pin holds nothing.
+
+### 15.7 Worked example
+
+A 102 mm (4 in) bay, 254 mm long, held by 2 x 2-56 nylon, no measured friction,
+at the default 1.5 safety factor:
+
+```
+V       = pi/4 * 0.1016^2 * 0.254      = 2.06e-3 m^3   (125.7 in^3)
+F_pins  = 2 * 65.5e6 * pi/4 * 0.00163^2 = 274 N        (62 lbf)
+A_bay   = pi/4 * 0.1016^2              = 8.11e-3 m^2
+P       = 274 * 1.5 / 8.11e-3          = 50.6 kPa      (7.3 psi)
+m_BP    = 50.6e3 * 2.06e-3 / (119.26 * 1837) = 0.48 g
+m_CO2   = 50.6e3 * 2.06e-3 * 0.04401 / (8.3145 * 293) = 1.88 g -> 8 g cartridge
+```
+
+Then ground test it.
+
+## 16. Quick reference card
 
 ```
 A            = pi*(d/2)^2
@@ -433,4 +559,16 @@ D            = q*CdA_total
 F_chute      = -0.5*rho*Cd*A*chute_fill*v*|v|   (legacy, signed)
 ```
 
-Constants: `g = 9.80665 m/s^2`, `rho_sea_level = 1.225 kg/m^3`.
+```
+A_pin        = pi/4*d_minor^2
+F_pins       = n*tau*A_pin                      single shear
+P_eject      = (F_pins+F_friction)*SF/A_bay
+m_BP         = P*V/(R_bp*T_bp)
+m_CO2        = P*V*M/(R_u*T)
+n_pins       = ceil(F_hold/F_one_pin)
+P_assist     = P_ground-P_altitude              reported, never subtracted
+```
+
+Constants: `g = 9.80665 m/s^2`, `rho_sea_level = 1.225 kg/m^3`,
+`tau_nylon66 = 65.5 MPa`, `R_bp = 119.26 J/(kg.K)`, `T_bp = 1837 K`,
+`M_CO2 = 0.04401 kg/mol`.

@@ -106,6 +106,10 @@ def main():
         "--hidden-import=tolerances",
         "--hidden-import=tolerance_sim",
         "--hidden-import=tolerances_tab",
+        # Pinned like its peers above. table_fit is a hard dependency of
+        # report_tab and tolerances_tab and check_bundle asserts it ships;
+        # static tracing finds it today, and a later lazy import would not.
+        "--hidden-import=table_fit",
         "--hidden-import=engine_designer_tab",
         "--hidden-import=matplotlib.backends.backend_qt5agg",
         "--hidden-import=scipy.integrate",

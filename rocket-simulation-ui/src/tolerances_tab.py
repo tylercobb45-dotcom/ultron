@@ -100,7 +100,7 @@ class TolerancesTab(QtWidgets.QWidget):
         left_inner = QtWidgets.QWidget()
         # Same lesson as the Engine tab: a panel narrower than its form clips
         # the right-hand side of every row.
-        left_inner.setMinimumWidth(400)
+        left_inner.setMinimumWidth(430)
         lv = QtWidgets.QVBoxLayout(left_inner)
 
         intro = QtWidgets.QLabel(
@@ -167,7 +167,11 @@ class TolerancesTab(QtWidgets.QWidget):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(left_inner)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # As needed, not always off. Off is right while the form fits and a
+        # lie once it does not: at 150% display scaling this form wants far
+        # more width than the panel can be given, and with the scrollbar
+        # suppressed the right-hand side of every row was simply gone.
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
 
         # The ACTIONS do not scroll. They used to sit inside the scroll with
         # the checkboxes, which was survivable at ten knobs and is not at
@@ -206,9 +210,12 @@ class TolerancesTab(QtWidgets.QWidget):
             f"color:{theme.PALETTE['text']}; }}")
         outer.addWidget(self.status)
 
-        # Floor low enough that the cap below can always be honoured; the
-        # scroll area inside handles anything that does not fit.
-        left.setMinimumWidth(360)
+        # Back at the width its own form needs. Lowering this to 360 so the
+        # cap below could always be honoured is what let the panel be handed
+        # 395 px at the window's minimum width, clipping 31 px off the right
+        # of every checkbox row - the exact defect this floor was added for.
+        # The cap is an upper bound; it does not get to override this.
+        left.setMinimumWidth(455)
         self._left_panel = left
         splitter.addWidget(left)
 
@@ -279,6 +286,10 @@ class TolerancesTab(QtWidgets.QWidget):
         self.log.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectRows)
         self.log.verticalHeader().setVisible(False)
+        # Measure a bounded number of rows, not all of them. Qt's default is
+        # 1000, and every refit of a log that has grown to a few hundred
+        # trials walks the lot for widths the visible rows already settle.
+        self.log.horizontalHeader().setResizeContentsPrecision(50)
         self.log.itemDoubleClicked.connect(self._open_trial)
         # Let the description take the slack and pin the rest to their
         # contents, so the column saying WHAT was varied is not the one that
@@ -341,6 +352,12 @@ class TolerancesTab(QtWidgets.QWidget):
         # A maximum on its own changes nothing: the splitter keeps the sizes
         # it already worked out and only consults the child's limits when it
         # is asked to lay out again. Hand it the split directly.
+        if panel.width() <= cap:
+            # Already inside the cap. Re-splitting here would throw away a
+            # position the user dragged: widening the controls column to read
+            # the long labels survived until the next resize, maximise or
+            # restore, and then snapped back.
+            return
         self._capping = True
         try:
             splitter.setSizes([cap, max(1, width - cap)])
@@ -422,10 +439,6 @@ class TolerancesTab(QtWidgets.QWidget):
                     item.setData(QtCore.Qt.UserRole,
                                  (knob.key, float(trial.factor)))
                 self.log.setItem(row, col, item)
-            # Re-fit now there are rows: the widths worked out while the
-            # table was empty were sized from the headings alone, and the
-            # description column has to be measured against what is in it.
-            table_fit.fit_columns(self.log, stretch_col=1)
             self.log.scrollToBottom()
             self._say(f"{knob.component}: {knob.quantity} &mdash; "
                       f"{arrow} at {trial.factor * 100:.1f}% of baseline "
@@ -451,6 +464,12 @@ class TolerancesTab(QtWidgets.QWidget):
             self._running = False
             self.run_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+
+        # One fit for the whole log, now the rows are in it. Per-row fitting
+        # re-measured every row already present on each append, which is
+        # quadratic across a few hundred trials and all of it on the GUI
+        # thread, to settle widths that only matter once the run is over.
+        table_fit.fit_columns(self.log, stretch_col=1)
 
         self._last_run = run
         if self._replay is not None:

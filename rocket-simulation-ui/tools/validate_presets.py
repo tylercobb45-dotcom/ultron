@@ -1625,130 +1625,113 @@ def validate_ui_geometry():
     app.processEvents()
 
 
-# Windows draws this UI in Segoe UI, and at the 125% display scaling that a
-# great many Windows laptops ship with, every width in it comes out about a
-# quarter larger than it does here. Neither is reachable from Linux by asking
-# for a different font family, but both are reachable by scaling the point
-# sizes in the stylesheet, which is the only place this app sets them.
+# Windows draws this UI in Segoe UI, and at 125% display scaling - the
+# default on a great many Windows laptops - every width in it comes out
+# larger than it does here. There WAS a section here that claimed to
+# simulate that by scaling the font. It did not work. theme.stylesheet() is
+# only installed by the futuristic theme and by __main__, neither of which
+# this suite runs; the default theme pins font-size in px on the window; and
+# scaling all three of those still left a heading measuring 110 px against
+# 110 px. It was removed rather than left passing on a font it had not
+# changed, which is the same defect it was written to catch.
 #
-# This is the check that was missing. v1.5.0 was built and released with
-# three table geometry failures that appeared only on the Windows runner -
-# the Tolerances table asking for 888 px in 803, the Flight Report's Category
-# heading clipped, its Check column down to 114 px against a 150 px floor -
-# and all three passed here, because the Linux font is narrow enough to hide
-# every one of them.
-FONT_STRESS = 1.25
+# What replaced it is section 11d: the real window, at the real font, at two
+# widths including the narrowest the app will let itself be. That is not a
+# simulation of anything, and it caught both defects this one missed.
 
 
-def validate_ui_geometry_wide_font():
-    """The same tables, measured in a font a quarter wider.
+def validate_ui_geometry_in_window():
+    """The tables as the window actually lays them out, including narrow.
 
-    A layout that only fits in the font it was tuned against is not a
-    layout. Everything measured here is measured again at FONT_STRESS, and
-    the two facts that have to survive are the useful ones: no table asks
-    for more room than it has, and no column is narrower than its own
-    heading.
+    Sections 11 and 11b detach each page and resize it to 1346 px, which is a
+    width no page ever has: inside the real window the same Flight Report
+    table gets 819 px at 1366x768 and 412 px once the window is dragged down
+    to its own minimum. Measuring only the detached, over-wide geometry at one
+    fixed size let two real defects through a green suite - the Check column
+    at 47 px against its 150 px floor with its heading clipped, and 31 px cut
+    off every row of the Tolerances controls panel with the scrollbar
+    suppressed. Both are below.
+
+    Narrow matters because it is reachable: this is the width the app itself
+    says it can be resized to.
     """
-    banner("11b. UI GEOMETRY IN A WIDER FONT (Windows / 125% scaling)")
+    banner("11d. UI GEOMETRY IN THE REAL WINDOW (1366 and minimum width)")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
-        from PyQt5 import QtWidgets
-        from PyQt5.QtGui import QFontMetrics
-        import theme as app_theme
+        from PyQt5 import QtWidgets, QtCore
         import main as app_main
         import report_tab
+        import table_fit
     except Exception as exc:
-        check("UI geometry in a wider font", True,
+        check("UI geometry in the real window", True,
               f"skipped - no Qt available ({type(exc).__name__})")
         return
-
     hook = sys.excepthook
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     sys.excepthook = hook
 
-    # Scale every point size in the stylesheet. Setting the application font
-    # does nothing here: the stylesheet names a size, and a stylesheet rule
-    # beats the widget font.
-    original = app_theme.stylesheet
-    before = app.styleSheet()
-
-    def wider():
-        return re.sub(r"font-size:\s*([0-9.]+)pt",
-                      lambda m: "font-size: %gpt" % (float(m.group(1))
-                                                     * FONT_STRESS),
-                      original())
-
-    app_theme.stylesheet = wider
-    try:
-        win = app_main.RocketSimulationUI()
-        win.show()
-        for _ in range(4):
-            app.processEvents()
-        with open(os.path.join(ROOT, "src", "profiles",
-                               "hybrid_sim Reference Flight.json")) as fh:
-            win.apply_configuration(json.load(fh))
+    win = app_main.RocketSimulationUI()
+    win.show()
+    for _ in range(4):
         app.processEvents()
-        win.start_simulation()
+    with open(os.path.join(ROOT, "src", "profiles",
+                           "hybrid_sim Reference Flight.json")) as fh:
+        win.apply_configuration(json.load(fh))
+    app.processEvents()
+    win.start_simulation()
+    for _ in range(6):
+        app.processEvents()
+
+    names = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+
+    def show_tab(match):
+        for i, name in enumerate(names):
+            if match in name:
+                win.tabs.setCurrentIndex(i)
+                for _ in range(5):
+                    app.processEvents()
+                return win.tabs.widget(i)
+        return None
+
+    floor_px = report_tab.CHECK_MIN_PX
+    narrow = max(320, win.minimumSizeHint().width())
+    for label, width in (("at 1366", SMALL_SCREEN[0]), ("at minimum", narrow)):
+        win.resize(width, SMALL_SCREEN[1])
         for _ in range(6):
             app.processEvents()
 
-        W, H = SMALL_SCREEN
-        pages = []
-        for i in range(win.tabs.count()):
-            win.tabs.setCurrentIndex(i)
-            for _ in range(3):
-                app.processEvents()
-            pages.append(win.tabs.widget(i))
-        for page in pages:
-            page.setParent(None)
-            page.resize(W - 20, H - 80)
-            page.show()
-            for _ in range(4):
-                app.processEvents()
+        show_tab("eport")
+        table = win.flight_report.table
+        got = table.columnWidth(3)
+        need = table_fit.header_need(table, 3)
+        check("  %s px: Check column keeps its floor" % width,
+              got >= floor_px,
+              "%s - %d px, floor %d px" % (label, got, floor_px))
+        check("  %s px: and its own heading fits" % width, got >= need,
+              "%s - %d px for a heading needing %d" % (label, got, need))
 
-        tables = (("Flight Report", win.flight_report.table),
-                  ("Tolerances", win.tolerances_tab.table),
-                  ("Tolerances log", win.tolerances_tab.log))
+        show_tab("oleranc")
+        panel = getattr(win.tolerances_tab, "_left_panel", None)
+        area = panel.findChild(QtWidgets.QScrollArea) if panel else None
+        inner = area.widget() if area is not None else None
+        if inner is None:
+            check("  %s px: controls panel shows its form" % width, False,
+                  "could not find the controls scroll area")
+        else:
+            room = area.viewport().width()
+            wanted = inner.minimumSizeHint().width()
+            reachable = (area.horizontalScrollBarPolicy()
+                         != QtCore.Qt.ScrollBarAlwaysOff)
+            check("  %s px: controls panel is not silently clipped" % width,
+                  room >= wanted or reachable,
+                  "%s - %d px of form in %d px%s"
+                  % (label, wanted, room,
+                     "" if room >= wanted
+                     else (", reachable by scrolling" if reachable
+                           else ", CUT OFF with the scrollbar disabled")))
 
-        width = win.flight_report.table.columnWidth(3)
-        check("  Check column still readable",
-              width >= report_tab.CHECK_MIN_PX,
-              f"{width} px, floor {report_tab.CHECK_MIN_PX} px")
-
-        overflowing = []
-        for name, tbl in tables:
-            total = sum(tbl.columnWidth(c) for c in range(tbl.columnCount()))
-            room = tbl.viewport().width()
-            if total > room:
-                overflowing.append("%s %d px of %d" % (name, total, room))
-        check("  every table still fits the width it is given",
-              not overflowing,
-              "; ".join(overflowing) if overflowing
-              else "no sideways scrolling")
-
-        clipped = []
-        for name, tbl in tables + (("Engine Designer",
-                                    win.engine_designer_tab.spec),):
-            metrics = QFontMetrics(tbl.horizontalHeader().font())
-            for col in range(tbl.columnCount()):
-                item = tbl.horizontalHeaderItem(col)
-                if not item:
-                    continue
-                need = max(metrics.horizontalAdvance(line.upper())
-                           for line in item.text().split("\n")) + 14
-                if need > tbl.columnWidth(col):
-                    clipped.append("%s/%s" % (name, item.text()))
-        check("  no heading clipped in the wider font", not clipped,
-              "; ".join(clipped[:4]) if clipped else "all headings fit")
-
-        win.close()
-        app.processEvents()
-    finally:
-        # Section 12 measures button widths with the real stylesheet. Leaving
-        # the scaled one installed would have it grading the wrong numbers.
-        app_theme.stylesheet = original
-        app.setStyleSheet(before)
-        app.processEvents()
+    win.close()
+    app.processEvents()
 
 
 def validate_table_fitter():
@@ -1801,7 +1784,14 @@ def validate_table_fitter():
     floors = [max(table_fit.header_need(probe, c),
                   probe.horizontalHeader().minimumSectionSize())
               for c in range(5)]
-    probe.resize(sum(floors) + 8 + probe.verticalHeader().width() + 4, 120)
+    # Derive the chrome, do not allow for it. A written-down 8 + 4 is exactly
+    # the tuned constant this section warns about: under a style whose frame
+    # and scrollbar take more than that, the viewport lands below the
+    # headings and the PRECONDITION fails - failing the Windows build on a
+    # test artefact rather than a defect.
+    chrome = (probe.width() - probe.viewport().width()
+              + probe.verticalHeader().width())
+    probe.resize(sum(floors) + chrome + 8, 120)
     app.processEvents()
 
     table_fit.fit_columns(probe, stretch_col=1)
@@ -1820,6 +1810,149 @@ def validate_table_fitter():
           % (total, room, got, need))
     probe.close()
     app.processEvents()
+
+
+def validate_ejection_charges():
+    """Ejection charge sizing, against figures published outside this repo.
+
+    Every number in this calculator is checkable, which is the only reason it
+    is allowed to exist: a charge that is wrong does not fail quietly, it
+    either leaves the bay shut or splits the airframe. So the arithmetic is
+    graded against the worked example every reference carries, and the pin
+    forces against what the vendors print on the packet.
+    """
+    banner("17. EJECTION CHARGE SIZING")
+    import recovery as rec
+    IN = 0.0254
+
+    # The example that appears in every ejection-charge table: a 4 inch bay,
+    # 12 inches long, taken to 15 psi, wants a gram and a bit of powder.
+    bay = rec.EjectionCharge(bay_diameter_m=4 * IN, bay_length_m=12 * IN,
+                             pin_count=0)
+    check("  the standard bay volume comes out right",
+          abs(bay.volume_m3 / 1.6387e-5 - 150.8) < 0.5,
+          "%.1f in3 for 4 in x 12 in, hand figure 150.8" % (
+              bay.volume_m3 / 1.6387e-5))
+    # Drive it to exactly 15 psi through the friction term, since this check
+    # is about the powder law and not about pins.
+    bay.friction_n = 15 * 6894.757 * bay.bay_area_m2 / bay.safety_factor
+    grams = bay.black_powder_g
+    check("  and 15 psi in it needs the published charge",
+          1.05 <= grams <= 1.30,
+          "%.2f g, published tables give 1.1-1.2 g" % grams)
+
+    # Pin shear against vendor figures. These sit at the bottom of the
+    # published ranges on purpose - see pin_shear_force - so the check is that
+    # they are inside the range, not that they are central.
+    for pin, low, high in (("2-56 nylon", 28, 42),
+                           ("4-40 nylon", 45, 68),
+                           ("6-32 nylon", 70, 105)):
+        lbf = rec.pin_shear_force(pin, 1) / 4.44822
+        check("  %s shears in the published range" % pin,
+              low <= lbf <= high,
+              "%.1f lbf, published %d-%d lbf" % (lbf, low, high))
+
+    # Doubling the pins doubles the force and so doubles the powder.
+    one = rec.EjectionCharge(pin_count=1).black_powder_g
+    two = rec.EjectionCharge(pin_count=2).black_powder_g
+    check("  twice the pins is twice the charge",
+          one > 0 and abs(two / one - 2.0) < 1e-6,
+          "%.3f g for one pin, %.3f g for two" % (one, two))
+
+    # The powder law is a pressure RISE, so it cannot depend on altitude.
+    # This is the part people get wrong, and it is worth a check.
+    sealed = rec.EjectionCharge(pin_count=2)
+    check("  the charge does not depend on the altitude it fires at",
+          sealed.trapped_air_assist_pa(101325.0, 54000.0) > 0
+          and sealed.black_powder_g == rec.EjectionCharge(
+              pin_count=2).black_powder_g,
+          "trapped air is reported as %.1f kPa of help, never subtracted"
+          % (sealed.trapped_air_assist_pa(101325.0, 54000.0) / 1000.0))
+
+    # CO2 is cold gas, so it takes several times the mass for one pressure.
+    co2 = rec.EjectionCharge(pin_count=2, charge_type=rec.CHARGE_CO2)
+    ratio = co2.co2_g / co2.black_powder_g
+    check("  CO2 takes far more mass than powder for the same pressure",
+          3.0 < ratio < 6.0,
+          "%.1fx the mass (%.2f g vs %.2f g)"
+          % (ratio, co2.co2_g, co2.black_powder_g))
+    check("  and it is quoted as a cartridge you can buy",
+          co2.co2_cartridge_g in rec.CO2_CARTRIDGES,
+          "%s g cartridge for %.2f g needed"
+          % (co2.co2_cartridge_g, co2.co2_g))
+
+    # The reverse direction: pins for a load, rounded up.
+    one_pin = rec.pin_shear_force("2-56 nylon", 1)
+    check("  pins needed for a load rounds up, never down",
+          rec.pins_for_force(one_pin * 2.2) == 3,
+          "%.0f N needs %d pins of %.0f N"
+          % (one_pin * 2.2, rec.pins_for_force(one_pin * 2.2), one_pin))
+
+    # A packed bay holds less gas than its own geometry.
+    packed = rec.EjectionCharge(pin_count=2, free_volume_m3=0.0005)
+    full = rec.EjectionCharge(pin_count=2)
+    check("  a free-volume override is used instead of the geometry",
+          packed.black_powder_g < full.black_powder_g,
+          "%.2f g packed vs %.2f g on the bare cylinder"
+          % (packed.black_powder_g, full.black_powder_g))
+
+    # A steel "shear pin" must read as absurd rather than be sized for.
+    steel = rec.EjectionCharge(pin_count=2, pin_material="Steel")
+    check("  a steel pin reads as absurd, not as a bigger charge",
+          steel.black_powder_g > 5 * full.black_powder_g,
+          "%.1f g against %.2f g for nylon"
+          % (steel.black_powder_g, full.black_powder_g))
+
+    # And the brief says the one thing that matters.
+    text = full.brief(101325.0, 54000.0)
+    check("  the brief tells you to ground test it",
+          "GROUND TEST" in text.upper(),
+          "the sum is not the test, and the brief says so")
+    check("  the brief stays inside a readable width",
+          max(len(line) for line in text.split("\n")) <= 60,
+          "longest line %d chars"
+          % max(len(line) for line in text.split("\n")))
+
+    # The form it is actually entered on, since a calculator that cannot
+    # reload what you saved makes you re-enter the pin count every session.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5 import QtWidgets
+        import vehicle_tab
+        hook = sys.excepthook
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        sys.excepthook = hook
+        editor = vehicle_tab._EjectionChargeEditor()
+        saved = rec.EjectionCharge(
+            bay_diameter_m=0.154, bay_length_m=0.40, free_volume_m3=0.0032,
+            pin_type="4-40 nylon", pin_count=4, friction_n=120.0,
+            safety_factor=2.0, charge_type=rec.CHARGE_CO2)
+        editor.apply_charge(saved)
+        back = editor.charge()
+        fields = ("bay_diameter_m", "bay_length_m", "free_volume_m3",
+                  "pin_count", "pin_type", "pin_material", "friction_n",
+                  "safety_factor", "charge_type")
+        agree = [f for f in fields
+                 if (abs(getattr(back, f) - getattr(saved, f)) > 1e-9
+                     if isinstance(getattr(saved, f), float)
+                     else getattr(back, f) != getattr(saved, f))]
+        check("  the form gives back the charge it was handed", not agree,
+              "all %d fields agree" % len(fields) if not agree
+              else "disagree: " + ", ".join(agree))
+        check("  and the brief on it is the same sum",
+              abs(back.charge_mass_g - saved.charge_mass_g) < 1e-9,
+              "%.2f g both ways" % back.charge_mass_g)
+        editor.deleteLater()
+    except Exception as exc:
+        check("  the form gives back the charge it was handed", True,
+              "skipped - no Qt available (%s)" % type(exc).__name__)
+
+    # Round-trip, like every other configurable thing here.
+    back = rec.EjectionCharge.from_dict(co2.to_dict())
+    check("  a charge round-trips through its own dict",
+          abs(back.co2_g - co2.co2_g) < 1e-9
+          and back.charge_type == co2.charge_type,
+          "%.3f g both ways" % back.co2_g)
 
 
 def validate_workflow_reports_failures():
@@ -1850,13 +1983,26 @@ def validate_workflow_reports_failures():
 
     # Steps of the `build` job only: it is the one with a Windows runner in
     # its matrix. The release job is ubuntu-only.
-    start = text.index("\n  build:")
-    end = text.index("\n  release:")
+    start = text.find("\n  build:")
+    end = text.find("\n  release:")
+    # find, not index. index raises, main() has no handler, and the suite
+    # would die with a traceback before printing a SUMMARY - taking the three
+    # sections registered after this one down with it - because somebody
+    # renamed a job.
+    located = start >= 0 and end > start
+    check("  the build and release jobs are where this expects them", located,
+          "build at %d, release at %d" % (start, end))
+    if not located:
+        return
     body = text[start:end]
     check("  the build job is the one that runs on Windows",
           "windows" in body, "matrix names a windows runner")
 
-    blocks = re.split(r"\n      - (?=name:|uses:)", body)[1:]
+    # Split on EVERY step. Anchoring on name:/uses: merged any step whose
+    # first key is something else - `- if:`, `- run: |` - into the one before
+    # it, so a new Windows step could inherit the previous step's shell, or
+    # its Linux-only skip, and be reported as guarded either way.
+    blocks = re.split(r"\n      - ", body)[1:]
     # If the file is ever reindented this finds nothing, and a check that
     # finds nothing must fail rather than pass quietly.
     check("  its steps can be read", len(blocks) >= 5,
@@ -1868,11 +2014,19 @@ def validate_workflow_reports_failures():
             continue                      # single-line run, or an action
         if re.search(r"runner\.os == 'Linux'", block):
             continue                      # never runs under PowerShell
-        if re.search(r"^        shell: ", block, re.M):
+        # bash specifically. Accepting any shell let `shell: pwsh` through -
+        # and pwsh is the shell that closes a block with `exit $LASTEXITCODE`
+        # and swallows every failure but the last line, which is the entire
+        # defect this section exists to prevent.
+        if re.search(r"^        shell: bash\s*$", block, re.M):
             continue
-        name = re.match(r"name: (.+)", block)
-        unguarded.append(name.group(1).strip() if name else "unnamed step")
-    check("  every multi-line Windows step declares a shell",
+        declared = re.search(r"^        shell: (\S+)", block, re.M)
+        name = re.search(r"^name: (.+)", block, re.M)
+        label = name.group(1).strip() if name else "unnamed step"
+        if declared:
+            label += " (shell: %s)" % declared.group(1)
+        unguarded.append(label)
+    check("  every multi-line Windows step runs under bash",
           not unguarded,
           "; ".join(unguarded) if unguarded
           else "all multi-line steps pinned to bash")
@@ -2124,6 +2278,12 @@ def _check_form_handover(design):
 
 
 def main():
+    # Importing main.py installs an excepthook that opens a MODAL crash
+    # dialog, and a modal dialog with no screen to draw on waits forever. A
+    # bug in any UI section below therefore hung the suite silently instead of
+    # failing it - no traceback, no summary, just a process sitting at 0% CPU
+    # until CI gave up on it. Put the real hook back so a bug is a traceback.
+    sys.excepthook = sys.__excepthook__
     validate_hardware()
     validate_engines()
 
@@ -2167,10 +2327,11 @@ def main():
     validate_tolerance_agreement()
     validate_duty_resolution()
     validate_ui_geometry()
-    validate_ui_geometry_wide_font()
+    validate_ui_geometry_in_window()
     validate_table_fitter()
     validate_shared_units()
     validate_engine_tab_default()
+    validate_ejection_charges()
     validate_workflow_reports_failures()
     validate_windows_scripts()
 

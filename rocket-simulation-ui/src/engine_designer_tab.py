@@ -26,6 +26,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import engine_lab
 import motor_designer
 import theme
+import table_fit
 import unit_fields
 from hybrid_sim.config import FUELS, INJECTOR_TYPES
 
@@ -211,9 +212,11 @@ class EngineDesignerTab(QtWidgets.QWidget):
         self.spec.setHorizontalHeaderLabels(["Part", "Dimension", "Value"])
         self.spec.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.spec.verticalHeader().setVisible(False)
-        hdr = self.spec.horizontalHeader()
-        hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setStretchLastSection(True)
+        # Fitted like the other tables here. ResizeToContents sizes a column
+        # to Qt's own header hint, which is a little tighter than the room
+        # the heading actually needs: empty, this table gave "Part" 54 px
+        # for a 66 px heading. The fitter makes the heading the floor.
+        table_fit.keep_fitted(self.spec, stretch_col=2)
         self.right_tabs.addTab(self.spec, "Engine")
 
         self.report = QtWidgets.QLabel("")
@@ -414,6 +417,9 @@ class EngineDesignerTab(QtWidgets.QWidget):
                     font.setBold(True)
                     item.setFont(font)
                 self.spec.setItem(r, col, item)
+        # Re-fit now the rows are in: the widths set while it was empty were
+        # sized from the headings alone.
+        table_fit.fit_columns(self.spec, stretch_col=2)
 
     # ---- handing it on ---------------------------------------------------
     def _send(self):

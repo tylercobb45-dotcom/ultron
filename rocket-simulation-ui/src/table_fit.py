@@ -78,6 +78,16 @@ def fit_columns(table, stretch_col=None, caps=None, min_widths=None):
     if count == 0:
         return
 
+    # Read the room FIRST. Changing the resize modes and sizing to contents
+    # before this was a trap: a table fitted before it had been laid out
+    # returned here with its modes already switched to Interactive, no widths
+    # written and the stretch column never put into Stretch, so it sat with
+    # contents-width columns running off the edge and nothing stretching
+    # until some later resize happened to arrive.
+    room = table.viewport().width()
+    if room <= 0:
+        return
+
     # Start from the contents, then clamp each column into its own range.
     # Interactive first: a column still in ResizeToContents ignores
     # setColumnWidth, which is why capping a stretched column achieved
@@ -103,15 +113,12 @@ def fit_columns(table, stretch_col=None, caps=None, min_widths=None):
             width = max(floor[col], min(width, caps[col]))
         want[col] = width
 
-    room = table.viewport().width()
-    if room <= 0:
-        return
-
-    # The stretch column is not sized here - Qt hands it the leftovers - but
-    # its floor has to be reserved, or the leftovers come out smaller than
-    # its heading and Qt clips it instead.
+    # The stretch column is normally not sized here - Qt hands it the
+    # leftovers - but its floor has to be reserved, or the leftovers come out
+    # smaller than its heading and Qt clips it instead.
     others = [c for c in range(count) if c != stretch_col]
-    budget = room - (floor.get(stretch_col, 0) if stretch_col is not None else 0)
+    reserved = floor.get(stretch_col, 0) if stretch_col is not None else 0
+    budget = room - reserved
 
     def shrink_to(target):
         """Take `target` pixels off the columns with the most room to spare."""
@@ -150,8 +157,28 @@ def fit_columns(table, stretch_col=None, caps=None, min_widths=None):
         shrink_to(actual - budget)
         for col in others:
             table.setColumnWidth(col, want[col])
-    if stretch_col is not None:
-        header.setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+
+    if stretch_col is None:
+        return
+
+    # The floors are the one thing that does not bend. Where they all fit,
+    # the stretch column takes the leftovers and keeps following the window.
+    # Where they do not - a window dragged down to its minimum, a font the
+    # layout was never going to survive - Stretch would quietly hand the
+    # stretch column less than its heading and clip it: the Flight Report's
+    # Check column, which says WHAT was tested, measured 47 px against its
+    # own 150 px floor at the app's minimum width, heading included. A
+    # horizontal scrollbar is the honest answer there, so the column is
+    # pinned at its floor and the table is allowed to scroll. Nothing is
+    # readable at a width it does not have, and a heading nobody can read is
+    # worse than a scrollbar.
+    if sum(table.columnWidth(c) for c in others) + reserved > room:
+        header.setSectionResizeMode(stretch_col,
+                                    QtWidgets.QHeaderView.Interactive)
+        table.setColumnWidth(stretch_col, floor[stretch_col])
+    else:
+        header.setSectionResizeMode(stretch_col,
+                                    QtWidgets.QHeaderView.Stretch)
 
 
 class _Refitter(QtCore.QObject):
@@ -162,9 +189,36 @@ class _Refitter(QtCore.QObject):
         self._table = table
         self._kwargs = kwargs
         self._busy = False
+        self._font_key = self._current_font_key()
+
+    def _current_font_key(self):
+        return self._table.horizontalHeader().font().key()
+
+    #: Resize is the obvious one. FontChange and StyleChange matter because
+    #: these columns are Interactive now: Qt recomputes ResizeToContents and
+    #: Stretch sections itself when the font changes, but an Interactive
+    #: section keeps whatever width was last written to it. Switching theme
+    #: swaps the font without touching the viewport width, so without these
+    #: every column would keep its old font's width and the headings would
+    #: clip with no way back short of resizing the window.
+    _TRIGGERS = (QtCore.QEvent.Resize,
+                 QtCore.QEvent.FontChange,
+                 QtCore.QEvent.StyleChange)
 
     def eventFilter(self, obj, event):
-        if event.type() == QtCore.QEvent.Resize and not self._busy:
+        kind = event.type()
+        if kind in (QtCore.QEvent.FontChange, QtCore.QEvent.StyleChange):
+            # Only when the font REALLY changed. Writing column widths makes
+            # Qt emit StyleChange on the header, so refitting on the event
+            # itself re-entered through the queue the moment _busy cleared
+            # and span at 98% CPU for as long as anything kept pumping
+            # events. Comparing the font key ends it: a width written by the
+            # fitter does not change the font, so it does not come back.
+            key = self._current_font_key()
+            if key == self._font_key:
+                return False
+            self._font_key = key
+        if kind in self._TRIGGERS and not self._busy:
             # Setting column widths can show or hide the scrollbar, which
             # resizes the viewport and calls straight back in here.
             self._busy = True
@@ -172,6 +226,7 @@ class _Refitter(QtCore.QObject):
                 fit_columns(self._table, **self._kwargs)
             finally:
                 self._busy = False
+                self._font_key = self._current_font_key()
         return False
 
 
@@ -186,7 +241,11 @@ def keep_fitted(table, stretch_col=None, caps=None, min_widths=None):
     existing = table.property("_table_fit_refitter")
     if existing is None:
         refitter = _Refitter(table, kwargs)
+        # The viewport gets the resizes; the table and its header get the
+        # font and style changes.
         table.viewport().installEventFilter(refitter)
+        table.installEventFilter(refitter)
+        table.horizontalHeader().installEventFilter(refitter)
         table.setProperty("_table_fit_refitter", refitter)
     else:
         existing._kwargs = kwargs
